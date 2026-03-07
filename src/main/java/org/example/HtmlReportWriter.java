@@ -299,50 +299,87 @@ public final class HtmlReportWriter {
             sb.append("  <span class=\"ref-name\">").append(esc(ref.name())).append("</span>\n");
             sb.append("</div>\n");
 
-            sb.append("<div class=\"scene-grid\">\n");
-
+            // Group results by base method (strip _CF_LOOSE / _CF_TIGHT suffixes)
+            // so each method family gets its own collapsible sub-section.
+            LinkedHashMap<String, List<AnalysisResult>> byMethod = new LinkedHashMap<>();
             for (AnalysisResult r : refResults) {
-                String imgSrc = null;
-                if (r.annotatedPath() != null) {
-                    imgSrc = r.annotatedPath().toString().replace('\\', '/');
-                }
-                String scoreLabel = r.isError() ? "ERR" : String.format("%.1f%%", r.matchScorePercent());
-                String cls = r.isError() ? "err"
-                        : r.matchScorePercent() >= 70 ? "good"
-                        : r.matchScorePercent() >= 40 ? "warn" : "bad";
-                DetectionVerdict verdict = verdicts.get(r);
-                String verdictBadge = verdict != null
-                        ? "<span class=\"vbadge " + verdict.cssClass() + "\">"
-                          + verdict.emoji() + " " + verdict.label() + "</span>"
-                        : "";
-                sb.append("<div class=\"scene-thumb ").append(cls).append("\">\n");
-                if (imgSrc != null) {
-                    String caption = esc(r.referenceId().name()) + " | "
-                            + esc(shortMethod(r.methodName())) + " | "
-                            + esc(r.variantLabel()) + " | "
-                            + "Score: " + scoreLabel + " " + r.matchScoreEmoji()
-                            + (verdict != null ? " | " + verdict.emoji() + " " + verdict.label() : "")
-                            + " | " + r.elapsedMs() + " ms";
-                    sb.append("  <img src=\"").append(imgSrc)
-                      .append("\" width=\"160\" loading=\"lazy\" class=\"lb-trigger\""
-                            + " role=\"button\" tabindex=\"0\" title=\"Click to enlarge\""
-                            + " onclick=\"lbOpen(this.src,'").append(caption).append("')\"")
-                      .append(" onkeydown=\"if(event.key==='Enter'||event.key===' ')"
-                            + "lbOpen(this.src,'").append(caption).append("')\"")
-                      .append(">\n");
-                } else {
-                    sb.append("  <div class=\"no-img\">no image</div>\n");
-                }
-                sb.append("  <div class=\"scene-label\">")
-                  .append(esc(shortMethod(r.methodName()))).append("<br>")
-                  .append(esc(r.variantLabel())).append("<br>")
-                  .append("<b>").append(scoreLabel).append("</b>")
-                  .append(" ").append(r.matchScoreEmoji())
-                  .append(" ").append(r.elapsedMs()).append("ms")
-                  .append(verdictBadge.isEmpty() ? "" : "<br>" + verdictBadge)
-                  .append("</div>\n</div>\n");
+                String base = r.methodName()
+                        .replaceAll("_CF_LOOSE$", "")
+                        .replaceAll("_CF_TIGHT$", "");
+                byMethod.computeIfAbsent(base, k -> new ArrayList<>()).add(r);
             }
-            sb.append("</div>\n</details>\n");
+
+            for (Map.Entry<String, List<AnalysisResult>> mEntry : byMethod.entrySet()) {
+                String baseMethod = mEntry.getKey();
+                List<AnalysisResult> mResults = mEntry.getValue();
+
+                // Compute aggregate score for summary badge
+                OptionalDouble avgScore = mResults.stream()
+                        .filter(r -> !r.isError())
+                        .mapToDouble(AnalysisResult::matchScorePercent)
+                        .average();
+                String avgBadge = avgScore.isPresent()
+                        ? String.format(" <span class=\"method-avg %s\">avg %.0f%%</span>",
+                                avgScore.getAsDouble() >= 70 ? "g"
+                                        : avgScore.getAsDouble() >= 40 ? "y" : "r",
+                                avgScore.getAsDouble())
+                        : "";
+
+                sb.append("<details class=\"method-group\" open>\n");
+                sb.append("<summary class=\"method-group-summary\">")
+                  .append(esc(baseMethod)).append(avgBadge)
+                  .append(" <span class=\"method-count\">(")
+                  .append(mResults.size()).append(" results)</span>")
+                  .append("</summary>\n");
+                sb.append("<div class=\"scene-grid\">\n");
+
+                for (AnalysisResult r : mResults) {
+                    String imgSrc = null;
+                    if (r.annotatedPath() != null) {
+                        imgSrc = r.annotatedPath().toString().replace('\\', '/');
+                    }
+                    String scoreLabel = r.isError() ? "ERR" : String.format("%.1f%%", r.matchScorePercent());
+                    String cls = r.isError() ? "err"
+                            : r.matchScorePercent() >= 70 ? "good"
+                            : r.matchScorePercent() >= 40 ? "warn" : "bad";
+                    DetectionVerdict verdict = verdicts.get(r);
+                    String verdictBadge = verdict != null
+                            ? "<span class=\"vbadge " + verdict.cssClass() + "\">"
+                              + verdict.emoji() + " " + verdict.label() + "</span>"
+                            : "";
+                    sb.append("<div class=\"scene-thumb ").append(cls).append("\">\n");
+                    if (imgSrc != null) {
+                        String caption = esc(r.referenceId().name()) + " | "
+                                + esc(r.methodName()) + " | "
+                                + esc(r.variantLabel()) + " | "
+                                + "Score: " + scoreLabel + " " + r.matchScoreEmoji()
+                                + (verdict != null ? " | " + verdict.emoji() + " " + verdict.label() : "")
+                                + " | " + r.elapsedMs() + " ms";
+                        sb.append("  <img src=\"").append(imgSrc)
+                          .append("\" width=\"160\" loading=\"lazy\" class=\"lb-trigger\""
+                                + " role=\"button\" tabindex=\"0\" title=\"Click to enlarge\""
+                                + " onclick=\"lbOpen(this.src,'").append(caption).append("')\"")
+                          .append(" onkeydown=\"if(event.key==='Enter'||event.key===' ')"
+                                + "lbOpen(this.src,'").append(caption).append("')\"")
+                          .append(">\n");
+                    } else {
+                        sb.append("  <div class=\"no-img\">no image</div>\n");
+                    }
+                    // Show CF variant label clearly in the card footer
+                    String cfLabel = r.methodName().contains("_CF_TIGHT") ? " · CF Tight"
+                            : r.methodName().contains("_CF_LOOSE") ? " · CF Loose" : " · Base";
+                    sb.append("  <div class=\"scene-label\">")
+                      .append("<span class=\"cf-badge\">").append(esc(cfLabel.trim())).append("</span><br>")
+                      .append(esc(r.variantLabel())).append("<br>")
+                      .append("<b>").append(scoreLabel).append("</b>")
+                      .append(" ").append(r.matchScoreEmoji())
+                      .append(" ").append(r.elapsedMs()).append("ms")
+                      .append(verdictBadge.isEmpty() ? "" : "<br>" + verdictBadge)
+                      .append("</div>\n</div>\n");
+                }
+                sb.append("</div>\n</details>\n");
+            }
+            sb.append("</details>\n");
         }
         return sb.toString();
     }
@@ -809,6 +846,28 @@ public final class HtmlReportWriter {
         details summary { cursor: pointer; padding: 6px 8px; background: #1a1a2e;
                           border-radius: 4px; margin: 4px 0; color: #a0b0d0; }
         details summary:hover { background: #1e2840; }
+
+        /* Method sub-group inside a reference accordion */
+        .method-group { margin: 6px 0 10px 0; border: 1px solid #252535;
+                         border-radius: 4px; overflow: hidden; }
+        .method-group-summary { cursor: pointer; padding: 5px 10px;
+                                 background: #161628; color: #90a8cc;
+                                 font-size: 0.85rem; font-weight: bold;
+                                 list-style: none; display: flex;
+                                 align-items: center; gap: 8px; }
+        .method-group-summary:hover { background: #1c1c38; }
+        .method-group-summary::before { content: "▶"; font-size: 0.7rem;
+                                         transition: transform 0.15s; }
+        details.method-group[open] > .method-group-summary::before { transform: rotate(90deg); }
+        .method-avg { border-radius: 3px; padding: 1px 6px; font-size: 0.75rem;
+                       font-weight: bold; }
+        .method-avg.g { background: #0a3a18; color: #4ddf80; }
+        .method-avg.y { background: #2a2510; color: #d0b040; }
+        .method-avg.r { background: #2d0d0d; color: #d06060; }
+        .method-count { font-size: 0.72rem; color: #5060a0; font-weight: normal; }
+        .cf-badge { display: inline-block; font-size: 0.68rem; border-radius: 3px;
+                     padding: 1px 4px; background: #1e243c; color: #7090cc;
+                     font-weight: bold; }
 
         /* CF comparison table summary row */
         tr.summary-row td { background: #1a1a2e; font-style: italic; }
