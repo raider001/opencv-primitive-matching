@@ -30,20 +30,29 @@ class HistogramMatchingTest extends AnalyticalTestBase {
     private static final ReferenceId DEBUG_REF = ReferenceId.CIRCLE_FILLED;
     private static final Path        OUT       = Paths.get("test_output", "histogram_matching");
 
-    private static final ReferenceId[] REF_FILTER = {
-        ReferenceId.CIRCLE_OUTLINE,
-        ReferenceId.RECT_FILLED,
-        ReferenceId.HEXAGON_OUTLINE,
-        ReferenceId.GRID_4X4,
-        ReferenceId.TEXT_A,
-    };
+    private static final ReferenceId[] REF_FILTER =
+            {
+                    ReferenceId.CIRCLE_OUTLINE,
+                    ReferenceId.RECT_FILLED,
+                    ReferenceId.HEXAGON_OUTLINE,
+                    ReferenceId.GRID_4X4,
+                    ReferenceId.CROSSHAIR,
+                    ReferenceId.POLYLINE_CHEVRON,
+                    ReferenceId.POLYLINE_PARALLELOGRAM,
+                    ReferenceId.TEXT_HELLO,
+                    ReferenceId.STAR_5_FILLED,
+                    ReferenceId.COMPOUND_TRIANGLE_IN_CIRCLE
+            };
 
     private static final Set<SceneVariant> SCENE_VARIANTS = Set.of(
-        SceneVariant.CLEAN_BG_NOISE_LIGHT,
-        SceneVariant.CLEAN_BG_GRADIENT_H_COLOUR,
-        SceneVariant.CLEAN_BG_RANDOM_MIXED,
-        SceneVariant.ROT_45, SceneVariant.ROT_90, SceneVariant.ROT_180,
-        SceneVariant.SCALE_0_50
+            SceneVariant.SCALE_0_50,
+            SceneVariant.SCALE_1_50,
+            SceneVariant.SCALE0_75_ROT30,
+            SceneVariant.ROT_90,
+            SceneVariant.ROT_180,
+            SceneVariant.NOISE_S25,
+            SceneVariant.OFFSET_TOPLEFT,
+            SceneVariant.CLEAN_BG_GRADIENT_H_COLOUR
     );
 
     private static final Set<String> SAVE = MatcherVariant.allNamesOf(HistVariant.class);

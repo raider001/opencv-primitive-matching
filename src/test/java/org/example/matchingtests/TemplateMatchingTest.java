@@ -41,41 +41,29 @@ class TemplateMatchingTest extends AnalyticalTestBase {
     private static final ReferenceId DEBUG_REF  = ReferenceId.CIRCLE_OUTLINE;
     private static final Path        OUT        = Paths.get("test_output", "template_matching");
 
-    private static final ReferenceId[] REF_FILTER = {
-        ReferenceId.CIRCLE_OUTLINE,   // curved outline
-        ReferenceId.RECT_FILLED,      // filled solid block
-        ReferenceId.HEXAGON_OUTLINE,  // regular polygon
-        ReferenceId.GRID_4X4,         // repeating pattern
-        ReferenceId.TEXT_A,           // text glyph
-    };
+    private static final ReferenceId[] REF_FILTER =
+            {
+                    ReferenceId.CIRCLE_OUTLINE,
+                    ReferenceId.RECT_FILLED,
+                    ReferenceId.HEXAGON_OUTLINE,
+                    ReferenceId.GRID_4X4,
+                    ReferenceId.CROSSHAIR,
+                    ReferenceId.POLYLINE_CHEVRON,
+                    ReferenceId.POLYLINE_PARALLELOGRAM,
+                    ReferenceId.TEXT_HELLO,
+                    ReferenceId.STAR_5_FILLED,
+                    ReferenceId.COMPOUND_TRIANGLE_IN_CIRCLE
+            };
 
-    /**
-     * Scene variant labels that are included in the test run.
-     * Category D negatives are always included regardless of this set.
-     * Non-REF_FILTER primary references are filtered by {@link AnalyticalTestBase}
-     * before this hook is invoked.
-     */
     private static final Set<SceneVariant> SCENE_VARIANTS = Set.of(
-        // A_CLEAN — one per background type
-//      SceneVariant.CLEAN_BG_SOLID_BLACK,
-        SceneVariant.CLEAN_BG_NOISE_LIGHT,
-        SceneVariant.CLEAN_BG_GRADIENT_H_COLOUR,
-        SceneVariant.CLEAN_BG_RANDOM_MIXED,
-
-        // B_TRANSFORMED — rotations, scales
-        SceneVariant.ROT_45,
-        SceneVariant.ROT_90,
-        SceneVariant.ROT_180,
-        SceneVariant.SCALE_0_50
-
-        // C_DEGRADED — one per degradation type
-//      SceneVariant.NOISE_S10,
-//      SceneVariant.NOISE_S25,
-//      SceneVariant.BLUR_5X5,
-//      SceneVariant.CONTRAST_40PCT,
-//      SceneVariant.OCC_25PCT,
-//      SceneVariant.OCC_50PCT,
-//      SceneVariant.HUE_SHIFT_40
+            SceneVariant.SCALE_0_50,
+            SceneVariant.SCALE_1_50,
+            SceneVariant.SCALE0_75_ROT30,
+            SceneVariant.ROT_90,
+            SceneVariant.ROT_180,
+            SceneVariant.NOISE_S25,
+            SceneVariant.OFFSET_TOPLEFT,
+            SceneVariant.CLEAN_BG_GRADIENT_H_COLOUR
     );
 
     private static final Set<String> SAVE = MatcherVariant.allNamesOf(TmVariant.class);
