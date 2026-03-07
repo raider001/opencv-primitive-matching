@@ -357,7 +357,10 @@ public final class FeatureMatcher {
         try {
             Path dir = outputDir.resolve("annotated").resolve(sanitise(variant));
             Files.createDirectories(dir);
-            String fname = sanitise(refId.name()) + "_" + sanitise(sceneEntry.variantLabel()) + ".png";
+            String sceneRef = sceneEntry.primaryReferenceId() != null
+                    ? sanitise(sceneEntry.primaryReferenceId().name()) : "neg";
+            String fname = sanitise(refId.name()) + "_vs_" + sceneRef
+                    + "_" + sanitise(sceneEntry.variantLabel()) + ".png";
             Path dest = dir.resolve(fname);
 
             Mat m = scene.clone();
