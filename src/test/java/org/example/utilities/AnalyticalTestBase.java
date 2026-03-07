@@ -1,5 +1,6 @@
-package org.example;
+package org.example.utilities;
 
+import org.example.*;
 import org.junit.jupiter.api.*;
 import org.opencv.core.Mat;
 
@@ -32,7 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
-abstract class AnalyticalTestBase {
+public abstract class AnalyticalTestBase {
 
     // -------------------------------------------------------------------------
     // Abstract configuration — subclasses fill these in

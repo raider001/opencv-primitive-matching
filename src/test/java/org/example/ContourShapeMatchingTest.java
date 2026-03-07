@@ -1,6 +1,7 @@
 package org.example;
 
 import org.example.matchers.ContourShapeMatcher;
+import org.example.utilities.AnalyticalTestBase;
 import org.junit.jupiter.api.DisplayName;
 import org.opencv.core.Mat;
 

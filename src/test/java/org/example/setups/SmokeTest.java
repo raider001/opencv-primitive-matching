@@ -1,5 +1,6 @@
-package org.example;
+package org.example.setups;
 
+import org.example.OpenCvLoader;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

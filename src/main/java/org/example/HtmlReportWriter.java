@@ -304,8 +304,7 @@ public final class HtmlReportWriter {
             LinkedHashMap<String, List<AnalysisResult>> byMethod = new LinkedHashMap<>();
             for (AnalysisResult r : refResults) {
                 String base = r.methodName()
-                        .replaceAll("_CF_LOOSE$", "")
-                        .replaceAll("_CF_TIGHT$", "");
+                        .replaceAll("_CF1?_(LOOSE|TIGHT)$", "");
                 byMethod.computeIfAbsent(base, k -> new ArrayList<>()).add(r);
             }
 
@@ -313,123 +312,80 @@ public final class HtmlReportWriter {
                 String baseMethod = mEntry.getKey();
                 List<AnalysisResult> mResults = mEntry.getValue();
 
-                // Build accuracy badge from verdict data when available,
-                // otherwise fall back to the raw avg match-score.
-                String avgBadge;
-                long total = mResults.stream().filter(r -> !r.isError()).count();
-                long withVerdicts = mResults.stream()
-                        .filter(r -> verdicts.containsKey(r)).count();
+                // Build accuracy badge for the method group header
+                String avgBadge = accuracyBadge(mResults, verdicts);
 
-                if (withVerdicts > 0 && total > 0) {
-                    // Positives: scenes where the queried shape IS present
-                    long posTotal  = mResults.stream().filter(r -> {
-                        DetectionVerdict v = verdicts.get(r);
-                        return v == DetectionVerdict.CORRECT
-                            || v == DetectionVerdict.WRONG_LOCATION
-                            || v == DetectionVerdict.MISSED;
-                    }).count();
-                    long correct   = mResults.stream()
-                            .filter(r -> verdicts.get(r) == DetectionVerdict.CORRECT).count();
-
-                    // Negatives: scenes where the queried shape is NOT present
-                    long negTotal  = mResults.stream().filter(r -> {
-                        DetectionVerdict v = verdicts.get(r);
-                        return v == DetectionVerdict.CORRECTLY_REJECTED
-                            || v == DetectionVerdict.FALSE_ALARM;
-                    }).count();
-                    long rejected  = mResults.stream()
-                            .filter(r -> verdicts.get(r) == DetectionVerdict.CORRECTLY_REJECTED).count();
-
-                    double pctFound    = posTotal  > 0 ? correct  * 100.0 / posTotal  : 0;
-                    double pctRejected = negTotal  > 0 ? rejected * 100.0 / negTotal  : 0;
-
-                    // Overall colour: green if both ≥ 80%, yellow if both ≥ 60%, else red
-                    double combined = (correct + rejected) * 100.0 / Math.max(1, posTotal + negTotal);
-                    String accCls = combined >= 80 ? "g" : combined >= 60 ? "y" : "r";
-
-                    String tip = String.format(
-                            "Correctly Found: %d of %d positive scenes (%.0f%%) — "
-                          + "shape was present, detected, and bbox was on target  |  "
-                          + "Correctly Rejected: %d of %d negative scenes (%.0f%%) — "
-                          + "shape was absent and detector stayed silent",
-                            correct,  posTotal,  pctFound,
-                            rejected, negTotal,  pctRejected);
-
-                    avgBadge = String.format(
-                            " <span class=\"method-avg %s acc-badge\" title=\"%s\">"
-                          + "<span class=\"acc-found\">%.0f%%&#x2705;</span>"
-                          + " <span class=\"acc-sep\">/</span>"
-                          + " <span class=\"acc-rej\">%.0f%%&#x2713;</span>"
-                          + "</span>",
-                            accCls, esc(tip),
-                            pctFound, pctRejected);
-                } else {
-                    // No verdict data — fall back to avg match score
-                    OptionalDouble avgScore = mResults.stream()
-                            .filter(r -> !r.isError())
-                            .mapToDouble(AnalysisResult::matchScorePercent)
-                            .average();
-                    avgBadge = avgScore.isPresent()
-                            ? String.format(" <span class=\"method-avg %s\" title=\"Average raw match score\">avg %.0f%%</span>",
-                                    avgScore.getAsDouble() >= 70 ? "g"
-                                            : avgScore.getAsDouble() >= 40 ? "y" : "r",
-                                    avgScore.getAsDouble())
-                            : "";
-                }
-
-                sb.append("<details class=\"method-group\" open>\n");
+                sb.append("<details class=\"method-group\">\n");
                 sb.append("<summary class=\"method-group-summary\">")
                   .append(esc(baseMethod)).append(avgBadge)
                   .append(" <span class=\"method-count\">(")
                   .append(mResults.size()).append(" results)</span>")
                   .append("</summary>\n");
-                sb.append("<div class=\"scene-grid\">\n");
 
+                // Third level: group by CF variant (Base / CF Loose / CF Tight)
+                LinkedHashMap<String, List<AnalysisResult>> byCf = new LinkedHashMap<>();
                 for (AnalysisResult r : mResults) {
-                    String imgSrc = null;
-                    if (r.annotatedPath() != null) {
-                        imgSrc = r.annotatedPath().toString().replace('\\', '/');
-                    }
-                    String scoreLabel = r.isError() ? "ERR" : String.format("%.1f%%", r.matchScorePercent());
-                    String cls = r.isError() ? "err"
-                            : r.matchScorePercent() >= 70 ? "good"
-                            : r.matchScorePercent() >= 40 ? "warn" : "bad";
-                    DetectionVerdict verdict = verdicts.get(r);
-                    String verdictBadge = verdict != null
-                            ? "<span class=\"vbadge " + verdict.cssClass() + "\">"
-                              + verdict.emoji() + " " + verdict.label() + "</span>"
-                            : "";
-                    sb.append("<div class=\"scene-thumb ").append(cls).append("\">\n");
-                    if (imgSrc != null) {
-                        String caption = esc(r.referenceId().name()) + " | "
-                                + esc(r.methodName()) + " | "
-                                + esc(r.variantLabel()) + " | "
-                                + "Score: " + scoreLabel + " " + r.matchScoreEmoji()
-                                + (verdict != null ? " | " + verdict.emoji() + " " + verdict.label() : "")
-                                + " | " + r.elapsedMs() + " ms";
-                        sb.append("  <img src=\"").append(imgSrc)
-                          .append("\" width=\"160\" loading=\"lazy\" class=\"lb-trigger\""
-                                + " role=\"button\" tabindex=\"0\" title=\"Click to enlarge\""
-                                + " onclick=\"lbOpen(this.src,'").append(caption).append("')\"")
-                          .append(" onkeydown=\"if(event.key==='Enter'||event.key===' ')"
-                                + "lbOpen(this.src,'").append(caption).append("')\"")
-                          .append(">\n");
-                    } else {
-                        sb.append("  <div class=\"no-img\">no image</div>\n");
-                    }
-                    // Show CF variant label clearly in the card footer
-                    String cfLabel = r.methodName().contains("_CF_TIGHT") ? " · CF Tight"
-                            : r.methodName().contains("_CF_LOOSE") ? " · CF Loose" : " · Base";
-                    sb.append("  <div class=\"scene-label\">")
-                      .append("<span class=\"cf-badge\">").append(esc(cfLabel.trim())).append("</span><br>")
-                      .append(esc(r.variantLabel())).append("<br>")
-                      .append("<b>").append(scoreLabel).append("</b>")
-                      .append(" ").append(r.matchScoreEmoji())
-                      .append(" ").append(r.elapsedMs()).append("ms")
-                      .append(verdictBadge.isEmpty() ? "" : "<br>" + verdictBadge)
-                      .append("</div>\n</div>\n");
+                    String cfKey = r.methodName().matches(".*_CF1?_TIGHT$") ? "CF Tight"
+                            : r.methodName().matches(".*_CF1?_LOOSE$") ? "CF Loose" : "Base";
+                    byCf.computeIfAbsent(cfKey, k -> new ArrayList<>()).add(r);
                 }
-                sb.append("</div>\n</details>\n");
+
+                for (Map.Entry<String, List<AnalysisResult>> cfEntry : byCf.entrySet()) {
+                    String cfLabel = cfEntry.getKey();
+                    List<AnalysisResult> cfResults = cfEntry.getValue();
+                    String cfAccBadge = accuracyBadge(cfResults, verdicts);
+
+                    sb.append("<details class=\"cf-group\">\n");
+                    sb.append("<summary class=\"cf-group-summary\">")
+                      .append("<span class=\"cf-badge\">").append(esc(cfLabel)).append("</span>")
+                      .append(cfAccBadge)
+                      .append(" <span class=\"method-count\">(").append(cfResults.size()).append(" results)</span>")
+                      .append("</summary>\n");
+                    sb.append("<div class=\"scene-grid\">\n");
+
+                    for (AnalysisResult r : cfResults) {
+                        String imgSrc = null;
+                        if (r.annotatedPath() != null) {
+                            imgSrc = r.annotatedPath().toString().replace('\\', '/');
+                        }
+                        String scoreLabel = r.isError() ? "ERR" : String.format("%.1f%%", r.matchScorePercent());
+                        String cls = r.isError() ? "err"
+                                : r.matchScorePercent() >= 70 ? "good"
+                                : r.matchScorePercent() >= 40 ? "warn" : "bad";
+                        DetectionVerdict verdict = verdicts.get(r);
+                        String verdictBadge = verdict != null
+                                ? "<span class=\"vbadge " + verdict.cssClass() + "\">"
+                                  + verdict.emoji() + " " + verdict.label() + "</span>"
+                                : "";
+                        sb.append("<div class=\"scene-thumb ").append(cls).append("\">\n");
+                        if (imgSrc != null) {
+                            String caption = esc(r.referenceId().name()) + " | "
+                                    + esc(r.methodName()) + " | "
+                                    + esc(r.variantLabel()) + " | "
+                                    + "Score: " + scoreLabel + " " + r.matchScoreEmoji()
+                                    + (verdict != null ? " | " + verdict.emoji() + " " + verdict.label() : "")
+                                    + " | " + r.elapsedMs() + " ms";
+                            sb.append("  <img src=\"").append(imgSrc)
+                              .append("\" width=\"160\" loading=\"lazy\" class=\"lb-trigger\""
+                                    + " role=\"button\" tabindex=\"0\" title=\"Click to enlarge\""
+                                    + " onclick=\"lbOpen(this.src,'").append(caption).append("')\"")
+                              .append(" onkeydown=\"if(event.key==='Enter'||event.key===' ')"
+                                    + "lbOpen(this.src,'").append(caption).append("')\"")
+                              .append(">\n");
+                        } else {
+                            sb.append("  <div class=\"no-img\">no image</div>\n");
+                        }
+                        sb.append("  <div class=\"scene-label\">")
+                          .append(esc(r.variantLabel())).append("<br>")
+                          .append("<b>").append(scoreLabel).append("</b>")
+                          .append(" ").append(r.matchScoreEmoji())
+                          .append(" ").append(r.elapsedMs()).append("ms")
+                          .append(verdictBadge.isEmpty() ? "" : "<br>" + verdictBadge)
+                          .append("</div>\n</div>\n");
+                    }
+                    sb.append("</div>\n</details>\n"); // cf-group
+                }
+                sb.append("</details>\n"); // method-group
             }
             sb.append("</details>\n");
         }
@@ -803,6 +759,61 @@ public final class HtmlReportWriter {
         return set;
     }
 
+    private static String accuracyBadge(List<AnalysisResult> results,
+                                         Map<AnalysisResult, DetectionVerdict> verdicts) {
+        long withVerdicts = results.stream().filter(verdicts::containsKey).count();
+        long total        = results.stream().filter(r -> !r.isError()).count();
+
+        if (withVerdicts > 0 && total > 0) {
+            long posTotal = results.stream().filter(r -> {
+                DetectionVerdict v = verdicts.get(r);
+                return v == DetectionVerdict.CORRECT
+                    || v == DetectionVerdict.WRONG_LOCATION
+                    || v == DetectionVerdict.MISSED;
+            }).count();
+            long correct  = results.stream()
+                    .filter(r -> verdicts.get(r) == DetectionVerdict.CORRECT).count();
+            long negTotal = results.stream().filter(r -> {
+                DetectionVerdict v = verdicts.get(r);
+                return v == DetectionVerdict.CORRECTLY_REJECTED
+                    || v == DetectionVerdict.FALSE_ALARM;
+            }).count();
+            long rejected = results.stream()
+                    .filter(r -> verdicts.get(r) == DetectionVerdict.CORRECTLY_REJECTED).count();
+
+            double pctFound    = posTotal > 0 ? correct  * 100.0 / posTotal  : 0;
+            double pctRejected = negTotal > 0 ? rejected * 100.0 / negTotal  : 0;
+            double combined    = (correct + rejected) * 100.0 / Math.max(1, posTotal + negTotal);
+            String accCls      = combined >= 80 ? "g" : combined >= 60 ? "y" : "r";
+
+            String tip = String.format(
+                    "Correctly Found: %d of %d positive scenes (%.0f%%) \u2014 "
+                  + "shape was present, detected, and bbox was on target  |  "
+                  + "Correctly Rejected: %d of %d negative scenes (%.0f%%) \u2014 "
+                  + "shape was absent and detector stayed silent",
+                    correct, posTotal, pctFound, rejected, negTotal, pctRejected);
+
+            return String.format(
+                    " <span class=\"method-avg %s acc-badge\" title=\"%s\">"
+                  + "<span class=\"acc-found\">%.0f%%&#x2705;</span>"
+                  + " <span class=\"acc-sep\">/</span>"
+                  + " <span class=\"acc-rej\">%.0f%%&#x2713;</span>"
+                  + "</span>",
+                    accCls, esc(tip), pctFound, pctRejected);
+        } else {
+            OptionalDouble avg = results.stream()
+                    .filter(r -> !r.isError())
+                    .mapToDouble(AnalysisResult::matchScorePercent)
+                    .average();
+            return avg.isPresent()
+                    ? String.format(
+                            " <span class=\"method-avg %s\" title=\"Average raw match score\">avg %.0f%%</span>",
+                            avg.getAsDouble() >= 70 ? "g" : avg.getAsDouble() >= 40 ? "y" : "r",
+                            avg.getAsDouble())
+                    : "";
+        }
+    }
+
     private static String shortMethod(String m) {
         if (m == null) return "";
         // Strip common prefixes to keep table columns narrow
@@ -911,6 +922,18 @@ public final class HtmlReportWriter {
         .method-group-summary::before { content: "▶"; font-size: 0.7rem;
                                          transition: transform 0.15s; }
         details.method-group[open] > .method-group-summary::before { transform: rotate(90deg); }
+
+        /* CF variant sub-group inside a method group */
+        .cf-group { margin: 4px 6px 6px 6px; border: 1px solid #1e1e30;
+                     border-radius: 3px; }
+        .cf-group-summary { cursor: pointer; padding: 4px 10px;
+                             background: #111120; color: #7090b8;
+                             font-size: 0.8rem; list-style: none;
+                             display: flex; align-items: center; gap: 6px; }
+        .cf-group-summary:hover { background: #161628; }
+        .cf-group-summary::before { content: "▶"; font-size: 0.65rem;
+                                      transition: transform 0.15s; }
+        details.cf-group[open] > .cf-group-summary::before { transform: rotate(90deg); }
         .method-avg { border-radius: 3px; padding: 1px 6px; font-size: 0.75rem;
                        font-weight: bold; }
         .method-avg.g { background: #0a3a18; color: #4ddf80; }
@@ -987,25 +1010,4 @@ public final class HtmlReportWriter {
         .lb-close:hover { background: #444; color: #fff; }
     """;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

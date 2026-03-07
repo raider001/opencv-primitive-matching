@@ -1,5 +1,6 @@
-package org.example;
+package org.example.setups;
 
+import org.example.*;
 import org.junit.jupiter.api.*;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;

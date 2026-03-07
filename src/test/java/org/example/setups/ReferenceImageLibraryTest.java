@@ -1,5 +1,8 @@
-package org.example;
+package org.example.setups;
 
+import org.example.OpenCvLoader;
+import org.example.ReferenceId;
+import org.example.ReferenceImageFactory;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;

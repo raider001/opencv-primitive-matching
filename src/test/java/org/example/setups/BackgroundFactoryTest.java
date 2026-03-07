@@ -1,12 +1,14 @@
-package org.example;
+package org.example.setups;
 
+import org.example.BackgroundFactory;
+import org.example.BackgroundId;
+import org.example.OpenCvLoader;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
-import org.opencv.core.MatOfByte;
 import org.opencv.core.MatOfDouble;
 import org.opencv.imgcodecs.Imgcodecs;
 
