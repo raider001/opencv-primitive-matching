@@ -80,11 +80,14 @@ public final class HistogramMatcher {
         List<AnalysisResult> out = new ArrayList<>(12);
         Mat sceneMat = scene.sceneMat();
 
-        // Reference histogram (normalised)
+        // Reference histogram (normalised) — masked to foreground only so that
+        // black background pixels do not skew the colour distribution.
         Mat refHsv  = toHsv(refMat);
-        Mat refHist = calcHSHist(refHsv, null);
+        Mat refFgMask = ReferenceImageFactory.buildMask(refMat);
+        Mat refHist = calcHSHist(refHsv, refFgMask);
         double refHistSum = Core.sumElems(refHist).val[0]; // for INTERSECT normalisation
         refHsv.release();
+        refFgMask.release();
 
         // Scene HSV: base, CF_LOOSE, CF_TIGHT
         Mat sceneHsv = toHsv(sceneMat);

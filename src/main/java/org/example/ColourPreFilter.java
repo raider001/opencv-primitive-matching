@@ -9,14 +9,19 @@ import org.opencv.imgproc.Imgproc;
  * <p>Every matching technique is run in three modes:
  * <ol>
  *   <li><b>Base</b> — full-colour scene and reference, no pre-processing.</li>
- *   <li><b>CF_LOOSE</b> — both images passed through {@link #apply} at {@link #LOOSE} tolerance
- *       (±15° hue) before matching.</li>
- *   <li><b>CF_TIGHT</b> — both images passed through {@link #apply} at {@link #TIGHT} tolerance
- *       (±8° hue) before matching.</li>
+ *   <li><b>CF_LOOSE</b> — scene and reference passed through
+ *       {@link #applyMaskedBgrToScene} / {@link #applyMaskedBgrToReference} at
+ *       {@link #LOOSE} tolerance (±15° hue).  Pixels outside the foreground colour
+ *       range are zeroed; the result is still a 3-channel BGR image suitable for
+ *       template matching.</li>
+ *   <li><b>CF_TIGHT</b> — same but at {@link #TIGHT} tolerance (±8° hue).</li>
  * </ol>
  *
- * <p>The binary mask produced by {@link #apply} has the same width and height as the input;
- * white pixels (255) fall within the colour range and black pixels (0) fall outside.
+ * <p>The low-level {@link #apply} / {@link #applyToScene} / {@link #applyToReference}
+ * methods return a <b>binary mask</b> (CV_8UC1) used by {@link ColourFirstLocator} for
+ * blob detection.  The higher-level {@link #applyMaskedBgrToScene} /
+ * {@link #applyMaskedBgrToReference} apply that mask and return a masked BGR image
+ * (CV_8UC3) with non-matching pixels set to black — the correct input for matchers.
  *
  * <p><b>Red/orange hue wrap-around:</b> OpenCV encodes hue as 0–179 (half-degrees).
  * Red sits near H=0 and wraps at H=179. When the computed hue window crosses this boundary,
@@ -91,18 +96,14 @@ public final class ColourPreFilter {
     }
 
     /**
-     * Applies the colour pre-filter to a <em>scene</em> image, deriving the colour range
-     * from the given reference ID.
+     * Returns a binary mask (CV_8UC1) for the scene: 255 where the pixel colour
+     * matches the reference foreground, 0 elsewhere.
+     * Used by {@link ColourFirstLocator} for blob detection / region proposal.
      *
-     * <p>This is the primary entry point for matcher {@code _CF} variants:
-     * <pre>{@code
-     *   Mat sceneMask = ColourPreFilter.applyToScene(sceneMat, refId, ColourPreFilter.LOOSE);
-     * }</pre>
-     *
-     * @param bgrScene     the full-colour 640×480 scene
+     * @param bgrScene     the full-colour scene (any size, CV_8UC3 BGR)
      * @param referenceId  which reference's foreground colour to isolate
      * @param hueTolerance use {@link #LOOSE} or {@link #TIGHT}
-     * @return binary mask aligned to the scene (same size)
+     * @return CV_8UC1 binary mask — caller must release
      */
     public static Mat applyToScene(Mat bgrScene, ReferenceId referenceId, double hueTolerance) {
         ColourRange range = extractReferenceColourRange(referenceId, hueTolerance);
@@ -110,18 +111,58 @@ public final class ColourPreFilter {
     }
 
     /**
-     * Applies the colour pre-filter to a <em>reference</em> image using its own foreground
-     * colour range — useful for masking the reference before passing it to a matcher.
+     * Returns a binary mask (CV_8UC1) for the reference: 255 where the pixel colour
+     * matches the reference foreground, 0 elsewhere.
      *
      * @param bgrReference the 128×128 reference Mat
      * @param referenceId  the ID (used to look up the foreground colour)
      * @param hueTolerance use {@link #LOOSE} or {@link #TIGHT}
-     * @return binary mask aligned to the reference (same size)
+     * @return CV_8UC1 binary mask — caller must release
      */
     public static Mat applyToReference(Mat bgrReference, ReferenceId referenceId,
                                        double hueTolerance) {
         ColourRange range = extractReferenceColourRange(referenceId, hueTolerance);
         return apply(bgrReference, range);
+    }
+
+    /**
+     * Returns a masked <b>BGR</b> image (CV_8UC3) for use as a template-matching search
+     * image: pixels whose colour matches the reference foreground are kept; all other pixels
+     * are set to black (zero).
+     *
+     * <p>This is the correct input for template matchers — passing a binary mask to
+     * {@code Imgproc.matchTemplate} produces incorrect single-channel comparisons.
+     *
+     * @param bgrScene     the full-colour scene (any size, CV_8UC3 BGR)
+     * @param referenceId  which reference's foreground colour to isolate
+     * @param hueTolerance use {@link #LOOSE} or {@link #TIGHT}
+     * @return new CV_8UC3 BGR Mat with non-matching pixels zeroed — caller must release
+     */
+    public static Mat applyMaskedBgrToScene(Mat bgrScene, ReferenceId referenceId,
+                                            double hueTolerance) {
+        Mat mask   = applyToScene(bgrScene, referenceId, hueTolerance);
+        Mat masked = Mat.zeros(bgrScene.size(), bgrScene.type());
+        bgrScene.copyTo(masked, mask);
+        mask.release();
+        return masked;
+    }
+
+    /**
+     * Returns a masked <b>BGR</b> image (CV_8UC3) for use as a template: pixels whose colour
+     * matches the reference foreground are kept; all other pixels are set to black.
+     *
+     * @param bgrReference the 128×128 reference Mat (CV_8UC3 BGR)
+     * @param referenceId  the ID (used to look up the foreground colour)
+     * @param hueTolerance use {@link #LOOSE} or {@link #TIGHT}
+     * @return new CV_8UC3 BGR Mat with non-matching pixels zeroed — caller must release
+     */
+    public static Mat applyMaskedBgrToReference(Mat bgrReference, ReferenceId referenceId,
+                                                double hueTolerance) {
+        Mat mask   = applyToReference(bgrReference, referenceId, hueTolerance);
+        Mat masked = Mat.zeros(bgrReference.size(), bgrReference.type());
+        bgrReference.copyTo(masked, mask);
+        mask.release();
+        return masked;
     }
 
     // =========================================================================

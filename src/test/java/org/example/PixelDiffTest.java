@@ -18,7 +18,7 @@ import java.util.Set;
 @DisplayName("Milestone 16 — Pixel Diff (Baseline)")
 class PixelDiffTest extends AnalyticalTestBase {
 
-    private static final boolean     DEBUG     = true;
+    private static final boolean     DEBUG     = false;
     private static final ReferenceId DEBUG_REF = ReferenceId.CIRCLE_OUTLINE;
     private static final Path        OUT       = Paths.get("test_output", "pixel_diff");
 

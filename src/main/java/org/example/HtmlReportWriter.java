@@ -29,7 +29,7 @@ public final class HtmlReportWriter {
      * Writes the report to {@code reportPath}.
      *
      * @param results       all {@link AnalysisResult} objects for this technique
-     * @param profiles      performance profiles â€” one per method variant
+     * @param profiles      performance profiles — one per method variant
      * @param techniqueName display name shown in the report header
      * @param reportPath    destination file (created/overwritten)
      */
@@ -37,9 +37,26 @@ public final class HtmlReportWriter {
                              List<PerformanceProfile> profiles,
                              String techniqueName,
                              Path reportPath) throws IOException {
-        // Auto-include the Base vs CF tab whenever CF variants are present in the results
+        write(results, profiles, techniqueName, reportPath,
+                Collections.emptyMap(), Collections.emptyMap());
+    }
+
+    /**
+     * Full overload — includes ground-truth verdict data for TP/FP/FN/TN display.
+     *
+     * @param verdicts     map from result → {@link DetectionVerdict}
+     * @param sceneMap     map from result → its source {@link SceneEntry} (for ground-truth bbox)
+     */
+    public static void write(List<AnalysisResult> results,
+                             List<PerformanceProfile> profiles,
+                             String techniqueName,
+                             Path reportPath,
+                             Map<AnalysisResult, DetectionVerdict> verdicts,
+                             Map<AnalysisResult, SceneEntry> sceneMap) throws IOException {
         boolean hasCf = results.stream().anyMatch(r -> r.methodName().contains("_CF_"));
-        String html = buildHtml(results, profiles, techniqueName, hasCf, reportPath);
+        boolean hasVerdicts = !verdicts.isEmpty();
+        String html = buildHtml(results, profiles, techniqueName, hasCf, hasVerdicts,
+                verdicts, sceneMap, reportPath);
         Files.write(reportPath, html.getBytes(StandardCharsets.UTF_8));
     }
 
@@ -51,22 +68,34 @@ public final class HtmlReportWriter {
                                     List<PerformanceProfile> profiles,
                                     String techniqueName,
                                     boolean withCfTab,
+                                    boolean withVerdictsTab,
+                                    Map<AnalysisResult, DetectionVerdict> verdicts,
+                                    Map<AnalysisResult, SceneEntry> sceneMap,
                                     Path reportPath) {
-        String resultsTab     = buildResultsTab(results, reportPath);
+        String resultsTab     = buildResultsTab(results, verdicts, reportPath);
         String performanceTab = buildPerformanceTab(profiles);
-        String cfTab          = withCfTab ? buildCfComparisonTab(results) : "";
+        String cfTab          = withCfTab       ? buildCfComparisonTab(results) : "";
+        String verdictsTab    = withVerdictsTab ? buildVerdictsTab(results, verdicts, sceneMap) : "";
 
         String tabActivationCss =
                 "#t-results:checked ~ #results-content { display: block; }\n" +
                 "#t-perf:checked    ~ #perf-content    { display: block; }\n" +
-                (withCfTab ? "#t-cf:checked ~ #cf-content { display: block; }\n" : "");
+                (withCfTab       ? "#t-cf:checked      ~ #cf-content      { display: block; }\n" : "") +
+                (withVerdictsTab ? "#t-verdicts:checked ~ #verdicts-content { display: block; }\n" : "");
 
         String cfRadio = withCfTab
                 ? "  <input type=\"radio\" name=\"tab\" id=\"t-cf\">\n"
                 + "  <label for=\"t-cf\">\uD83C\uDFA8 Base vs CF</label>\n" : "";
 
+        String verdictsRadio = withVerdictsTab
+                ? "  <input type=\"radio\" name=\"tab\" id=\"t-verdicts\">\n"
+                + "  <label for=\"t-verdicts\">\uD83C\uDFAF Verdicts</label>\n" : "";
+
         String cfContent = withCfTab
                 ? "  <div class=\"tab-content\" id=\"cf-content\">\n" + cfTab + "\n  </div>\n" : "";
+
+        String verdictsContent = withVerdictsTab
+                ? "  <div class=\"tab-content\" id=\"verdicts-content\">\n" + verdictsTab + "\n  </div>\n" : "";
 
         return "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
              + "<meta charset=\"UTF-8\">\n"
@@ -95,6 +124,7 @@ public final class HtmlReportWriter {
              + "  <input type=\"radio\" name=\"tab\" id=\"t-perf\">\n"
              + "  <label for=\"t-perf\">\u26A1 Performance</label>\n"
              + cfRadio
+             + verdictsRadio
              + "  <div class=\"tab-content\" id=\"results-content\">\n"
              + resultsTab + "\n"
              + "  </div>\n"
@@ -102,6 +132,7 @@ public final class HtmlReportWriter {
              + performanceTab + "\n"
              + "  </div>\n"
              + cfContent
+             + verdictsContent
              + "</div>\n"
              + "<script>\n"
              + "function lbOpen(src, caption) {\n"
@@ -126,7 +157,9 @@ public final class HtmlReportWriter {
     // Results tab
     // =========================================================================
 
-    private static String buildResultsTab(List<AnalysisResult> results, Path reportPath) {
+    private static String buildResultsTab(List<AnalysisResult> results,
+                                           Map<AnalysisResult, DetectionVerdict> verdicts,
+                                           Path reportPath) {
         // Group by referenceId
         Map<ReferenceId, List<AnalysisResult>> byRef = results.stream()
                 .collect(Collectors.groupingBy(AnalysisResult::referenceId,
@@ -141,6 +174,56 @@ public final class HtmlReportWriter {
         sb.append("<h2>Results Summary</h2>\n");
         sb.append("<p>Average match score per reference per category. ");
         sb.append("\uD83D\uDFE2 \u226570%  \uD83D\uDFE1 \u226540%  \uD83D\uDD34 &lt;40%  \u26A0\uFE0F gradient background ref</p>\n");
+
+        // ---- Definitions panel ----
+        sb.append("<details class=\"defs-panel\">\n");
+        sb.append("<summary>&#x1F4D6; Definitions &amp; How to Read This Report</summary>\n");
+        sb.append("<div class=\"defs-body\">\n");
+        sb.append("<h3>Score %</h3>\n");
+        sb.append("<p>The match score is normalised to 0–100% for every method so results are comparable across techniques. "
+                + "It represents how confident the matcher is that the reference shape is present at the reported location. "
+                + "Scores are colour-coded: "
+                + "<span class=\"score-g\">\u2265 70% (good)</span>, "
+                + "<span class=\"score-y\">\u2265 40% (marginal)</span>, "
+                + "<span class=\"score-r\">&lt; 40% (poor)</span>.</p>\n");
+        sb.append("<h3>Categories</h3>\n");
+        sb.append("<dl>\n");
+        sb.append("  <dt>A &mdash; Clean</dt><dd>Reference placed on a plain or lightly textured background with no transformation. Baseline difficulty.</dd>\n");
+        sb.append("  <dt>B &mdash; Transformed</dt><dd>Reference has been rotated, scaled, offset, or a combination of these. Tests geometric robustness.</dd>\n");
+        sb.append("  <dt>C &mdash; Degraded</dt><dd>Reference is present but the scene has been degraded: blur, noise, contrast reduction, occlusion, or hue shift. Tests noise robustness.</dd>\n");
+        sb.append("  <dt>D &mdash; Negative</dt><dd>The reference shape is <em>not</em> present in the scene. Used to measure false-positive rate.</dd>\n");
+        sb.append("</dl>\n");
+        sb.append("<h3>Verdict Labels</h3>\n");
+        sb.append("<dl>\n");
+        sb.append("  <dt><span class=\"vbadge tp\">&#x2705; Correct</span></dt>"
+                + "<dd>The queried shape <em>is</em> in this scene, the score exceeded the threshold, "
+                + "and the predicted bounding-box centre landed on the shape. True Positive.</dd>\n");
+        sb.append("  <dt><span class=\"vbadge fp\">&#x1F4CD; Wrong Location</span></dt>"
+                + "<dd>The queried shape is in this scene and the score was high enough, but the "
+                + "predicted bbox centre did not overlap the ground-truth region. Detected the wrong area.</dd>\n");
+        sb.append("  <dt><span class=\"vbadge fn\">&#x274C; Missed</span></dt>"
+                + "<dd>The queried shape is in this scene but the score was below the threshold. False Negative &mdash; the shape was not found.</dd>\n");
+        sb.append("  <dt><span class=\"vbadge fp\">&#x26A0;&#xFE0F; False Alarm</span></dt>"
+                + "<dd>The queried shape is <em>not</em> in this scene (Cat D, or a different shape's scene) "
+                + "but the score exceeded the threshold. False Positive &mdash; the detector hallucinated a match.</dd>\n");
+        sb.append("  <dt><span class=\"vbadge tn\">&#x2713; Correctly Rejected</span></dt>"
+                + "<dd>The queried shape is not in this scene and the score was below the threshold. "
+                + "True Negative &mdash; the detector correctly stayed silent.</dd>\n");
+        sb.append("</dl>\n");
+        sb.append("<h3>Localisation Check</h3>\n");
+        sb.append("<p>Localisation is checked by testing whether the <em>centre</em> of the predicted "
+                + "bounding box falls within the ground-truth placed rect expanded by &plusmn;"
+                + DetectionVerdict.CENTRE_TOLERANCE_PX + "&thinsp;px on each side. "
+                + "This is intentionally scale- and rotation-invariant: even if the matcher returns a "
+                + "fixed-size bbox (e.g. always 128&times;128), the centre will land on the shape if the "
+                + "match is correct, regardless of the placed shape's actual size in the scene.</p>\n");
+        sb.append("<h3>CF Variants</h3>\n");
+        sb.append("<p><b>CF_LOOSE / CF_TIGHT</b> &mdash; Colour-Filter pre-processing. Before matching, "
+                + "pixels whose colour is far from the expected foreground colour are masked out. "
+                + "LOOSE uses a wider colour tolerance; TIGHT uses a narrow tolerance. "
+                + "This can dramatically improve scores on busy backgrounds but may hurt performance "
+                + "when the placed shape has been hue-shifted.</p>\n");
+        sb.append("</div>\n</details>\n\n");
 
         // Summary table: one row per reference, columns = method × category
         sb.append("<table class=\"summary\">\n<thead><tr>");
@@ -200,6 +283,22 @@ public final class HtmlReportWriter {
             sb.append("<details>\n<summary>")
               .append(isGradient ? "\u26A0\uFE0F " : "").append(esc(ref.name()))
               .append(" (").append(refResults.size()).append(" results)</summary>\n");
+
+            // Reference image — shown once at the top of the expandable section.
+            // report.html lives at test_output/<technique>/report.html, so
+            // ../references/<ID>.png resolves to test_output/references/<ID>.png
+            String refImgPath = "../references/" + ref.name() + ".png";
+            sb.append("<div class=\"ref-header\">\n");
+            sb.append("  <img src=\"").append(refImgPath).append("\" width=\"96\" height=\"96\"")
+              .append(" class=\"ref-thumb lb-trigger\" role=\"button\" tabindex=\"0\"")
+              .append(" title=\"Reference: ").append(esc(ref.name())).append("\"")
+              .append(" onclick=\"lbOpen(this.src,'Reference: ").append(esc(ref.name())).append("')\"")
+              .append(" onkeydown=\"if(event.key==='Enter'||event.key===' ')lbOpen(this.src,'Reference: ")
+              .append(esc(ref.name())).append("')\"")
+              .append(" onerror=\"this.style.display='none'\">\n");
+            sb.append("  <span class=\"ref-name\">").append(esc(ref.name())).append("</span>\n");
+            sb.append("</div>\n");
+
             sb.append("<div class=\"scene-grid\">\n");
 
             for (AnalysisResult r : refResults) {
@@ -211,12 +310,18 @@ public final class HtmlReportWriter {
                 String cls = r.isError() ? "err"
                         : r.matchScorePercent() >= 70 ? "good"
                         : r.matchScorePercent() >= 40 ? "warn" : "bad";
+                DetectionVerdict verdict = verdicts.get(r);
+                String verdictBadge = verdict != null
+                        ? "<span class=\"vbadge " + verdict.cssClass() + "\">"
+                          + verdict.emoji() + " " + verdict.label() + "</span>"
+                        : "";
                 sb.append("<div class=\"scene-thumb ").append(cls).append("\">\n");
                 if (imgSrc != null) {
                     String caption = esc(r.referenceId().name()) + " | "
                             + esc(shortMethod(r.methodName())) + " | "
                             + esc(r.variantLabel()) + " | "
-                            + "Match Score: " + scoreLabel + " " + r.matchScoreEmoji()
+                            + "Score: " + scoreLabel + " " + r.matchScoreEmoji()
+                            + (verdict != null ? " | " + verdict.emoji() + " " + verdict.label() : "")
                             + " | " + r.elapsedMs() + " ms";
                     sb.append("  <img src=\"").append(imgSrc)
                       .append("\" width=\"160\" loading=\"lazy\" class=\"lb-trigger\""
@@ -231,9 +336,10 @@ public final class HtmlReportWriter {
                 sb.append("  <div class=\"scene-label\">")
                   .append(esc(shortMethod(r.methodName()))).append("<br>")
                   .append(esc(r.variantLabel())).append("<br>")
-                  .append("<b>Match Score: ").append(scoreLabel).append("</b>")
+                  .append("<b>").append(scoreLabel).append("</b>")
                   .append(" ").append(r.matchScoreEmoji())
                   .append(" ").append(r.elapsedMs()).append("ms")
+                  .append(verdictBadge.isEmpty() ? "" : "<br>" + verdictBadge)
                   .append("</div>\n</div>\n");
             }
             sb.append("</div>\n</details>\n");
@@ -472,6 +578,128 @@ public final class HtmlReportWriter {
     }
 
     // =========================================================================
+    // Verdicts tab
+    // =========================================================================
+
+    /**
+     * Builds the Verdicts tab: per-method breakdown counts, precision, recall, F1,
+     * plus a full per-scene breakdown table.
+     */
+    private static String buildVerdictsTab(List<AnalysisResult> results,
+                                            Map<AnalysisResult, DetectionVerdict> verdicts,
+                                            Map<AnalysisResult, SceneEntry> sceneMap) {
+        if (verdicts.isEmpty()) return "<p>No verdict data available.</p>";
+
+        List<String> methods = results.stream()
+                .map(AnalysisResult::methodName).distinct().sorted().toList();
+
+        StringBuilder sb = new StringBuilder();
+
+        // --- Legend ---
+        sb.append("<h2>Detection Verdict Summary</h2>\n");
+        sb.append("<p>Score threshold: <b>").append(DetectionVerdict.DEFAULT_SCORE_THRESHOLD)
+          .append("%</b> &nbsp;|&nbsp; ")
+          .append("Localisation: predicted bbox centre must fall within ground-truth rect ")
+          .append("&plusmn;").append(DetectionVerdict.CENTRE_TOLERANCE_PX).append("px</p>\n");
+        sb.append("<p class=\"legend\">"
+                + "<span class=\"vbadge tp\">&#x2705; Correct</span> &mdash; found at the right location &nbsp;&nbsp;"
+                + "<span class=\"vbadge fp\">&#x1F4CD; Wrong Location</span> &mdash; detected but bbox is off &nbsp;&nbsp;"
+                + "<span class=\"vbadge fn\">&#x274C; Missed</span> &mdash; shape present but not found &nbsp;&nbsp;"
+                + "<span class=\"vbadge fp\">&#x26A0;&#xFE0F; False Alarm</span> &mdash; no shape but detector fired &nbsp;&nbsp;"
+                + "<span class=\"vbadge tn\">&#x2713; Correctly Rejected</span> &mdash; no shape and detector silent"
+                + "</p>\n");
+
+        // --- Summary table per method ---
+        sb.append("<table class=\"perf\">\n<thead><tr>");
+        sb.append("<th>Method</th>");
+        sb.append("<th>&#x2705; Correct</th>");
+        sb.append("<th>&#x1F4CD; Wrong Location</th>");
+        sb.append("<th>&#x274C; Missed</th>");
+        sb.append("<th>&#x26A0;&#xFE0F; False Alarm</th>");
+        sb.append("<th>&#x2713; Correctly Rejected</th>");
+        sb.append("<th>Precision%</th><th>Recall%</th><th>F1%</th>");
+        sb.append("</tr></thead>\n<tbody>\n");
+
+        for (String method : methods) {
+            long correct  = 0, wrongLoc = 0, missed = 0, falseAlarm = 0, rejected = 0;
+            for (AnalysisResult r : results) {
+                if (!r.methodName().equals(method)) continue;
+                DetectionVerdict v = verdicts.get(r);
+                if (v == null) continue;
+                switch (v) {
+                    case CORRECT             -> correct++;
+                    case WRONG_LOCATION      -> wrongLoc++;
+                    case MISSED              -> missed++;
+                    case FALSE_ALARM         -> falseAlarm++;
+                    case CORRECTLY_REJECTED  -> rejected++;
+                }
+            }
+            long tp = correct, fp = wrongLoc + falseAlarm, fn = missed;
+            double prec = (tp + fp) > 0 ? 100.0 * tp / (tp + fp) : 0;
+            double rec  = (tp + fn) > 0 ? 100.0 * tp / (tp + fn) : 0;
+            double f1   = (prec + rec) > 0 ? 2 * prec * rec / (prec + rec) : 0;
+            sb.append("<tr>")
+              .append("<td>").append(esc(method)).append("</td>")
+              .append("<td class=\"tp\">").append(correct).append("</td>")
+              .append("<td class=\"fp\">").append(wrongLoc).append("</td>")
+              .append("<td class=\"fn\">").append(missed).append("</td>")
+              .append("<td class=\"fp\">").append(falseAlarm).append("</td>")
+              .append("<td class=\"tn\">").append(rejected).append("</td>")
+              .append(String.format("<td>%.1f%%</td><td>%.1f%%</td><td>%.1f%%</td>",
+                      prec, rec, f1))
+              .append("</tr>\n");
+        }
+        sb.append("</tbody></table>\n");
+
+        // --- Per-scene breakdown ---
+        sb.append("<h2>Per-Scene Breakdown</h2>\n");
+        sb.append("<details><summary>Show all ").append(verdicts.size())
+          .append(" rows</summary>\n");
+        sb.append("<table class=\"perf\">\n<thead><tr>");
+        sb.append("<th>Method</th><th>Reference</th><th>Scene Variant</th><th>Category</th>");
+        sb.append("<th>Score%</th><th>Verdict</th><th>GT Rect</th><th>Pred Centre</th>");
+        sb.append("</tr></thead>\n<tbody>\n");
+
+        for (AnalysisResult r : results) {
+            DetectionVerdict v = verdicts.get(r);
+            if (v == null) continue;
+            SceneEntry scene = sceneMap.get(r);
+
+            String gtRect  = "&mdash;";
+            String predCtr = "&mdash;";
+            if (scene != null && !scene.placements().isEmpty()) {
+                org.opencv.core.Rect gt = scene.placements().stream()
+                        .filter(p -> p.referenceId() == r.referenceId())
+                        .map(SceneShapePlacement::placedRect)
+                        .findFirst().orElse(null);
+                if (gt != null) {
+                    gtRect = gt.x + "," + gt.y + " " + gt.width + "&times;" + gt.height;
+                }
+            }
+            if (r.boundingRect() != null) {
+                org.opencv.core.Rect pred = r.boundingRect();
+                int cx = pred.x + pred.width  / 2;
+                int cy = pred.y + pred.height / 2;
+                predCtr = cx + "," + cy;
+            }
+
+            sb.append("<tr>")
+              .append("<td>").append(esc(shortMethod(r.methodName()))).append("</td>")
+              .append("<td>").append(r.referenceId() != null ? esc(r.referenceId().name()) : "&mdash;").append("</td>")
+              .append("<td>").append(esc(r.variantLabel())).append("</td>")
+              .append("<td>").append(r.category().name()).append("</td>")
+              .append(String.format("<td>%.1f%%</td>", r.matchScorePercent()))
+              .append("<td class=\"").append(v.cssClass()).append("\">")
+                  .append(v.emoji()).append(" ").append(v.label()).append("</td>")
+              .append("<td>").append(gtRect).append("</td>")
+              .append("<td>").append(predCtr).append("</td>")
+              .append("</tr>\n");
+        }
+        sb.append("</tbody></table>\n</details>\n");
+        return sb.toString();
+    }
+
+    // =========================================================================
     // Helpers
     // =========================================================================
 
@@ -584,6 +812,40 @@ public final class HtmlReportWriter {
 
         /* CF comparison table summary row */
         tr.summary-row td { background: #1a1a2e; font-style: italic; }
+
+        /* Verdict badges */
+        .vbadge { display: inline-block; border-radius: 3px; padding: 1px 5px;
+                  font-size: 0.72rem; font-weight: bold; margin-left: 3px; }
+        .vbadge.tp, td.tp { background: #0a3a18; color: #4ddf80; }
+        .vbadge.fp, td.fp { background: #3a2000; color: #ffaa33; }
+        .vbadge.fn, td.fn { background: #3a0a0a; color: #ff5555; }
+        .vbadge.tn, td.tn { background: #101820; color: #6699aa; }
+        p.legend { font-size: 0.85rem; color: #8090a8; }
+
+        /* Definitions panel */
+        .defs-panel { margin-bottom: 16px; }
+        .defs-panel > summary { font-weight: bold; font-size: 0.92rem; }
+        .defs-body { padding: 12px 16px; background: #10101a; border: 1px solid #2a2a40;
+                     border-radius: 0 0 4px 4px; font-size: 0.84rem; color: #9090b0; }
+        .defs-body h3 { color: #a0b0d0; margin: 14px 0 4px; font-size: 0.9rem; }
+        .defs-body dl { margin: 0 0 8px 12px; }
+        .defs-body dt { color: #c0c8e0; font-weight: bold; margin-top: 8px; }
+        .defs-body dd { margin: 2px 0 0 16px; }
+        .defs-body p  { margin: 4px 0; }
+        .score-g { color: #60d080; font-weight: bold; }
+        .score-y { color: #d0b040; font-weight: bold; }
+        .score-r { color: #d06060; font-weight: bold; }
+
+        /* Per-reference header inside accordion */
+        .ref-header { display: flex; align-items: center; gap: 14px;
+                      padding: 10px 8px 6px; background: #0e0e18;
+                      border-bottom: 1px solid #2a2a40; margin-bottom: 8px; }
+        .ref-thumb { display: block; border: 2px solid #2a4060; border-radius: 4px;
+                     cursor: pointer; flex-shrink: 0;
+                     background: #1a1a2e; /* visible backdrop for black-canvas refs */ }
+        .ref-thumb:hover { border-color: #4080c0; opacity: 0.9; }
+        .ref-name { font-size: 1rem; font-weight: bold; color: #a0c0e0;
+                    letter-spacing: 0.04em; }
 
         /* Third tab activation (CF tab) \u2013 added inline when withCfTab=true */
         #t-results:checked ~ #results-content { display: block; }

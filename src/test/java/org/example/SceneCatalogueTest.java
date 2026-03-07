@@ -96,20 +96,30 @@ class SceneCatalogueTest {
     }
 
     // -------------------------------------------------------------------------
-    // Test 3 — save curated samples as PNG + JSON sidecar
+    // Test 3 — save ALL catalogue scenes as PNG + JSON sidecar
     // -------------------------------------------------------------------------
 
     @Test @Order(3)
-    @DisplayName("Save curated sample scenes: clean PNG + JSON sidecar (no overlay in image)")
+    @DisplayName("Save all catalogue scenes: clean PNG + JSON sidecar (no overlay in image)")
     void saveSamples() throws IOException {
-        List<SceneEntry> toSave = buildCuratedSampleList();
         int saved = 0;
-        for (SceneEntry scene : toSave) {
+        int total = catalogue.size();
+        System.out.printf("Saving all %d catalogue scenes to %s ...%n", total, OUT.toAbsolutePath());
+        for (SceneEntry scene : catalogue) {
+            String baseName = buildSampleName(scene);
+            saveSample(scene, baseName);
+            saved++;
+            if (saved % 200 == 0 || saved == total) {
+                System.out.printf("  %d / %d saved%n", saved, total);
+            }
+        }
+        // Also save multi-shape scenes
+        for (SceneEntry scene : multiShapeScenes) {
             String baseName = buildSampleName(scene);
             saveSample(scene, baseName);
             saved++;
         }
-        System.out.printf("Saved %d sample scenes (PNG + JSON) to %s%n%n",
+        System.out.printf("Saved %d scenes total (PNG + JSON) to %s%n%n",
                 saved, OUT.toAbsolutePath());
     }
 
@@ -123,9 +133,15 @@ class SceneCatalogueTest {
         Path annoDir = OUT.toAbsolutePath().resolve("annotated");
         Files.createDirectories(annoDir);
 
-        List<SceneEntry> toSave = buildCuratedSampleList();
         int saved = 0;
-        for (SceneEntry scene : toSave) {
+        for (SceneEntry scene : catalogue) {
+            String baseName = buildSampleName(scene);
+            Mat annotated = drawOverlay(scene);
+            Imgcodecs.imwrite(annoDir.resolve(baseName + ".png").toString(), annotated);
+            annotated.release();
+            saved++;
+        }
+        for (SceneEntry scene : multiShapeScenes) {
             String baseName = buildSampleName(scene);
             Mat annotated = drawOverlay(scene);
             Imgcodecs.imwrite(annoDir.resolve(baseName + ".png").toString(), annotated);
@@ -167,65 +183,6 @@ class SceneCatalogueTest {
         System.out.printf("Contact sheet saved to %s%n%n", outPath);
     }
 
-    // -------------------------------------------------------------------------
-    // Curated sample selection
-    // -------------------------------------------------------------------------
-
-    /**
-     * Builds a deliberate list of samples covering:
-     * - Cat A (clean): 2 different references
-     * - Cat B (transformed): rotation 15, 30, 45, 90, 180 + scale variants
-     * - Cat C (degraded): noise, blur, occlusion, colour-shift
-     * - Cat D (negative): 2 negative scenes
-     * - Multi-shape: all multi-shape scenes from buildMultiShape()
-     */
-    private static List<SceneEntry> buildCuratedSampleList() {
-        List<SceneEntry> result = new ArrayList<>();
-
-        // Cat A — first entry + one 4 entries in (different ref)
-        List<SceneEntry> catA = catalogue.stream()
-                .filter(e -> e.category() == SceneCategory.A_CLEAN).toList();
-        result.add(catA.get(0));
-        result.add(catA.get(4));  // different reference
-
-        // Cat B — explicitly pick rotation variants by label
-        String[] wantedB = {"rot_15","rot_30","rot_45","rot_90","rot_180",
-                            "scale_0.50","scale_1.50","scale0.75_rot30","scale1.5_rot45",
-                            "offset_topleft","offset_botright"};
-        Set<String> wantedSet = new HashSet<>(Arrays.asList(wantedB));
-        Map<String, SceneEntry> pickedB = new LinkedHashMap<>();
-        for (SceneEntry e : catalogue) {
-            if (e.category() == SceneCategory.B_TRANSFORMED
-                    && wantedSet.contains(e.variantLabel())
-                    && !pickedB.containsKey(e.variantLabel())) {
-                pickedB.put(e.variantLabel(), e);
-            }
-        }
-        result.addAll(pickedB.values());
-
-        // Cat C — one of each variant type
-        String[] wantedC = {"noise_s10","noise_s25","contrast_40pct",
-                            "occ_25pct","occ_50pct","blur_5x5","hue_shift_40"};
-        Set<String> wantedCSet = new HashSet<>(Arrays.asList(wantedC));
-        Map<String, SceneEntry> pickedC = new LinkedHashMap<>();
-        for (SceneEntry e : catalogue) {
-            if (e.category() == SceneCategory.C_DEGRADED
-                    && wantedCSet.contains(e.variantLabel())
-                    && !pickedC.containsKey(e.variantLabel())) {
-                pickedC.put(e.variantLabel(), e);
-            }
-        }
-        result.addAll(pickedC.values());
-
-        // Cat D — 2 negative scenes
-        catalogue.stream().filter(e -> e.category() == SceneCategory.D_NEGATIVE)
-                .limit(2).forEach(result::add);
-
-        // Multi-shape — all of them
-        result.addAll(multiShapeScenes);
-
-        return result;
-    }
 
     // -------------------------------------------------------------------------
     // I/O helpers

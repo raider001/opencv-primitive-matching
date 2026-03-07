@@ -5,7 +5,6 @@ import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -17,6 +16,14 @@ import java.util.Set;
  *
  * <p>Runs all 6 OpenCV TM_* methods, plus {@code _CF_LOOSE} and {@code _CF_TIGHT}
  * colour-pre-filtered variants, giving <b>18 variants total</b>.
+ *
+ * <p><b>Transparency / masking:</b> because reference images have a solid-black
+ * background, a foreground mask is derived from the reference Mat using
+ * {@link ReferenceImageFactory#buildMask(Mat)}.  For {@code TM_SQDIFF} and
+ * {@code TM_CCORR_NORMED} (the only methods OpenCV supports masked matching for)
+ * the mask is passed directly to {@link Imgproc#matchTemplate}.  For all other
+ * methods, background pixels are zeroed in both the template and each scene crop
+ * before comparison, achieving the same effect.
  *
  * <p>Annotated images are written straight to disk (never held in memory).
  * {@link AnalysisResult#annotatedPath()} is set only for variants listed in
@@ -66,30 +73,34 @@ public final class TemplateMatcher {
         List<AnalysisResult> out = new ArrayList<>(18);
         Mat sceneMat = scene.sceneMat();
 
+        // Build foreground mask once per reference — reused across all 18 variants.
+        // Black pixels in the reference (background) become 0 in the mask;
+        // shape pixels become 255.  This lets matchTemplate ignore the black canvas.
+        Mat refMask = ReferenceImageFactory.buildMask(refMat);
+
         for (int i = 0; i < BASE_METHODS.length; i++) {
             String  baseName = BASE_METHODS[i];
             int     flag     = TM_FLAGS[i];
             boolean lower    = LOWER_IS_BETTER[i];
 
-            // Base
-            out.add(runVariant(baseName, flag, lower, sceneMat, refMat, 0L,
+            out.add(runVariant(baseName, flag, lower, sceneMat, refMat, refMask, 0L,
                     referenceId, scene, saveVariants, outputDir));
 
-            // CF_LOOSE
+            // CF_LOOSE — masked BGR scene & template (non-matching pixels zeroed)
             long t0 = System.currentTimeMillis();
-            Mat sL = ColourPreFilter.applyToScene(sceneMat, referenceId, ColourPreFilter.LOOSE);
-            Mat rL = ColourPreFilter.applyToReference(refMat,  referenceId, ColourPreFilter.LOOSE);
+            Mat sL = ColourPreFilter.applyMaskedBgrToScene(sceneMat, referenceId, ColourPreFilter.LOOSE);
+            Mat rL = ColourPreFilter.applyMaskedBgrToReference(refMat, referenceId, ColourPreFilter.LOOSE);
             long cfL = System.currentTimeMillis() - t0;
-            out.add(runVariant(baseName + "_CF_LOOSE", flag, lower, sL, rL, cfL,
+            out.add(runVariant(baseName + "_CF_LOOSE", flag, lower, sL, rL, refMask, cfL,
                     referenceId, scene, saveVariants, outputDir));
             sL.release(); rL.release();
 
-            // CF_TIGHT
+            // CF_TIGHT — masked BGR scene & template
             t0 = System.currentTimeMillis();
-            Mat sT = ColourPreFilter.applyToScene(sceneMat, referenceId, ColourPreFilter.TIGHT);
-            Mat rT = ColourPreFilter.applyToReference(refMat,  referenceId, ColourPreFilter.TIGHT);
+            Mat sT = ColourPreFilter.applyMaskedBgrToScene(sceneMat, referenceId, ColourPreFilter.TIGHT);
+            Mat rT = ColourPreFilter.applyMaskedBgrToReference(refMat, referenceId, ColourPreFilter.TIGHT);
             long cfT = System.currentTimeMillis() - t0;
-            out.add(runVariant(baseName + "_CF_TIGHT", flag, lower, sT, rT, cfT,
+            out.add(runVariant(baseName + "_CF_TIGHT", flag, lower, sT, rT, refMask, cfT,
                     referenceId, scene, saveVariants, outputDir));
             sT.release(); rT.release();
         }
@@ -106,9 +117,8 @@ public final class TemplateMatcher {
             for (Rect w : windows) {
                 Mat crop = sceneMat.submat(w);
                 AnalysisResult r = runVariant(cf1Name, Imgproc.TM_CCOEFF_NORMED, false,
-                        crop, refMat, cfMs, referenceId, scene,
+                        crop, refMat, refMask, cfMs, referenceId, scene,
                         saveVariants, outputDir);
-                // Translate bbox from crop-local to scene-global coords
                 if (r.matchScorePercent() > bestScore) {
                     bestScore = r.matchScorePercent();
                     Rect lb = r.boundingRect();
@@ -130,6 +140,7 @@ public final class TemplateMatcher {
                     scenePx(scene), savedPath, false, null));
         }
 
+        refMask.release();
         return out;
     }
 
@@ -137,11 +148,20 @@ public final class TemplateMatcher {
     // Single variant
     // =========================================================================
 
+    /**
+     * Whether a given TM flag supports OpenCV's native masked matchTemplate.
+     * Only TM_SQDIFF and TM_CCORR_NORMED are supported by OpenCV.
+     */
+    private static boolean supportsNativeMask(int tmFlag) {
+        return tmFlag == Imgproc.TM_SQDIFF || tmFlag == Imgproc.TM_CCORR_NORMED;
+    }
+
     private static AnalysisResult runVariant(String variantName,
                                               int tmFlag,
                                               boolean lowerIsBetter,
                                               Mat searchImage,
                                               Mat tmpl,
+                                              Mat refMask,
                                               long preFilterMs,
                                               ReferenceId referenceId,
                                               SceneEntry scene,
@@ -156,7 +176,23 @@ public final class TemplateMatcher {
             }
 
             Mat result = new Mat();
-            Imgproc.matchTemplate(searchImage, tmpl, result, tmFlag);
+            if (supportsNativeMask(tmFlag)) {
+                // OpenCV native masked matching (TM_SQDIFF, TM_CCORR_NORMED only)
+                Imgproc.matchTemplate(searchImage, tmpl, result, tmFlag, refMask);
+            } else {
+                // Software emulation: zero background pixels in the template so the
+                // black canvas doesn't contribute to the score.
+                // Mat.copyTo(dst, mask) copies only where mask=255, leaving dst zeros
+                // elsewhere — correctly handles 3-channel template with 1-channel mask.
+                Mat maskedTmpl = Mat.zeros(tmpl.size(), tmpl.type());
+                try {
+                    tmpl.copyTo(maskedTmpl, refMask);
+                    Imgproc.matchTemplate(searchImage, maskedTmpl, result, tmFlag);
+                } finally {
+                    maskedTmpl.release();
+                }
+            }
+
             Core.MinMaxLocResult mmr = Core.minMaxLoc(result);
             result.release();
 

@@ -1,8 +1,12 @@
 package org.example;
 
 import org.opencv.core.*;
+import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -57,15 +61,72 @@ public final class ReferenceImageFactory {
     // Public API
     // -------------------------------------------------------------------------
 
-    /** Builds and returns a fresh 128×128 BGR {@link Mat} for the given reference ID. */
+    private static final Path REFERENCES_DIR = Paths.get("test_output", "references");
+
+    /**
+     * Returns a fresh 128×128 BGR {@link Mat} for the given reference ID.
+     *
+     * <p>Loads from {@code test_output/references/<ID>.png} if the file exists on disk,
+     * so the suite reuses the previously generated (and potentially manually curated)
+     * images rather than regenerating them each run.  Falls back to programmatic
+     * generation if the file is absent or cannot be decoded.
+     */
     public static Mat build(ReferenceId id) {
+        Path file = REFERENCES_DIR.resolve(id.name() + ".png");
+        if (Files.exists(file)) {
+            Mat loaded = Imgcodecs.imread(file.toAbsolutePath().toString());
+            if (loaded != null && !loaded.empty()) {
+                // Ensure it is exactly SIZE×SIZE BGR
+                if (loaded.cols() == SIZE && loaded.rows() == SIZE
+                        && loaded.channels() == 3) {
+                    return loaded;
+                }
+                // Wrong size — resize to SIZE×SIZE
+                Mat resized = new Mat();
+                Imgproc.resize(loaded, resized, new Size(SIZE, SIZE));
+                loaded.release();
+                return resized;
+            }
+            if (loaded != null) loaded.release();
+        }
+        // Fallback: generate programmatically
+        return buildProgrammatic(id);
+    }
+
+    /** Builds the reference image entirely programmatically (no disk I/O). */
+    public static Mat buildProgrammatic(ReferenceId id) {
         int idx = id.ordinal();
-        Scalar fg    = FG_PALETTE[idx % FG_PALETTE.length];
-        Scalar fgLt  = FG_LIGHT  [idx % FG_LIGHT.length];
-        Mat canvas   = buildBackground(idx);
+        Scalar fg   = FG_PALETTE[idx % FG_PALETTE.length];
+        Scalar fgLt = FG_LIGHT  [idx % FG_LIGHT.length];
+        Mat canvas  = buildBackground(idx);
         drawShape(canvas, id, fg, fgLt);
         return canvas;
     }
+
+    /**
+     * Builds an 8-bit single-channel foreground mask for the given reference Mat.
+     *
+     * <p>Pixels that are non-black (any channel > {@value #MASK_THRESH}) are set to 255
+     * (foreground); all-black pixels are set to 0 (background / transparent).
+     *
+     * <p>Since references always use a solid-black canvas, this cleanly isolates the
+     * drawn shape.  The returned {@link Mat} is the same size as {@code refMat} and
+     * is owned by the caller (must be released when done).
+     *
+     * @param refMat 3-channel BGR reference image (not modified)
+     * @return single-channel CV_8UC1 mask, same dimensions as {@code refMat}
+     */
+    public static Mat buildMask(Mat refMat) {
+        Mat grey = new Mat();
+        Imgproc.cvtColor(refMat, grey, Imgproc.COLOR_BGR2GRAY);
+        Mat mask = new Mat();
+        Imgproc.threshold(grey, mask, MASK_THRESH, 255, Imgproc.THRESH_BINARY);
+        grey.release();
+        return mask;
+    }
+
+    /** Threshold above which a greyscale pixel is considered foreground for masking. */
+    public static final int MASK_THRESH = 10;
 
     /** Returns the foreground {@link Scalar} (BGR) assigned to this reference ID. */
     public static Scalar foregroundColour(ReferenceId id) {
@@ -79,24 +140,20 @@ public final class ReferenceImageFactory {
     }
 
     /** Returns a human-readable name for the background fill of the given ID. */
-    public static String backgroundFillName(ReferenceId id) {
-        String[] names = {"solid black","solid dark grey","solid dark blue","solid dark green"};
-        return names[id.ordinal() % 4];
+    public static String backgroundFillName(ReferenceId id) { // NOSONAR id kept for API compat
+        return "solid black";
     }
 
     // -------------------------------------------------------------------------
     // Background builders
     // -------------------------------------------------------------------------
 
-    private static Mat buildBackground(int idx) {
-        Mat m = new Mat(SIZE, SIZE, CvType.CV_8UC3, new Scalar(0, 0, 0));
-        switch (idx % 4) {
-            case 0 -> { /* solid black — already initialised */ }
-            case 1 -> m.setTo(new Scalar(40, 40, 40));   // solid dark grey
-            case 2 -> m.setTo(new Scalar(60,  0,  0));   // solid dark blue
-            case 3 -> m.setTo(new Scalar( 0, 60,  0));   // solid dark green
-        }
-        return m;
+    private static Mat buildBackground(@SuppressWarnings("unused") int idx) {
+        // Always solid black — the shape must sit on a clean black canvas so it
+        // composes correctly onto any scene background and colour pre-filters can
+        // isolate it accurately.  Non-black reference canvases contaminate template
+        // matching, histogram comparison, and CF mask quality.
+        return new Mat(SIZE, SIZE, CvType.CV_8UC3, new Scalar(0, 0, 0));
     }
 
 

@@ -1,8 +1,12 @@
 package org.example;
 
 import org.opencv.core.*;
+import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.Random;
@@ -22,6 +26,8 @@ public final class BackgroundFactory {
     private static int cachedW = -1;
     private static int cachedH = -1;
 
+    private static final Path BACKGROUNDS_DIR = Paths.get("test_output", "backgrounds");
+
     private BackgroundFactory() {}
 
     // -------------------------------------------------------------------------
@@ -29,7 +35,8 @@ public final class BackgroundFactory {
     // -------------------------------------------------------------------------
 
     /**
-     * Returns a BGR {@link Mat} of the requested size for the given background ID.
+     * Returns a cached BGR {@link Mat} of the requested size for the given background ID.
+     * Loads from {@code test_output/backgrounds/<ID>.png} if available.
      * The result is cached — callers must NOT release it; clone if mutation is needed.
      */
     public static synchronized Mat get(BackgroundId id, int w, int h) {
@@ -41,8 +48,35 @@ public final class BackgroundFactory {
         return CACHE.computeIfAbsent(id, k -> build(k, w, h));
     }
 
-    /** Builds a fresh (uncached) copy — use when the caller needs to modify the Mat. */
+    /**
+     * Builds a fresh (uncached) copy.
+     *
+     * <p>Loads from {@code test_output/backgrounds/<ID>.png} if the file exists on disk,
+     * resizing to {@code w×h} if necessary.  Falls back to programmatic generation if
+     * the file is absent or cannot be decoded.
+     */
     public static Mat build(BackgroundId id, int w, int h) {
+        Path file = BACKGROUNDS_DIR.resolve(id.name() + ".png");
+        if (Files.exists(file)) {
+            Mat loaded = Imgcodecs.imread(file.toAbsolutePath().toString());
+            if (loaded != null && !loaded.empty()) {
+                if (loaded.cols() == w && loaded.rows() == h && loaded.channels() == 3) {
+                    return loaded;
+                }
+                // Resize to requested dimensions
+                Mat resized = new Mat();
+                Imgproc.resize(loaded, resized, new Size(w, h));
+                loaded.release();
+                return resized;
+            }
+            if (loaded != null) loaded.release();
+        }
+        // Fallback: generate programmatically
+        return buildProgrammatic(id, w, h);
+    }
+
+    /** Generates a background entirely programmatically (no disk I/O). */
+    public static Mat buildProgrammatic(BackgroundId id, int w, int h) {
         return switch (id) {
             // Tier 1 — solid fills
             case BG_SOLID_BLACK  -> solid(w, h, 0,   0,   0);

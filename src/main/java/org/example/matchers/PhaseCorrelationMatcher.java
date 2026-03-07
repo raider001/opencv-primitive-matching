@@ -59,8 +59,11 @@ public final class PhaseCorrelationMatcher {
         List<AnalysisResult> out = new ArrayList<>(6);
         Mat sceneMat = scene.sceneMat();
 
-        // Reference as normalised greyscale float
-        Mat refFloat = toNormFloat(refMat, null);
+        // Reference as normalised greyscale float — masked to foreground only
+        // so the black canvas does not contribute to the phase correlation peak.
+        Mat refFgMask = ReferenceImageFactory.buildMask(refMat);
+        Mat refFloat  = toNormFloat(refMat, refFgMask);
+        refFgMask.release();
 
         // Hanning window — same size as tile, computed once
         Mat hanning = makeHanningWindow(TILE);
