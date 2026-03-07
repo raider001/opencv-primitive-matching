@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.EnumSet;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ForkJoinPool;
@@ -91,6 +92,39 @@ public abstract class AnalyticalTestBase {
      * }</pre>
      */
     protected boolean sceneFilter(SceneEntry scene) { return true; }
+
+    /**
+     * Override to restrict which CF tiers are exercised.
+     * Return a subset of {@link CfMode} values — variants whose suffix does not match
+     * an enabled mode will be excluded from both execution and output.
+     * Default enables all three tiers (BASE, LOOSE, TIGHT).
+     *
+     * <p>Example — run only the base (no colour filter) variants:
+     * <pre>{@code
+     * \@Override protected EnumSet<CfMode> cfTierFilter() {
+     *     return EnumSet.of(CfMode.NONE);
+     * }
+     * }</pre>
+     */
+    protected EnumSet<CfMode> cfTierFilter() { return EnumSet.allOf(CfMode.class); }
+
+    /**
+     * Filters a set of variant name strings down to only those whose CF suffix
+     * is present in {@link #cfTierFilter()}.
+     */
+    private Set<String> applyTierFilter(Set<String> variants) {
+        EnumSet<CfMode> enabled = cfTierFilter();
+        if (enabled.containsAll(EnumSet.allOf(CfMode.class))) return variants; // fast path
+        return variants.stream().filter(name -> {
+            for (CfMode mode : CfMode.values()) {
+                if (!mode.suffix().isEmpty() && name.endsWith(mode.suffix())) {
+                    return enabled.contains(mode);
+                }
+            }
+            // No CF suffix → it's a base variant (CfMode.NONE)
+            return enabled.contains(CfMode.NONE);
+        }).collect(java.util.stream.Collectors.toSet());
+    }
 
     /**
      * Runs the technique-specific matcher for one (reference, scene) pair.
@@ -212,8 +246,12 @@ public abstract class AnalyticalTestBase {
                     Mat refMat = ReferenceImageFactory.build(refId);
                     try {
                         for (SceneEntry scene : catalogue) {
+                            Set<String> tieredSave = applyTierFilter(saveVariants());
                             List<AnalysisResult> matched =
-                                    runMatcher(refId, refMat, scene, saveVariants(), absOutputDir);
+                                    runMatcher(refId, refMat, scene, tieredSave, absOutputDir)
+                                    .stream()
+                                    .filter(r -> applyTierFilter(Set.of(r.methodName())).contains(r.methodName()))
+                                    .toList();
                             for (AnalysisResult r : matched) {
                                 bag.add(r);
                                 sceneMap.put(r, scene);
@@ -273,7 +311,7 @@ public abstract class AnalyticalTestBase {
         System.out.printf("%n=== %s — Sample Results (first 40 rows) ===%n", techniqueName());
         printAsciiTableWithVerdicts(
                 results.stream()
-                       .filter(r -> saveVariants().contains(r.methodName()))
+                       .filter(r -> applyTierFilter(saveVariants()).contains(r.methodName()))
                        .limit(40)
                        .toList(),
                 verdicts);

@@ -9,6 +9,7 @@ import org.opencv.core.Mat;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
 
@@ -68,13 +69,16 @@ class TemplateMatchingTest extends AnalyticalTestBase {
 
     private static final Set<String> SAVE = MatcherVariant.allNamesOf(TmVariant.class);
 
-    @Override protected String        tag()             { return "TM"; }
-    @Override protected String        techniqueName()   { return "Template Matching"; }
-    @Override protected Path          outputDir()       { return OUT; }
-    @Override protected boolean       debugMode()       { return DEBUG; }
-    @Override protected ReferenceId   debugRef()        { return DEBUG_REF; }
-    @Override protected Set<String>   saveVariants()    { return SAVE; }
-    @Override protected ReferenceId[] referenceFilter() { return REF_FILTER; }
+    private static final EnumSet<CfMode> CF_TIERS = EnumSet.allOf(CfMode.class);
+
+    @Override protected String           tag()             { return "TM"; }
+    @Override protected String           techniqueName()   { return "Template Matching"; }
+    @Override protected Path             outputDir()       { return OUT; }
+    @Override protected boolean          debugMode()       { return DEBUG; }
+    @Override protected ReferenceId      debugRef()        { return DEBUG_REF; }
+    @Override protected Set<String>      saveVariants()    { return SAVE; }
+    @Override protected ReferenceId[]    referenceFilter() { return REF_FILTER; }
+    @Override protected EnumSet<CfMode>  cfTierFilter()    { return CF_TIERS; }
 
     /**
      * Accept only scenes whose variant label is in {@link #SCENE_VARIANTS},

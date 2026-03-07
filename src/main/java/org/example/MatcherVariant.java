@@ -5,8 +5,6 @@ package org.example;
  *
  * <p>Every matcher defines its own enum (e.g. {@link org.example.matchers.TmVariant},
  * {@link org.example.matchers.HistVariant}) that implements this interface.
- * This allows {@link org.example.utilities.AnalyticalTestBase} and the matchers
- * themselves to accept typed variant sets rather than raw strings.
  *
  * <p>The {@link #variantName()} method returns the exact string used in
  * {@link AnalysisResult#methodName()} and in annotated-image directory names on disk.
@@ -19,8 +17,7 @@ public interface MatcherVariant {
 
     /**
      * Convenience: returns a {@code Set<String>} of variant names from an array of
-     * {@code MatcherVariant} values — suitable for passing to
-     * {@link org.example.utilities.AnalyticalTestBase#saveVariants()}.
+     * {@code MatcherVariant} values
      */
     static java.util.Set<String> namesOf(MatcherVariant... variants) {
         java.util.Set<String> set = new java.util.LinkedHashSet<>();
