@@ -1,6 +1,7 @@
 package org.example.matchers;
 
 import org.example.*;
+import org.example.CfMode;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
@@ -31,26 +32,27 @@ import java.util.Set;
  */
 public final class TemplateMatcher {
 
+    /**
+     * Base method names (no CF suffix) — kept for backward compatibility with
+     * any code that iterates base method names as strings.
+     * Prefer {@link TmVariant} for new code.
+     */
     public static final String[] BASE_METHODS = {
-        "TM_SQDIFF", "TM_SQDIFF_NORMED",
-        "TM_CCORR",  "TM_CCORR_NORMED",
-        "TM_CCOEFF", "TM_CCOEFF_NORMED"
+        TmVariant.TM_SQDIFF.variantName(),        TmVariant.TM_SQDIFF_NORMED.variantName(),
+        TmVariant.TM_CCORR.variantName(),         TmVariant.TM_CCORR_NORMED.variantName(),
+        TmVariant.TM_CCOEFF.variantName(),        TmVariant.TM_CCOEFF_NORMED.variantName()
     };
 
-    /** CF1 representative variant names (TM_CCOEFF_NORMED only). */
-    public static final String CF1_LOOSE = "TM_CCOEFF_NORMED_CF1_LOOSE";
-    public static final String CF1_TIGHT = "TM_CCOEFF_NORMED_CF1_TIGHT";
+    /** @deprecated Use {@link TmVariant#TM_CCOEFF_NORMED_CF1_LOOSE}. */
+    @Deprecated public static final String CF1_LOOSE = TmVariant.TM_CCOEFF_NORMED_CF1_LOOSE.variantName();
+    /** @deprecated Use {@link TmVariant#TM_CCOEFF_NORMED_CF1_TIGHT}. */
+    @Deprecated public static final String CF1_TIGHT = TmVariant.TM_CCOEFF_NORMED_CF1_TIGHT.variantName();
 
-    private static final int[] TM_FLAGS = {
-        Imgproc.TM_SQDIFF, Imgproc.TM_SQDIFF_NORMED,
-        Imgproc.TM_CCORR,  Imgproc.TM_CCORR_NORMED,
-        Imgproc.TM_CCOEFF, Imgproc.TM_CCOEFF_NORMED
-    };
-
-    private static final boolean[] LOWER_IS_BETTER = {
-        true,  true,
-        false, false,
-        false, false
+    /** The 6 base (non-CF) variants in order. */
+    private static final TmVariant[] BASE_VARIANTS = {
+        TmVariant.TM_SQDIFF,        TmVariant.TM_SQDIFF_NORMED,
+        TmVariant.TM_CCORR,         TmVariant.TM_CCORR_NORMED,
+        TmVariant.TM_CCOEFF,        TmVariant.TM_CCOEFF_NORMED
     };
 
     private TemplateMatcher() {}
@@ -78,36 +80,39 @@ public final class TemplateMatcher {
         // shape pixels become 255.  This lets matchTemplate ignore the black canvas.
         Mat refMask = ReferenceImageFactory.buildMask(refMat);
 
-        for (int i = 0; i < BASE_METHODS.length; i++) {
-            String  baseName = BASE_METHODS[i];
-            int     flag     = TM_FLAGS[i];
-            boolean lower    = LOWER_IS_BETTER[i];
-
-            out.add(runVariant(baseName, flag, lower, sceneMat, refMat, refMask, 0L,
+        for (TmVariant base : BASE_VARIANTS) {
+            out.add(runVariant(base.variantName(), base.cvFlag(), base.lowerIsBetter(),
+                    sceneMat, refMat, refMask, 0L,
                     referenceId, scene, saveVariants, outputDir));
 
-            // CF_LOOSE — masked BGR scene & template (non-matching pixels zeroed)
+            // CF_LOOSE
             long t0 = System.currentTimeMillis();
+            TmVariant looseVar = variantWithCf(base, CfMode.LOOSE);
             Mat sL = ColourPreFilter.applyMaskedBgrToScene(sceneMat, referenceId, ColourPreFilter.LOOSE);
             Mat rL = ColourPreFilter.applyMaskedBgrToReference(refMat, referenceId, ColourPreFilter.LOOSE);
             long cfL = System.currentTimeMillis() - t0;
-            out.add(runVariant(baseName + "_CF_LOOSE", flag, lower, sL, rL, refMask, cfL,
-                    referenceId, scene, saveVariants, outputDir));
+            out.add(runVariant(looseVar.variantName(), base.cvFlag(), base.lowerIsBetter(),
+                    sL, rL, refMask, cfL, referenceId, scene, saveVariants, outputDir));
             sL.release(); rL.release();
 
-            // CF_TIGHT — masked BGR scene & template
+            // CF_TIGHT
             t0 = System.currentTimeMillis();
+            TmVariant tightVar = variantWithCf(base, CfMode.TIGHT);
             Mat sT = ColourPreFilter.applyMaskedBgrToScene(sceneMat, referenceId, ColourPreFilter.TIGHT);
             Mat rT = ColourPreFilter.applyMaskedBgrToReference(refMat, referenceId, ColourPreFilter.TIGHT);
             long cfT = System.currentTimeMillis() - t0;
-            out.add(runVariant(baseName + "_CF_TIGHT", flag, lower, sT, rT, refMask, cfT,
-                    referenceId, scene, saveVariants, outputDir));
+            out.add(runVariant(tightVar.variantName(), base.cvFlag(), base.lowerIsBetter(),
+                    sT, rT, refMask, cfT, referenceId, scene, saveVariants, outputDir));
             sT.release(); rT.release();
         }
 
         // ---- CF1 variants (TM_CCOEFF_NORMED inside colour-first windows) ----
-        for (String cf1Name : new String[]{CF1_LOOSE, CF1_TIGHT}) {
-            double tol = cf1Name.endsWith("LOOSE") ? ColourPreFilter.LOOSE : ColourPreFilter.TIGHT;
+        for (TmVariant cf1 : new TmVariant[]{
+                TmVariant.TM_CCOEFF_NORMED_CF1_LOOSE,
+                TmVariant.TM_CCOEFF_NORMED_CF1_TIGHT}) {
+
+            String cf1Name = cf1.variantName();
+            double tol = cf1.cfMode().hueTolerance();
             long t0 = System.currentTimeMillis();
             List<Rect> windows = ColourFirstLocator.propose(sceneMat, referenceId, tol);
             long cfMs = System.currentTimeMillis() - t0;
@@ -147,6 +152,15 @@ public final class TemplateMatcher {
     // =========================================================================
     // Single variant
     // =========================================================================
+
+    /** Finds the TmVariant for a base variant with a given CF mode applied. */
+    private static TmVariant variantWithCf(TmVariant base, CfMode cf) {
+        String targetName = base.variantName() + cf.suffix();
+        for (TmVariant v : TmVariant.values()) {
+            if (v.variantName().equals(targetName)) return v;
+        }
+        throw new IllegalArgumentException("No TmVariant for " + targetName);
+    }
 
     /**
      * Whether a given TM flag supports OpenCV's native masked matchTemplate.

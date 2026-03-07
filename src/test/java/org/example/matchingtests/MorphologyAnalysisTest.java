@@ -1,5 +1,8 @@
-package org.example;
+package org.example.matchingtests;
 
+import org.example.AnalysisResult;
+import org.example.ReferenceId;
+import org.example.SceneEntry;
 import org.example.matchers.MorphologyAnalyzer;
 import org.example.utilities.AnalyticalTestBase;
 import org.junit.jupiter.api.DisplayName;
@@ -38,8 +41,8 @@ class MorphologyAnalysisTest extends AnalyticalTestBase {
 
     @Override
     protected List<AnalysisResult> runMatcher(ReferenceId refId, Mat refMat,
-                                               SceneEntry scene, Set<String> saveVariants,
-                                               Path outputDir) {
+                                              SceneEntry scene, Set<String> saveVariants,
+                                              Path outputDir) {
         return MorphologyAnalyzer.match(refId, refMat, scene, saveVariants, outputDir);
     }
 }

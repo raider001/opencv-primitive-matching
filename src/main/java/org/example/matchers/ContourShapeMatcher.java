@@ -39,10 +39,11 @@ import java.util.Set;
  */
 public final class ContourShapeMatcher {
 
-    public static final String[] BASE_METHODS = {
-        "CONTOURS_MATCH_I1",
-        "CONTOURS_MATCH_I2",
-        "CONTOURS_MATCH_I3"
+    /** @deprecated Use {@link ContourVariant} enum values. */
+    @Deprecated public static final String[] BASE_METHODS = {
+        ContourVariant.CONTOURS_MATCH_I1.variantName(),
+        ContourVariant.CONTOURS_MATCH_I2.variantName(),
+        ContourVariant.CONTOURS_MATCH_I3.variantName()
     };
 
     private static final int[] CV_METHODS = {
@@ -51,9 +52,10 @@ public final class ContourShapeMatcher {
         Imgproc.CONTOURS_MATCH_I3
     };
 
-    /** CF1 variant names (Milestone 15 — Colour-First Region Proposal). */
-    public static final String VAR_CF1_LOOSE = "CONTOURS_MATCH_I1_CF1_LOOSE";
-    public static final String VAR_CF1_TIGHT = "CONTOURS_MATCH_I1_CF1_TIGHT";
+    /** @deprecated Use {@link ContourVariant#CONTOURS_MATCH_I1_CF1_LOOSE}. */
+    @Deprecated public static final String VAR_CF1_LOOSE = ContourVariant.CONTOURS_MATCH_I1_CF1_LOOSE.variantName();
+    /** @deprecated Use {@link ContourVariant#CONTOURS_MATCH_I1_CF1_TIGHT}. */
+    @Deprecated public static final String VAR_CF1_TIGHT = ContourVariant.CONTOURS_MATCH_I1_CF1_TIGHT.variantName();
 
     /** Binary threshold applied before contour extraction. */
     private static final int BINARISE_THRESH = 30;

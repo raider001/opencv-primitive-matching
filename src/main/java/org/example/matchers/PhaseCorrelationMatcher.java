@@ -39,8 +39,10 @@ import java.util.Set;
  */
 public final class PhaseCorrelationMatcher {
 
-    public static final String VAR_PLAIN   = "PHASE_CORRELATE";
-    public static final String VAR_HANNING = "PHASE_CORRELATE_HANNING";
+    /** @deprecated Use {@link PhaseVariant#PHASE_CORRELATE}. */
+    @Deprecated public static final String VAR_PLAIN   = PhaseVariant.PHASE_CORRELATE.variantName();
+    /** @deprecated Use {@link PhaseVariant#PHASE_CORRELATE_HANNING}. */
+    @Deprecated public static final String VAR_HANNING = PhaseVariant.PHASE_CORRELATE_HANNING.variantName();
 
     private static final int TILE   = 128;
     private static final int STRIDE = 8;

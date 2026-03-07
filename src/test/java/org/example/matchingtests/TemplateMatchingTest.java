@@ -1,6 +1,8 @@
-package org.example;
+package org.example.matchingtests;
 
+import org.example.*;
 import org.example.matchers.TemplateMatcher;
+import org.example.matchers.TmVariant;
 import org.example.utilities.AnalyticalTestBase;
 import org.junit.jupiter.api.DisplayName;
 import org.opencv.core.Mat;
@@ -53,42 +55,30 @@ class TemplateMatchingTest extends AnalyticalTestBase {
      * Non-REF_FILTER primary references are filtered by {@link AnalyticalTestBase}
      * before this hook is invoked.
      */
-    private static final Set<String> SCENE_VARIANTS = Set.of(
+    private static final Set<SceneVariant> SCENE_VARIANTS = Set.of(
         // A_CLEAN — one per background type
-//        "clean_bg_solid_black",
-        "clean_bg_noise_light",
-        "clean_bg_gradient_h_colour",
-        "clean_bg_random_mixed",
+//      SceneVariant.CLEAN_BG_SOLID_BLACK,
+        SceneVariant.CLEAN_BG_NOISE_LIGHT,
+        SceneVariant.CLEAN_BG_GRADIENT_H_COLOUR,
+        SceneVariant.CLEAN_BG_RANDOM_MIXED,
 
-        // B_TRANSFORMED — rotations, scales, offsets, combos
-        "rot_45",
-        "rot_90",
-        "rot_180",
-        "scale_0.50"   // JSON stores "scale_0.50" (dot), not underscore
-//        "scale_1.50",
-//        "scale0_75_rot30",
-//        "scale1_5_rot45",
-//        "offset_topleft",
-//        "offset_botright"
+        // B_TRANSFORMED — rotations, scales
+        SceneVariant.ROT_45,
+        SceneVariant.ROT_90,
+        SceneVariant.ROT_180,
+        SceneVariant.SCALE_0_50
 
         // C_DEGRADED — one per degradation type
-//        "noise_s10",
-//        "noise_s25",
-//        "blur_5x5",
-//        "contrast_40pct",
-//        "occ_25pct",
-//        "occ_50pct",
-//        "hue_shift_40"
+//      SceneVariant.NOISE_S10,
+//      SceneVariant.NOISE_S25,
+//      SceneVariant.BLUR_5X5,
+//      SceneVariant.CONTRAST_40PCT,
+//      SceneVariant.OCC_25PCT,
+//      SceneVariant.OCC_50PCT,
+//      SceneVariant.HUE_SHIFT_40
     );
 
-    private static final Set<String> SAVE = Set.of(
-            "TM_SQDIFF",          "TM_SQDIFF_CF_LOOSE",          "TM_SQDIFF_CF_TIGHT",
-            "TM_SQDIFF_NORMED",   "TM_SQDIFF_NORMED_CF_LOOSE",   "TM_SQDIFF_NORMED_CF_TIGHT",
-            "TM_CCORR",           "TM_CCORR_CF_LOOSE",           "TM_CCORR_CF_TIGHT",
-            "TM_CCORR_NORMED",    "TM_CCORR_NORMED_CF_LOOSE",    "TM_CCORR_NORMED_CF_TIGHT",
-            "TM_CCOEFF",          "TM_CCOEFF_CF_LOOSE",          "TM_CCOEFF_CF_TIGHT",
-            "TM_CCOEFF_NORMED",   "TM_CCOEFF_NORMED_CF_LOOSE",   "TM_CCOEFF_NORMED_CF_TIGHT"
-    );
+    private static final Set<String> SAVE = MatcherVariant.allNamesOf(TmVariant.class);
 
     @Override protected String        tag()             { return "TM"; }
     @Override protected String        techniqueName()   { return "Template Matching"; }
@@ -110,13 +100,13 @@ class TemplateMatchingTest extends AnalyticalTestBase {
     @Override
     protected boolean sceneFilter(SceneEntry scene) {
         if (scene.category() == SceneCategory.D_NEGATIVE) return true;
-        return SCENE_VARIANTS.contains(scene.variantLabel());
+        return SCENE_VARIANTS.stream().anyMatch(v -> v.matches(scene));
     }
 
     @Override
     protected List<AnalysisResult> runMatcher(ReferenceId refId, Mat refMat,
-                                               SceneEntry scene, Set<String> saveVariants,
-                                               Path outputDir) {
+                                              SceneEntry scene, Set<String> saveVariants,
+                                              Path outputDir) {
         return TemplateMatcher.match(refId, refMat, scene, saveVariants, outputDir);
     }
 }

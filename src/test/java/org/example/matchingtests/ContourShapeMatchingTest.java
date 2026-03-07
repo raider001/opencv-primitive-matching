@@ -1,6 +1,8 @@
-package org.example;
+package org.example.matchingtests;
 
+import org.example.*;
 import org.example.matchers.ContourShapeMatcher;
+import org.example.matchers.ContourVariant;
 import org.example.utilities.AnalyticalTestBase;
 import org.junit.jupiter.api.DisplayName;
 import org.opencv.core.Mat;
@@ -32,20 +34,15 @@ class ContourShapeMatchingTest extends AnalyticalTestBase {
         ReferenceId.TEXT_A,
     };
 
-    private static final Set<String> SCENE_VARIANTS = Set.of(
-        "clean_bg_noise_light",
-        "clean_bg_gradient_h_colour",
-        "clean_bg_random_mixed",
-        "rot_45", "rot_90", "rot_180",
-        "scale_0.50"
+    private static final Set<SceneVariant> SCENE_VARIANTS = Set.of(
+        SceneVariant.CLEAN_BG_NOISE_LIGHT,
+        SceneVariant.CLEAN_BG_GRADIENT_H_COLOUR,
+        SceneVariant.CLEAN_BG_RANDOM_MIXED,
+        SceneVariant.ROT_45, SceneVariant.ROT_90, SceneVariant.ROT_180,
+        SceneVariant.SCALE_0_50
     );
 
-    private static final Set<String> SAVE = Set.of(
-            "CONTOURS_MATCH_I1", "CONTOURS_MATCH_I1_CF_LOOSE", "CONTOURS_MATCH_I1_CF_TIGHT",
-            "CONTOURS_MATCH_I2", "CONTOURS_MATCH_I2_CF_LOOSE", "CONTOURS_MATCH_I2_CF_TIGHT",
-            "CONTOURS_MATCH_I3", "CONTOURS_MATCH_I3_CF_LOOSE", "CONTOURS_MATCH_I3_CF_TIGHT",
-            ContourShapeMatcher.VAR_CF1_LOOSE, ContourShapeMatcher.VAR_CF1_TIGHT
-    );
+    private static final Set<String> SAVE = MatcherVariant.allNamesOf(ContourVariant.class);
 
     @Override protected String        tag()             { return "CSM"; }
     @Override protected String        techniqueName()   { return "Contour Shape Matching (Hu Moments)"; }
@@ -58,14 +55,13 @@ class ContourShapeMatchingTest extends AnalyticalTestBase {
     @Override
     protected boolean sceneFilter(SceneEntry scene) {
         if (scene.category() == SceneCategory.D_NEGATIVE) return true;
-        return SCENE_VARIANTS.contains(scene.variantLabel());
+        return SCENE_VARIANTS.stream().anyMatch(v -> v.matches(scene));
     }
 
     @Override
     protected List<AnalysisResult> runMatcher(ReferenceId refId, Mat refMat,
-                                               SceneEntry scene, Set<String> saveVariants,
-                                               Path outputDir) {
+                                              SceneEntry scene, Set<String> saveVariants,
+                                              Path outputDir) {
         return ContourShapeMatcher.match(refId, refMat, scene, saveVariants, outputDir);
     }
 }
-

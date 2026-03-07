@@ -41,9 +41,10 @@ public final class GeneralizedHoughDetector {
     // -------------------------------------------------------------------------
     // Variant name constants
     // -------------------------------------------------------------------------
-    public static final String VAR_BALLARD = "GeneralizedHoughBallard";
-    /** Named for the milestone spec; implemented as fine-resolution Ballard (see class javadoc). */
-    public static final String VAR_GUIL    = "GeneralizedHoughGuil";
+    /** @deprecated Use {@link GenHoughVariant#BALLARD}. */
+    @Deprecated public static final String VAR_BALLARD = GenHoughVariant.BALLARD.variantName();
+    /** @deprecated Use {@link GenHoughVariant#GUIL}. Named for the milestone spec; see class javadoc. */
+    @Deprecated public static final String VAR_GUIL    = GenHoughVariant.GUIL.variantName();
 
     // -------------------------------------------------------------------------
     // Shared edge parameters

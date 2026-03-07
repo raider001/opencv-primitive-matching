@@ -38,23 +38,33 @@ public final class FeatureMatcher {
     // Variant descriptors
     // -------------------------------------------------------------------------
 
+    /**
+     * Simple record pairing a detector name with its descriptor distance type.
+     * @deprecated Prefer {@link FeatureVariant} directly.
+     */
+    @Deprecated
     public record VariantDef(String name, boolean binary) {}
 
-    /** All variants attempted. SIFT is tried first and skipped if unavailable. */
+    /**
+     * Base detector definitions in the order they are attempted.
+     * @deprecated Use {@link FeatureVariant} values filtered by {@code !isCf1() && cfMode()==CfMode.NONE}.
+     */
+    @Deprecated
     public static final VariantDef[] VARIANTS = {
-        new VariantDef("SIFT",  false),
-        new VariantDef("ORB",   true),
-        new VariantDef("AKAZE", true),
-        new VariantDef("BRISK", true),
-        new VariantDef("KAZE",  false),
+        new VariantDef(FeatureVariant.SIFT.variantName(),  false),
+        new VariantDef(FeatureVariant.ORB.variantName(),   true),
+        new VariantDef(FeatureVariant.AKAZE.variantName(), true),
+        new VariantDef(FeatureVariant.BRISK.variantName(), true),
+        new VariantDef(FeatureVariant.KAZE.variantName(),  false),
     };
 
     private static final double RATIO_THRESH  = 0.75;
     private static final int    MIN_MATCHES   = 4;
 
-    /** CF1 representative variant names (SIFT only). */
-    public static final String CF1_LOOSE = "SIFT_CF1_LOOSE";
-    public static final String CF1_TIGHT = "SIFT_CF1_TIGHT";
+    /** @deprecated Use {@link FeatureVariant#SIFT_CF1_LOOSE}. */
+    @Deprecated public static final String CF1_LOOSE = FeatureVariant.SIFT_CF1_LOOSE.variantName();
+    /** @deprecated Use {@link FeatureVariant#SIFT_CF1_TIGHT}. */
+    @Deprecated public static final String CF1_TIGHT = FeatureVariant.SIFT_CF1_TIGHT.variantName();
 
     private FeatureMatcher() {}
 

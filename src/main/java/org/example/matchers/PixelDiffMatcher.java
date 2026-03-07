@@ -51,9 +51,12 @@ import java.util.Set;
  */
 public final class PixelDiffMatcher {
 
-    public static final String VAR_BASE  = "PIXEL_DIFF";
-    public static final String VAR_LOOSE = "PIXEL_DIFF_CF_LOOSE";
-    public static final String VAR_TIGHT = "PIXEL_DIFF_CF_TIGHT";
+    /** @deprecated Use {@link PixelDiffVariant#PIXEL_DIFF}. */
+    @Deprecated public static final String VAR_BASE  = PixelDiffVariant.PIXEL_DIFF.variantName();
+    /** @deprecated Use {@link PixelDiffVariant#PIXEL_DIFF_CF_LOOSE}. */
+    @Deprecated public static final String VAR_LOOSE = PixelDiffVariant.PIXEL_DIFF_CF_LOOSE.variantName();
+    /** @deprecated Use {@link PixelDiffVariant#PIXEL_DIFF_CF_TIGHT}. */
+    @Deprecated public static final String VAR_TIGHT = PixelDiffVariant.PIXEL_DIFF_CF_TIGHT.variantName();
 
     /** Reference tile size — matches all reference images. */
     private static final int TILE   = 128;

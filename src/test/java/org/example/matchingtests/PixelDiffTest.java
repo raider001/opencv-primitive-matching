@@ -1,6 +1,8 @@
-package org.example;
+package org.example.matchingtests;
 
+import org.example.*;
 import org.example.matchers.PixelDiffMatcher;
+import org.example.matchers.PixelDiffVariant;
 import org.example.utilities.AnalyticalTestBase;
 import org.junit.jupiter.api.DisplayName;
 import org.opencv.core.Mat;
@@ -23,11 +25,7 @@ class PixelDiffTest extends AnalyticalTestBase {
     private static final ReferenceId DEBUG_REF = ReferenceId.CIRCLE_OUTLINE;
     private static final Path        OUT       = Paths.get("test_output", "pixel_diff");
 
-    private static final Set<String> SAVE = Set.of(
-            PixelDiffMatcher.VAR_BASE,
-            PixelDiffMatcher.VAR_LOOSE,
-            PixelDiffMatcher.VAR_TIGHT
-    );
+    private static final Set<String> SAVE = MatcherVariant.allNamesOf(PixelDiffVariant.class);
 
     @Override protected String      tag()           { return "PD"; }
     @Override protected String      techniqueName() { return "Pixel Diff (Baseline)"; }
@@ -38,9 +36,8 @@ class PixelDiffTest extends AnalyticalTestBase {
 
     @Override
     protected List<AnalysisResult> runMatcher(ReferenceId refId, Mat refMat,
-                                               SceneEntry scene, Set<String> saveVariants,
-                                               Path outputDir) {
+                                              SceneEntry scene, Set<String> saveVariants,
+                                              Path outputDir) {
         return PixelDiffMatcher.match(refId, refMat, scene, saveVariants, outputDir);
     }
 }
-

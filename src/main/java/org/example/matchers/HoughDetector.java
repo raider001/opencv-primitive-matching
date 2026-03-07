@@ -48,8 +48,10 @@ public final class HoughDetector {
     // Variant names
     // -------------------------------------------------------------------------
 
-    public static final String VAR_LINES   = "HoughLinesP";
-    public static final String VAR_CIRCLES = "HoughCircles";
+    /** @deprecated Use {@link HoughVariant#HOUGH_LINES_P}. */
+    @Deprecated public static final String VAR_LINES   = HoughVariant.HOUGH_LINES_P.variantName();
+    /** @deprecated Use {@link HoughVariant#HOUGH_CIRCLES}. */
+    @Deprecated public static final String VAR_CIRCLES = HoughVariant.HOUGH_CIRCLES.variantName();
 
     // -------------------------------------------------------------------------
     // HoughLinesP parameters

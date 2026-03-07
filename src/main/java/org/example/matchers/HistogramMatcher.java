@@ -1,6 +1,7 @@
 package org.example.matchers;
 
 import org.example.*;
+import org.example.CfMode;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
@@ -52,10 +53,14 @@ public final class HistogramMatcher {
     // -------------------------------------------------------------------------
     // Variant name constants
     // -------------------------------------------------------------------------
-    public static final String VAR_CORREL   = "HISTCMP_CORREL";
-    public static final String VAR_CHISQR   = "HISTCMP_CHISQR";
-    public static final String VAR_INTERSECT = "HISTCMP_INTERSECT";
-    public static final String VAR_BHATTA   = "HISTCMP_BHATTACHARYYA";
+    /** @deprecated Use {@link HistVariant#HISTCMP_CORREL}. */
+    @Deprecated public static final String VAR_CORREL    = HistVariant.HISTCMP_CORREL.variantName();
+    /** @deprecated Use {@link HistVariant#HISTCMP_CHISQR}. */
+    @Deprecated public static final String VAR_CHISQR    = HistVariant.HISTCMP_CHISQR.variantName();
+    /** @deprecated Use {@link HistVariant#HISTCMP_INTERSECT}. */
+    @Deprecated public static final String VAR_INTERSECT = HistVariant.HISTCMP_INTERSECT.variantName();
+    /** @deprecated Use {@link HistVariant#HISTCMP_BHATTACHARYYA}. */
+    @Deprecated public static final String VAR_BHATTA    = HistVariant.HISTCMP_BHATTACHARYYA.variantName();
 
     // Sliding-window step size — stride of 8px keeps runtime reasonable
     private static final int STRIDE = 8;
@@ -100,26 +105,19 @@ public final class HistogramMatcher {
         Mat tightMask     = ColourPreFilter.applyToScene(sceneMat, referenceId, ColourPreFilter.TIGHT);
         long cfTMs = System.currentTimeMillis() - t0;
 
-        // Run all 4 methods × 3 CF modes
-        for (int mi = 0; mi < 4; mi++) {
-            String base = switch (mi) {
-                case 0 -> VAR_CORREL;
-                case 1 -> VAR_CHISQR;
-                case 2 -> VAR_INTERSECT;
-                default -> VAR_BHATTA;
-            };
-            int cvMethod = switch (mi) {
-                case 0 -> Imgproc.HISTCMP_CORREL;
-                case 1 -> Imgproc.HISTCMP_CHISQR;
-                case 2 -> Imgproc.HISTCMP_INTERSECT;
-                default -> Imgproc.HISTCMP_BHATTACHARYYA;
-            };
-
-            out.add(runVariant(base, cvMethod, sceneMat, sceneHsv, null,
+        // Run all 4 base methods, each in base / CF_LOOSE / CF_TIGHT mode
+        HistVariant[] bases = {
+            HistVariant.HISTCMP_CORREL,
+            HistVariant.HISTCMP_CHISQR,
+            HistVariant.HISTCMP_INTERSECT,
+            HistVariant.HISTCMP_BHATTACHARYYA
+        };
+        for (HistVariant base : bases) {
+            out.add(runVariant(base.variantName(), base.cvMethod(), sceneMat, sceneHsv, null,
                     refHist, refHistSum, 0L, referenceId, scene, saveVariants, outputDir));
-            out.add(runVariant(base + "_CF_LOOSE", cvMethod, sceneMat, sceneHsv, looseMask,
+            out.add(runVariant(base.variantName() + CfMode.LOOSE.suffix(), base.cvMethod(), sceneMat, sceneHsv, looseMask,
                     refHist, refHistSum, cfLMs, referenceId, scene, saveVariants, outputDir));
-            out.add(runVariant(base + "_CF_TIGHT", cvMethod, sceneMat, sceneHsv, tightMask,
+            out.add(runVariant(base.variantName() + CfMode.TIGHT.suffix(), base.cvMethod(), sceneMat, sceneHsv, tightMask,
                     refHist, refHistSum, cfTMs, referenceId, scene, saveVariants, outputDir));
         }
 
