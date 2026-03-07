@@ -313,17 +313,69 @@ public final class HtmlReportWriter {
                 String baseMethod = mEntry.getKey();
                 List<AnalysisResult> mResults = mEntry.getValue();
 
-                // Compute aggregate score for summary badge
-                OptionalDouble avgScore = mResults.stream()
-                        .filter(r -> !r.isError())
-                        .mapToDouble(AnalysisResult::matchScorePercent)
-                        .average();
-                String avgBadge = avgScore.isPresent()
-                        ? String.format(" <span class=\"method-avg %s\">avg %.0f%%</span>",
-                                avgScore.getAsDouble() >= 70 ? "g"
-                                        : avgScore.getAsDouble() >= 40 ? "y" : "r",
-                                avgScore.getAsDouble())
-                        : "";
+                // Build accuracy badge from verdict data when available,
+                // otherwise fall back to the raw avg match-score.
+                String avgBadge;
+                long total = mResults.stream().filter(r -> !r.isError()).count();
+                long withVerdicts = mResults.stream()
+                        .filter(r -> verdicts.containsKey(r)).count();
+
+                if (withVerdicts > 0 && total > 0) {
+                    // Positives: scenes where the queried shape IS present
+                    long posTotal  = mResults.stream().filter(r -> {
+                        DetectionVerdict v = verdicts.get(r);
+                        return v == DetectionVerdict.CORRECT
+                            || v == DetectionVerdict.WRONG_LOCATION
+                            || v == DetectionVerdict.MISSED;
+                    }).count();
+                    long correct   = mResults.stream()
+                            .filter(r -> verdicts.get(r) == DetectionVerdict.CORRECT).count();
+
+                    // Negatives: scenes where the queried shape is NOT present
+                    long negTotal  = mResults.stream().filter(r -> {
+                        DetectionVerdict v = verdicts.get(r);
+                        return v == DetectionVerdict.CORRECTLY_REJECTED
+                            || v == DetectionVerdict.FALSE_ALARM;
+                    }).count();
+                    long rejected  = mResults.stream()
+                            .filter(r -> verdicts.get(r) == DetectionVerdict.CORRECTLY_REJECTED).count();
+
+                    double pctFound    = posTotal  > 0 ? correct  * 100.0 / posTotal  : 0;
+                    double pctRejected = negTotal  > 0 ? rejected * 100.0 / negTotal  : 0;
+
+                    // Overall colour: green if both ≥ 80%, yellow if both ≥ 60%, else red
+                    double combined = (correct + rejected) * 100.0 / Math.max(1, posTotal + negTotal);
+                    String accCls = combined >= 80 ? "g" : combined >= 60 ? "y" : "r";
+
+                    String tip = String.format(
+                            "Correctly Found: %d of %d positive scenes (%.0f%%) — "
+                          + "shape was present, detected, and bbox was on target  |  "
+                          + "Correctly Rejected: %d of %d negative scenes (%.0f%%) — "
+                          + "shape was absent and detector stayed silent",
+                            correct,  posTotal,  pctFound,
+                            rejected, negTotal,  pctRejected);
+
+                    avgBadge = String.format(
+                            " <span class=\"method-avg %s acc-badge\" title=\"%s\">"
+                          + "<span class=\"acc-found\">%.0f%%&#x2705;</span>"
+                          + " <span class=\"acc-sep\">/</span>"
+                          + " <span class=\"acc-rej\">%.0f%%&#x2713;</span>"
+                          + "</span>",
+                            accCls, esc(tip),
+                            pctFound, pctRejected);
+                } else {
+                    // No verdict data — fall back to avg match score
+                    OptionalDouble avgScore = mResults.stream()
+                            .filter(r -> !r.isError())
+                            .mapToDouble(AnalysisResult::matchScorePercent)
+                            .average();
+                    avgBadge = avgScore.isPresent()
+                            ? String.format(" <span class=\"method-avg %s\" title=\"Average raw match score\">avg %.0f%%</span>",
+                                    avgScore.getAsDouble() >= 70 ? "g"
+                                            : avgScore.getAsDouble() >= 40 ? "y" : "r",
+                                    avgScore.getAsDouble())
+                            : "";
+                }
 
                 sb.append("<details class=\"method-group\" open>\n");
                 sb.append("<summary class=\"method-group-summary\">")
@@ -868,6 +920,12 @@ public final class HtmlReportWriter {
         .cf-badge { display: inline-block; font-size: 0.68rem; border-radius: 3px;
                      padding: 1px 4px; background: #1e243c; color: #7090cc;
                      font-weight: bold; }
+        /* Accuracy badge sub-parts */
+        .acc-badge { cursor: help; display: inline-flex; align-items: center;
+                      gap: 2px; padding: 1px 5px; }
+        .acc-found  { color: #4ddf80; }
+        .acc-rej    { color: #6699aa; }
+        .acc-sep    { color: #445; font-weight: normal; }
 
         /* CF comparison table summary row */
         tr.summary-row td { background: #1a1a2e; font-style: italic; }
