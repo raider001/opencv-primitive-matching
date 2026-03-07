@@ -179,6 +179,64 @@ public final class HoughDetector {
         sceneCannyLoose.release();
         sceneCannyTight.release();
 
+        // =====================================================================
+        // CF1 variants — HoughLinesP inside colour-first windows
+        // =====================================================================
+        for (HoughVariant cf1 : new HoughVariant[]{
+                HoughVariant.HOUGH_LINES_P_CF1_LOOSE,
+                HoughVariant.HOUGH_LINES_P_CF1_TIGHT}) {
+
+            String cf1Name  = cf1.variantName();
+            double tol      = cf1.cfMode().hueTolerance();
+            long   cf1Start = System.currentTimeMillis();
+            List<Rect> windows = ColourFirstLocator.propose(sceneMat, referenceId, tol);
+            long cfMs = System.currentTimeMillis() - cf1Start;
+
+            // Re-detect reference lines for scoring baseline
+            Mat rfGrey  = toGrey(refMat);
+            Mat rfCanny = canny(rfGrey);
+            rfGrey.release();
+            List<double[]> rfLines = detectLines(rfCanny);
+            rfCanny.release();
+
+            double        bestScore  = -1;
+            Rect          bestBbox   = windows.get(0);
+            List<double[]> bestLines = List.of();
+
+            for (Rect w : windows) {
+                Mat cropBgr   = new Mat(sceneMat, w);
+                Mat cropGrey  = toGrey(cropBgr);
+                Mat cropCanny = canny(cropGrey);
+                cropGrey.release();
+                AnalysisResult r = runLinesVariant(cf1Name, cropBgr, cropCanny,
+                        rfLines, cfMs, referenceId, scene, saveVariants, outputDir);
+                cropCanny.release();
+                if (r.matchScorePercent() > bestScore) {
+                    bestScore = r.matchScorePercent();
+                    Rect lb   = r.boundingRect();
+                    if (lb != null)
+                        bestBbox = new Rect(w.x + lb.x, w.y + lb.y, lb.width, lb.height);
+                    // Re-detect lines in the winning crop for annotation
+                    Mat wCropGrey  = toGrey(cropBgr);
+                    Mat wCropCanny = canny(wCropGrey);
+                    wCropGrey.release();
+                    bestLines = detectLines(wCropCanny);
+                    wCropCanny.release();
+                }
+            }
+
+            Path savedPath = null;
+            if (saveVariants.contains(cf1Name)) {
+                savedPath = writeLinesAnnotated(sceneMat, bestLines, bestBbox,
+                        cf1Name, Math.max(0, bestScore), referenceId, scene, outputDir);
+            }
+            out.add(new AnalysisResult(cf1Name, referenceId,
+                    scene.variantLabel(), scene.category(), scene.backgroundId(),
+                    Math.max(0, bestScore), bestBbox,
+                    System.currentTimeMillis() - cf1Start, cfMs,
+                    scenePx(scene), savedPath, false, null));
+        }
+
         return out;
     }
 

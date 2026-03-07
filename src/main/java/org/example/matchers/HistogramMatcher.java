@@ -126,6 +126,56 @@ public final class HistogramMatcher {
         looseMask.release();
         tightMask.release();
 
+        // ---- CF1 variants (HISTCMP_CORREL inside colour-first windows) ----
+        for (HistVariant cf1 : new HistVariant[]{
+                HistVariant.HISTCMP_CORREL_CF1_LOOSE,
+                HistVariant.HISTCMP_CORREL_CF1_TIGHT}) {
+
+            String cf1Name  = cf1.variantName();
+            double tol      = cf1.cfMode().hueTolerance();
+            long   cf1Start = System.currentTimeMillis();
+            List<Rect> windows = ColourFirstLocator.propose(sceneMat, referenceId, tol);
+            long cfMs = System.currentTimeMillis() - cf1Start;
+
+            // Recompute ref histogram (already released above)
+            Mat rHsv     = toHsv(refMat);
+            Mat rFgMask  = ReferenceImageFactory.buildMask(refMat);
+            Mat rHist    = calcHSHist(rHsv, rFgMask);
+            double rHistSum = Core.sumElems(rHist).val[0];
+            rHsv.release(); rFgMask.release();
+
+            double bestScore = -1;
+            Rect   bestBbox  = windows.get(0);
+
+            for (Rect w : windows) {
+                Mat cropBgr    = new Mat(sceneMat, w);
+                Mat cropMask   = ColourPreFilter.applyToScene(cropBgr, referenceId, tol);
+                Mat cropHsv    = toHsv(cropBgr);
+                AnalysisResult r = runVariant(cf1Name, Imgproc.HISTCMP_CORREL,
+                        cropBgr, cropHsv, cropMask,
+                        rHist, rHistSum, cfMs, referenceId, scene, saveVariants, outputDir);
+                cropMask.release(); cropHsv.release();
+                if (r.matchScorePercent() > bestScore) {
+                    bestScore = r.matchScorePercent();
+                    Rect lb   = r.boundingRect();
+                    if (lb != null)
+                        bestBbox = new Rect(w.x + lb.x, w.y + lb.y, lb.width, lb.height);
+                }
+            }
+            rHist.release();
+
+            Path savedPath = null;
+            if (saveVariants.contains(cf1Name)) {
+                savedPath = writeAnnotated(sceneMat, bestBbox, cf1Name,
+                        Math.max(0, bestScore), referenceId, scene, outputDir);
+            }
+            out.add(new AnalysisResult(cf1Name, referenceId,
+                    scene.variantLabel(), scene.category(), scene.backgroundId(),
+                    Math.max(0, bestScore), bestBbox,
+                    System.currentTimeMillis() - cf1Start, cfMs,
+                    scenePx(scene), savedPath, false, null));
+        }
+
         return out;
     }
 

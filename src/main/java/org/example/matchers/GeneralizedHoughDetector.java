@@ -143,6 +143,54 @@ public final class GeneralizedHoughDetector {
         sceneGreyLoose.release();
         sceneGreyTight.release();
 
+        // =====================================================================
+        // CF1 variants — Ballard inside colour-first windows
+        // =====================================================================
+        for (GenHoughVariant cf1 : new GenHoughVariant[]{
+                GenHoughVariant.BALLARD_CF1_LOOSE,
+                GenHoughVariant.BALLARD_CF1_TIGHT}) {
+
+            String cf1Name  = cf1.variantName();
+            double tol      = cf1.cfMode().hueTolerance();
+            long   cf1Start = System.currentTimeMillis();
+            List<Rect> windows = ColourFirstLocator.propose(sceneMat, referenceId, tol);
+            long cfMs = System.currentTimeMillis() - cf1Start;
+
+            Mat rfGrey = toGrey(refMat);
+            double bestScore = -1;
+            Rect   bestBbox  = windows.get(0);
+
+            for (Rect w : windows) {
+                Mat cropMaskedBgr = applyMaskBGR(new Mat(sceneMat, w),
+                        ColourPreFilter.applyToScene(new Mat(sceneMat, w), referenceId, tol));
+                Mat cropGrey = toGrey(cropMaskedBgr);
+                cropMaskedBgr.release();
+                AnalysisResult r = runBallard(cf1Name,
+                        BALLARD_DP, BALLARD_LEVELS, BALLARD_VOTES_THRESH,
+                        new Mat(sceneMat, w), rfGrey, cropGrey,
+                        cfMs, referenceId, scene, saveVariants, outputDir);
+                cropGrey.release();
+                if (r.matchScorePercent() > bestScore) {
+                    bestScore = r.matchScorePercent();
+                    Rect lb = r.boundingRect();
+                    if (lb != null)
+                        bestBbox = new Rect(w.x + lb.x, w.y + lb.y, lb.width, lb.height);
+                }
+            }
+            rfGrey.release();
+
+            Detection bestDet = new Detection(Math.max(0, bestScore), bestBbox);
+            Path savedPath = null;
+            if (saveVariants.contains(cf1Name)) {
+                savedPath = writeAnnotated(sceneMat, bestDet, cf1Name, referenceId, scene, outputDir);
+            }
+            out.add(new AnalysisResult(cf1Name, referenceId,
+                    scene.variantLabel(), scene.category(), scene.backgroundId(),
+                    Math.max(0, bestScore), bestBbox,
+                    System.currentTimeMillis() - cf1Start, cfMs,
+                    scenePx(scene), savedPath, false, null));
+        }
+
         return out;
     }
 

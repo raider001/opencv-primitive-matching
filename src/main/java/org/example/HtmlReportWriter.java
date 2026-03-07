@@ -171,8 +171,15 @@ public final class HtmlReportWriter {
         SceneCategory[] cats = SceneCategory.values();
 
         StringBuilder sb = new StringBuilder();
+        boolean hasSummaryVerdicts = !verdicts.isEmpty();
+
         sb.append("<h2>Results Summary</h2>\n");
-        sb.append("<p>Average match score per reference per category. ");
+        if (hasSummaryVerdicts) {
+            sb.append("<p>Avg match score <em>on correctly-located detections only</em> (Score%) "
+                    + "and overall reliability (Accuracy%) per reference per category. ");
+        } else {
+            sb.append("<p>Average raw match score per reference per category. ");
+        }
         sb.append("\uD83D\uDFE2 \u226570%  \uD83D\uDFE1 \u226540%  \uD83D\uDD34 &lt;40%  \u26A0\uFE0F gradient background ref</p>\n");
 
         // ---- Definitions panel ----
@@ -180,12 +187,41 @@ public final class HtmlReportWriter {
         sb.append("<summary>&#x1F4D6; Definitions &amp; How to Read This Report</summary>\n");
         sb.append("<div class=\"defs-body\">\n");
         sb.append("<h3>Score %</h3>\n");
-        sb.append("<p>The match score is normalised to 0–100% for every method so results are comparable across techniques. "
-                + "It represents how confident the matcher is that the reference shape is present at the reported location. "
-                + "Scores are colour-coded: "
-                + "<span class=\"score-g\">\u2265 70% (good)</span>, "
-                + "<span class=\"score-y\">\u2265 40% (marginal)</span>, "
-                + "<span class=\"score-r\">&lt; 40% (poor)</span>.</p>\n");
+        if (hasSummaryVerdicts) {
+            sb.append("<p>The match score is normalised to 0\u2013100% for every method so results are comparable "
+                    + "across techniques. It represents how confident the matcher is that the reference shape is "
+                    + "present at the reported location.</p>"
+                    + "<p><b>In the summary table, Score% shows the average score computed only over "
+                    + "<em>correctly-located detections</em></b> &mdash; scenes where the matcher both exceeded "
+                    + "the score threshold <em>and</em> placed its bounding box on the right region of the image "
+                    + "(verdict = \u2705 Correct). "
+                    + "This filters out cases where the matcher scored high but pointed at the wrong area, "
+                    + "giving a truer picture of per-category confidence when the technique is actually working. "
+                    + "A \u2013 means the technique never correctly located the shape in that category.</p>"
+                    + "<p>Scores are colour-coded: "
+                    + "<span class=\"score-g\">\u2265 70% (good)</span>, "
+                    + "<span class=\"score-y\">\u2265 40% (marginal)</span>, "
+                    + "<span class=\"score-r\">&lt; 40% (poor)</span>.</p>\n");
+            sb.append("<h3>Accuracy %</h3>\n");
+            sb.append("<p><b>Accuracy = (Correct + Correctly&thinsp;Rejected) / Total results</b>. "
+                    + "This is the primary reliability indicator: it measures how often the technique "
+                    + "makes the <em>right call</em> regardless of direction &mdash; correctly finding the shape "
+                    + "when it is present, and correctly staying silent when it is absent. "
+                    + "A high Score% with a low Accuracy% means the matcher is overconfident: it finds the shape "
+                    + "but also fires false alarms on negative scenes. "
+                    + "Colour thresholds: "
+                    + "<span class=\"score-g\">\u2265 80% (reliable)</span>, "
+                    + "<span class=\"score-y\">\u2265 60% (moderate)</span>, "
+                    + "<span class=\"score-r\">&lt; 60% (unreliable)</span>.</p>\n");
+        } else {
+            sb.append("<p>The match score is normalised to 0\u2013100% for every method so results are comparable "
+                    + "across techniques. It represents how confident the matcher is that the reference shape is "
+                    + "present at the reported location. "
+                    + "Scores are colour-coded: "
+                    + "<span class=\"score-g\">\u2265 70% (good)</span>, "
+                    + "<span class=\"score-y\">\u2265 40% (marginal)</span>, "
+                    + "<span class=\"score-r\">&lt; 40% (poor)</span>.</p>\n");
+        }
         sb.append("<h3>Categories</h3>\n");
         sb.append("<dl>\n");
         sb.append("  <dt>A &mdash; Clean</dt><dd>Reference placed on a plain or lightly textured background with no transformation. Baseline difficulty.</dd>\n");
@@ -226,15 +262,33 @@ public final class HtmlReportWriter {
         sb.append("</div>\n</details>\n\n");
 
         // Summary table: one row per reference, columns = method × category
+        // Each method gets two sub-columns when verdicts are available:
+        //   Score%    = avg score over CORRECT detections only
+        //   Accuracy% = (CORRECT + CORRECTLY_REJECTED) / total
         sb.append("<table class=\"summary\">\n<thead><tr>");
         sb.append("<th>Reference</th>");
         for (String m : methods) {
             for (SceneCategory c : cats) {
-                sb.append("<th>").append(esc(shortMethod(m)))
-                  .append("<br><small>").append(c.name().charAt(0)).append("</small></th>");
+                if (hasSummaryVerdicts) {
+                    sb.append("<th colspan=\"2\">").append(esc(shortMethod(m)))
+                      .append("<br><small>").append(c.name().charAt(0)).append("</small></th>");
+                } else {
+                    sb.append("<th>").append(esc(shortMethod(m)))
+                      .append("<br><small>").append(c.name().charAt(0)).append("</small></th>");
+                }
             }
         }
-        sb.append("</tr></thead>\n<tbody>\n");
+        sb.append("</tr>\n");
+        if (hasSummaryVerdicts) {
+            sb.append("<tr><th></th>");
+            for (String m : methods) {
+                for (SceneCategory c : cats) {
+                    sb.append("<th class=\"sub-hdr\">Score%</th><th class=\"sub-hdr\">Acc%</th>");
+                }
+            }
+            sb.append("</tr>\n");
+        }
+        sb.append("</thead>\n<tbody>\n");
 
         // Gradient-background reference IDs (slots 2 & 3 of the 4-cycle in ReferenceImageFactory)
         Set<ReferenceId> gradientRefs = gradientBackgroundRefs();
@@ -254,18 +308,55 @@ public final class HtmlReportWriter {
                 for (SceneCategory c : cats) {
                     final String method = m;
                     final SceneCategory cat = c;
-                    OptionalDouble avg = refResults.stream()
+                    List<AnalysisResult> cell = refResults.stream()
                             .filter(r -> r.methodName().equals(method) && r.category() == cat
                                          && !r.isError())
-                            .mapToDouble(AnalysisResult::matchScorePercent)
-                            .average();
-                    if (avg.isPresent()) {
-                        double v = avg.getAsDouble();
-                        String cls = v >= 70 ? "g" : v >= 40 ? "y" : "r";
-                        sb.append("<td class=\"").append(cls).append("\">")
-                          .append(String.format("%.0f%%", v)).append("</td>");
+                            .toList();
+
+                    if (hasSummaryVerdicts) {
+                        // Score% = avg over CORRECT detections only
+                        OptionalDouble correctAvg = cell.stream()
+                                .filter(r -> verdicts.get(r) == DetectionVerdict.CORRECT)
+                                .mapToDouble(AnalysisResult::matchScorePercent)
+                                .average();
+                        // Accuracy% = (CORRECT + CORRECTLY_REJECTED) / total with verdict
+                        long withV = cell.stream().filter(verdicts::containsKey).count();
+                        long good  = cell.stream().filter(r -> {
+                            DetectionVerdict v = verdicts.get(r);
+                            return v == DetectionVerdict.CORRECT
+                                || v == DetectionVerdict.CORRECTLY_REJECTED;
+                        }).count();
+                        double acc = withV > 0 ? good * 100.0 / withV : Double.NaN;
+
+                        // Score cell
+                        if (correctAvg.isPresent()) {
+                            double v = correctAvg.getAsDouble();
+                            String cls = v >= 70 ? "g" : v >= 40 ? "y" : "r";
+                            sb.append("<td class=\"").append(cls).append("\">")
+                              .append(String.format("%.0f%%", v)).append("</td>");
+                        } else {
+                            sb.append("<td class=\"na\">\u2013</td>");
+                        }
+                        // Accuracy cell
+                        if (!Double.isNaN(acc)) {
+                            String cls = acc >= 80 ? "g" : acc >= 60 ? "y" : "r";
+                            sb.append("<td class=\"").append(cls).append("\">")
+                              .append(String.format("%.0f%%", acc)).append("</td>");
+                        } else {
+                            sb.append("<td class=\"na\">\u2013</td>");
+                        }
                     } else {
-                        sb.append("<td class=\"na\">â€”</td>");
+                        OptionalDouble avg = cell.stream()
+                                .mapToDouble(AnalysisResult::matchScorePercent)
+                                .average();
+                        if (avg.isPresent()) {
+                            double v = avg.getAsDouble();
+                            String cls = v >= 70 ? "g" : v >= 40 ? "y" : "r";
+                            sb.append("<td class=\"").append(cls).append("\">")
+                              .append(String.format("%.0f%%", v)).append("</td>");
+                        } else {
+                            sb.append("<td class=\"na\">\u2013</td>");
+                        }
                     }
                 }
             }
@@ -874,6 +965,9 @@ public final class HtmlReportWriter {
 
         /* Summary table first column */
         table.summary td:first-child { text-align: left; min-width: 160px; }
+        /* Sub-header row for Score%/Acc% columns */
+        th.sub-hdr { font-size: 0.72rem; color: #6070a0; background: #141428;
+                     padding: 2px 4px; font-weight: normal; }
 
         /* Scene grid */
         .scene-grid { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0; }

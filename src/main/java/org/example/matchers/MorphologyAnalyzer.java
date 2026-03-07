@@ -123,6 +123,46 @@ public final class MorphologyAnalyzer {
         releaseContours(sceneContoursLoose);
         releaseContours(sceneContoursTight);
 
+        // ---- CF1 variants (MORPH_COMBINED inside colour-first windows) ----
+        for (String cf1Name : new String[]{ "MORPH_COMBINED_CF1_LOOSE", "MORPH_COMBINED_CF1_TIGHT" }) {
+            double tol      = cf1Name.endsWith("LOOSE") ? ColourPreFilter.LOOSE : ColourPreFilter.TIGHT;
+            long   cf1Start = System.currentTimeMillis();
+            List<Rect> windows = ColourFirstLocator.propose(sceneMat, referenceId, tol);
+            long cfMs = System.currentTimeMillis() - cf1Start;
+
+            double bestScore = -1;
+            Rect   bestBbox  = windows.get(0);
+
+            for (Rect w : windows) {
+                Mat cropBgr  = new Mat(sceneMat, w);
+                Mat cropMask = ColourPreFilter.applyToScene(cropBgr, referenceId, tol);
+                Mat cropBin  = binarise(cropBgr, cropMask);
+                cropMask.release();
+                List<MatOfPoint> cropContours = findExternalContours(cropBin);
+                cropBin.release();
+                AnalysisResult r = runVariant(cf1Name, cropBgr, cropContours,
+                        refDesc, cfMs, referenceId, scene, saveVariants, outputDir);
+                releaseContours(cropContours);
+                if (r.matchScorePercent() > bestScore) {
+                    bestScore = r.matchScorePercent();
+                    Rect lb   = r.boundingRect();
+                    if (lb != null)
+                        bestBbox = new Rect(w.x + lb.x, w.y + lb.y, lb.width, lb.height);
+                }
+            }
+
+            Path savedPath = null;
+            if (saveVariants.contains(cf1Name)) {
+                savedPath = writeAnnotated(sceneMat, bestBbox, cf1Name,
+                        Math.max(0, bestScore), referenceId, scene, outputDir);
+            }
+            out.add(new AnalysisResult(cf1Name, referenceId,
+                    scene.variantLabel(), scene.category(), scene.backgroundId(),
+                    Math.max(0, bestScore), bestBbox,
+                    System.currentTimeMillis() - cf1Start, cfMs,
+                    scenePx(scene), savedPath, false, null));
+        }
+
         return out;
     }
 
@@ -199,8 +239,14 @@ public final class MorphologyAnalyzer {
             case VAR_CIRC     -> scoreCirc(ref, scene);
             case VAR_COMBINED -> scoreCombined(ref, scene);
             default -> {
-                // CF suffixes — strip and recurse
-                String base = variant.replace("_CF_LOOSE", "").replace("_CF_TIGHT", "");
+                // Strip any CF / CF1 suffix and recurse once to the base name
+                String base = variant
+                        .replace("_CF1_LOOSE", "")
+                        .replace("_CF1_TIGHT", "")
+                        .replace("_CF_LOOSE",  "")
+                        .replace("_CF_TIGHT",  "");
+                // Guard: if stripping changed nothing we have an unknown variant — return 0
+                if (base.equals(variant)) yield 0.0;
                 yield score(base, ref, scene);
             }
         };

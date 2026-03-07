@@ -104,6 +104,56 @@ public final class PhaseCorrelationMatcher {
         sceneLoose.release();
         sceneTight.release();
 
+        // ---- CF1 variants (PHASE_CORRELATE inside colour-first windows) ----
+        // Recompute hanning for window-level correlation
+        Mat hanningCf1 = makeHanningWindow(TILE);
+        Mat refFloatCf1 = toNormFloat(refMat, ReferenceImageFactory.buildMask(refMat));
+
+        for (PhaseVariant cf1 : new PhaseVariant[]{
+                PhaseVariant.PHASE_CORRELATE_CF1_LOOSE,
+                PhaseVariant.PHASE_CORRELATE_CF1_TIGHT}) {
+
+            String cf1Name  = cf1.variantName();
+            double tol      = cf1.cfMode().hueTolerance();
+            long   cf1Start = System.currentTimeMillis();
+            List<Rect> windows = ColourFirstLocator.propose(sceneMat, referenceId, tol);
+            long cfMs = System.currentTimeMillis() - cf1Start;
+
+            double bestScore = -1;
+            Rect   bestBbox  = windows.get(0);
+            Point  bestShift = new Point(0, 0);
+
+            for (Rect w : windows) {
+                Mat cropMask  = ColourPreFilter.applyToScene(new Mat(sceneMat, w), referenceId, tol);
+                Mat cropFloat = toNormFloat(new Mat(sceneMat, w), cropMask);
+                cropMask.release();
+                AnalysisResult r = runVariant(cf1Name, false,
+                        new Mat(sceneMat, w), refFloatCf1, cropFloat, hanningCf1,
+                        cfMs, referenceId, scene, saveVariants, outputDir);
+                cropFloat.release();
+                if (r.matchScorePercent() > bestScore) {
+                    bestScore = r.matchScorePercent();
+                    Rect lb   = r.boundingRect();
+                    if (lb != null)
+                        bestBbox = new Rect(w.x + lb.x, w.y + lb.y, lb.width, lb.height);
+                }
+            }
+
+            Path savedPath = null;
+            if (saveVariants.contains(cf1Name)) {
+                savedPath = writeAnnotated(sceneMat, bestBbox, bestShift,
+                        cf1Name, Math.max(0, bestScore), referenceId, scene, outputDir);
+            }
+            out.add(new AnalysisResult(cf1Name, referenceId,
+                    scene.variantLabel(), scene.category(), scene.backgroundId(),
+                    Math.max(0, bestScore), bestBbox,
+                    System.currentTimeMillis() - cf1Start, cfMs,
+                    scenePx(scene), savedPath, false, null));
+        }
+
+        hanningCf1.release();
+        refFloatCf1.release();
+
         return out;
     }
 

@@ -12,58 +12,62 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Pixel Difference baseline matcher — Milestone 16.
+ * Structural Similarity Index (SSIM) sliding-window matcher — Milestone 17.
  *
- * <p>1 base variant × base / CF_LOOSE / CF_TIGHT = <b>3 variants total</b>:
+ * <p>1 base variant × base / CF_LOOSE / CF_TIGHT = <b>3 variants total</b>.
+ *
+ * <h2>Algorithm</h2>
+ * <p>SSIM decomposes similarity into three independent components:
  * <ul>
- *   <li>{@code PIXEL_DIFF} — sliding-window absolute pixel difference</li>
- *   <li>{@code PIXEL_DIFF_CF_LOOSE} — same, colour pre-filtered (±15° hue)</li>
- *   <li>{@code PIXEL_DIFF_CF_TIGHT} — same, colour pre-filtered (±8° hue)</li>
+ *   <li><b>Luminance</b>  — {@code (2μxμy + C1) / (μx² + μy² + C1)}</li>
+ *   <li><b>Contrast</b>   — {@code (2σxσy + C2) / (σx² + σy² + C2)}</li>
+ *   <li><b>Structure</b>  — {@code (σxy + C3) / (σxσy + C3)}</li>
  * </ul>
+ * The combined SSIM = luminance × contrast × structure ∈ [−1, 1], where 1 is a
+ * perfect match.  {@code C1 = (K1·L)²}, {@code C2 = (K2·L)²}, {@code C3 = C2/2},
+ * with {@code K1=0.01}, {@code K2=0.03}, {@code L=255}.
  *
- * <h2>Pipeline</h2>
- * <ol>
- *   <li>Convert both reference (128×128) and scene to greyscale.</li>
- *   <li>For CF variants, zero out non-foreground pixels via the colour mask before
- *       computing differences — isolating only the target colour in both images.</li>
- *   <li>Slide a 128×128 window across the scene at stride {@value #STRIDE}.</li>
- *   <li>For each crop: {@code Core.absdiff(refGrey, cropGrey)} →
- *       {@code Core.sumElems(diff)} → sum all channels.</li>
- *   <li>Score = {@code (1 − diffSum / maxPossibleDiff) × 100}, where
- *       {@code maxPossibleDiff = 255 × width × height}.</li>
- *   <li>The crop with the <em>highest</em> score is the detection.
- *       Its position is the bounding box.</li>
- * </ol>
+ * <p>Each component is computed using local Gaussian-weighted statistics via a
+ * {@code Imgproc.GaussianBlur} approximation, then the per-pixel SSIM map is
+ * averaged over the whole window.
  *
- * <p>This is deliberately the simplest possible baseline — no shape awareness,
- * no feature extraction.  It serves as a lower-bound reference for comparing
- * all other techniques.
+ * <h2>Sliding window</h2>
+ * A 128×128 window slides across the scene at stride {@value #STRIDE}.
+ * The window with the highest mean SSIM score is the detection.
  *
- * <p><b>Expected behaviour:</b>
+ * <h2>CF variants</h2>
+ * Before SSIM computation, the colour pre-filter zeroes all pixels outside the
+ * reference foreground colour range.  SSIM then compares only the colour-matching
+ * structure in both images.
+ *
+ * <h2>Expected behaviour</h2>
  * <ul>
- *   <li>A_CLEAN — very high score when the scene background matches the reference canvas</li>
- *   <li>B_TRANSFORMED — score drops sharply under scale/rotation (not invariant)</li>
- *   <li>C_DEGRADED — degrades with noise/blur exactly as expected for raw pixel comparison</li>
- *   <li>D_NEGATIVE — typically gives a non-zero "best window" score (false positive risk),
- *       since some background region will always partially resemble the reference pixels;
- *       CF variants reduce this by zeroing mismatched colours first</li>
+ *   <li>A_CLEAN — very high score (SSIM is near 1.0 for exact matches)</li>
+ *   <li>B_TRANSFORMED — score drops sharply under scale/rotation (SSIM is not invariant)</li>
+ *   <li>C_DEGRADED — degrades gracefully with noise/blur — more slowly than raw absdiff</li>
+ *   <li>D_NEGATIVE — non-zero but substantially lower than a true positive; CF reduces FP</li>
  * </ul>
  */
-public final class PixelDiffMatcher {
+public final class SsimMatcher {
 
-    /** @deprecated Use {@link PixelDiffVariant#PIXEL_DIFF}. */
-    @Deprecated public static final String VAR_BASE  = PixelDiffVariant.PIXEL_DIFF.variantName();
-    /** @deprecated Use {@link PixelDiffVariant#PIXEL_DIFF_CF_LOOSE}. */
-    @Deprecated public static final String VAR_LOOSE = PixelDiffVariant.PIXEL_DIFF_CF_LOOSE.variantName();
-    /** @deprecated Use {@link PixelDiffVariant#PIXEL_DIFF_CF_TIGHT}. */
-    @Deprecated public static final String VAR_TIGHT = PixelDiffVariant.PIXEL_DIFF_CF_TIGHT.variantName();
+    // SSIM stability constants
+    private static final double K1 = 0.01;
+    private static final double K2 = 0.03;
+    private static final double L  = 255.0;
+    private static final double C1 = (K1 * L) * (K1 * L);   // 6.5025
+    private static final double C2 = (K2 * L) * (K2 * L);   // 58.5225
+    private static final double C3 = C2 / 2.0;               // 29.26125
 
-    /** Reference tile size — matches all reference images. */
+    /** Gaussian blur kernel size for local statistics. */
+    private static final int    SIGMA_PX = 11;
+    private static final double SIGMA    = 1.5;
+
+    /** Reference tile size — must match all reference images. */
     private static final int TILE   = 128;
     /** Sliding window stride in pixels. */
     private static final int STRIDE = 8;
 
-    private PixelDiffMatcher() {}
+    private SsimMatcher() {}
 
     // -------------------------------------------------------------------------
     // Public entry point
@@ -77,10 +81,10 @@ public final class PixelDiffMatcher {
         List<AnalysisResult> out = new ArrayList<>(3);
         Mat sceneMat = scene.sceneMat();
 
-        // Reference grey — base and CF variants share the greyscale ref,
-        // but CF additionally zeroes out non-foreground pixels in the ref.
+        // Base reference grey
         Mat refGrey = toGrey(refMat, null);
 
+        // CF masks + timings
         long t0 = System.currentTimeMillis();
         Mat looseMask = ColourPreFilter.applyToScene(sceneMat, referenceId, ColourPreFilter.LOOSE);
         long cfLMs    = System.currentTimeMillis() - t0;
@@ -89,12 +93,12 @@ public final class PixelDiffMatcher {
         Mat tightMask = ColourPreFilter.applyToScene(sceneMat, referenceId, ColourPreFilter.TIGHT);
         long cfTMs    = System.currentTimeMillis() - t0;
 
-        // Masked reference greys (colour-isolated)
-        Mat refMaskL    = ColourPreFilter.applyToReference(refMat, referenceId, ColourPreFilter.LOOSE);
+        // Masked reference greys
+        Mat refMaskL     = ColourPreFilter.applyToReference(refMat, referenceId, ColourPreFilter.LOOSE);
         Mat refGreyLoose = toGrey(refMat, refMaskL);
         refMaskL.release();
 
-        Mat refMaskT    = ColourPreFilter.applyToReference(refMat, referenceId, ColourPreFilter.TIGHT);
+        Mat refMaskT     = ColourPreFilter.applyToReference(refMat, referenceId, ColourPreFilter.TIGHT);
         Mat refGreyTight = toGrey(refMat, refMaskT);
         refMaskT.release();
 
@@ -105,9 +109,12 @@ public final class PixelDiffMatcher {
         looseMask.release();
         tightMask.release();
 
-        out.add(runVariant(VAR_BASE,  sceneMat, sceneGrey,      refGrey,      0L,    referenceId, scene, saveVariants, outputDir));
-        out.add(runVariant(VAR_LOOSE, sceneMat, sceneGreyLoose, refGreyLoose, cfLMs, referenceId, scene, saveVariants, outputDir));
-        out.add(runVariant(VAR_TIGHT, sceneMat, sceneGreyTight, refGreyTight, cfTMs, referenceId, scene, saveVariants, outputDir));
+        out.add(runVariant(SsimVariant.SSIM.variantName(),
+                sceneMat, sceneGrey,      refGrey,       0L,    referenceId, scene, saveVariants, outputDir));
+        out.add(runVariant(SsimVariant.SSIM_CF_LOOSE.variantName(),
+                sceneMat, sceneGreyLoose, refGreyLoose,  cfLMs, referenceId, scene, saveVariants, outputDir));
+        out.add(runVariant(SsimVariant.SSIM_CF_TIGHT.variantName(),
+                sceneMat, sceneGreyTight, refGreyTight,  cfTMs, referenceId, scene, saveVariants, outputDir));
 
         refGrey.release();
         refGreyLoose.release();
@@ -116,58 +123,11 @@ public final class PixelDiffMatcher {
         sceneGreyLoose.release();
         sceneGreyTight.release();
 
-        // ---- CF1 variants (PIXEL_DIFF inside colour-first windows) ----
-        for (PixelDiffVariant cf1 : new PixelDiffVariant[]{
-                PixelDiffVariant.PIXEL_DIFF_CF1_LOOSE,
-                PixelDiffVariant.PIXEL_DIFF_CF1_TIGHT}) {
-
-            String cf1Name  = cf1.variantName();
-            double tol      = cf1.cfMode().hueTolerance();
-            long   cf1Start = System.currentTimeMillis();
-            List<Rect> windows = ColourFirstLocator.propose(sceneMat, referenceId, tol);
-            long cfMs = System.currentTimeMillis() - cf1Start;
-
-            // Colour-isolated reference grey for this tolerance
-            Mat rMask = ColourPreFilter.applyToReference(refMat, referenceId, tol);
-            Mat rGrey = toGrey(refMat, rMask);
-            rMask.release();
-
-            double bestScore = -1;
-            Rect   bestBbox  = windows.get(0);
-
-            for (Rect w : windows) {
-                Mat sMask  = ColourPreFilter.applyToScene(new Mat(sceneMat, w), referenceId, tol);
-                Mat sGrey  = toGrey(new Mat(sceneMat, w), sMask);
-                sMask.release();
-                AnalysisResult r = runVariant(cf1Name, new Mat(sceneMat, w),
-                        sGrey, rGrey, cfMs, referenceId, scene, saveVariants, outputDir);
-                sGrey.release();
-                if (r.matchScorePercent() > bestScore) {
-                    bestScore = r.matchScorePercent();
-                    Rect lb   = r.boundingRect();
-                    if (lb != null)
-                        bestBbox = new Rect(w.x + lb.x, w.y + lb.y, lb.width, lb.height);
-                }
-            }
-            rGrey.release();
-
-            Path savedPath = null;
-            if (saveVariants.contains(cf1Name)) {
-                savedPath = writeAnnotated(sceneMat, bestBbox, cf1Name,
-                        Math.max(0, bestScore), referenceId, scene, outputDir);
-            }
-            out.add(new AnalysisResult(cf1Name, referenceId,
-                    scene.variantLabel(), scene.category(), scene.backgroundId(),
-                    Math.max(0, bestScore), bestBbox,
-                    System.currentTimeMillis() - cf1Start, cfMs,
-                    scenePx(scene), savedPath, false, null));
-        }
-
         return out;
     }
 
     // -------------------------------------------------------------------------
-    // Single variant — sliding window absdiff
+    // Single variant — sliding window SSIM
     // -------------------------------------------------------------------------
 
     private static AnalysisResult runVariant(String variantName,
@@ -190,21 +150,30 @@ public final class PixelDiffMatcher {
                         0L, scenePx(scene), "Scene smaller than tile");
             }
 
-            // maxPossibleDiff: 255 per pixel × tile area (single channel)
-            double maxDiff = 255.0 * TILE * TILE;
+            // Pre-compute reference statistics needed for SSIM
+            Mat refF = toFloat(refGrey);
+            Mat muX  = gaussBlur(refF);
+            Mat muX2 = sqr(muX);
+            Mat refF2 = sqr(refF);
+            Mat sigmaX2mat = new Mat();
+            Core.subtract(gaussBlur(refF2), muX2, sigmaX2mat);
+            refF2.release();
+            // σx: mean std dev over the reference tile
+            double sigmaX2 = Core.mean(sigmaX2mat).val[0];
+            double muXVal   = Core.mean(muX).val[0];
+            muX.release();
+            muX2.release();
+            sigmaX2mat.release();
+            refF.release();
 
             double bestScore = -1;
             Rect   bestBbox  = new Rect(0, 0, TILE, TILE);
 
             for (int y = 0; y <= sceneH - TILE; y += STRIDE) {
                 for (int x = 0; x <= sceneW - TILE; x += STRIDE) {
-                    Mat crop = sceneGrey.submat(new Rect(x, y, TILE, TILE));
-                    Mat diff = new Mat();
-                    Core.absdiff(refGrey, crop, diff);
-                    double diffSum = Core.sumElems(diff).val[0];
-                    diff.release();
-
-                    double score = (1.0 - diffSum / maxDiff) * 100.0;
+                    Mat crop = new Mat(sceneGrey, new Rect(x, y, TILE, TILE));
+                    double score = computeSsim(refGrey, crop, muXVal, sigmaX2);
+                    crop.release();
                     if (score > bestScore) {
                         bestScore = score;
                         bestBbox  = new Rect(x, y, TILE, TILE);
@@ -213,9 +182,9 @@ public final class PixelDiffMatcher {
             }
 
             long   elapsed    = System.currentTimeMillis() - t0;
-            double finalScore = Math.max(0, Math.min(100, bestScore));
+            // Map SSIM [-1,1] → [0,100]%
+            double finalScore = Math.max(0, Math.min(100, ((bestScore + 1.0) / 2.0) * 100.0));
 
-            // Tighten the bbox to just the foreground pixels within the winning window
             Rect tightBbox = tightenBbox(sceneMat, bestBbox);
 
             Path savedPath = null;
@@ -237,13 +206,106 @@ public final class PixelDiffMatcher {
     }
 
     // -------------------------------------------------------------------------
-    // Bbox tightening
+    // SSIM computation for one (reference tile, scene crop) pair
     // -------------------------------------------------------------------------
 
     /**
-     * Tightens the winning window to the bounding rect of its non-zero (foreground)
-     * pixels.  Falls back to the original window if the crop is all black.
+     * Computes mean SSIM between two same-size greyscale tiles.
+     * Uses the reference's pre-computed μx and σx² to avoid redundant computation
+     * across the many crop comparisons.
+     *
+     * @return mean SSIM ∈ [−1, 1]
      */
+    private static double computeSsim(Mat ref, Mat crop,
+                                       double muXVal, double sigmaX2) {
+        Mat cropF = toFloat(crop);
+        Mat muY   = gaussBlur(cropF);
+        double muYVal = Core.mean(muY).val[0];
+
+        Mat cropF2   = sqr(cropF);
+        Mat muY2     = sqr(muY);
+        Mat sigmaY2m = new Mat();
+        Core.subtract(gaussBlur(cropF2), muY2, sigmaY2m);
+        cropF2.release();
+        muY2.release();
+        double sigmaY2 = Core.mean(sigmaY2m).val[0];
+        sigmaY2m.release();
+
+        // Cross-correlation σxy
+        Mat refF   = toFloat(ref);
+        Mat xy     = new Mat();
+        Core.multiply(refF, cropF, xy);
+        refF.release();
+        cropF.release();
+        Mat muXY2  = new Mat();
+        Core.multiply(gaussBlur(ref.clone()), muY, muXY2);   // approx μx·μy per pixel
+        Mat sigmaXYm = new Mat();
+        Core.subtract(gaussBlur(xy), muXY2, sigmaXYm);
+        xy.release();
+        muXY2.release();
+        muY.release();
+        double sigmaXY = Core.mean(sigmaXYm).val[0];
+        sigmaXYm.release();
+
+        double sigmaX = Math.sqrt(Math.max(0, sigmaX2));
+        double sigmaY = Math.sqrt(Math.max(0, sigmaY2));
+
+        double luminance = (2.0 * muXVal * muYVal + C1)
+                         / (muXVal * muXVal + muYVal * muYVal + C1);
+        double contrast  = (2.0 * sigmaX * sigmaY + C2)
+                         / (sigmaX2 + sigmaY2 + C2);
+        double structure = (sigmaXY + C3)
+                         / (sigmaX * sigmaY + C3);
+
+        return luminance * contrast * structure;
+    }
+
+    // -------------------------------------------------------------------------
+    // Mat math helpers
+    // -------------------------------------------------------------------------
+
+    /** Converts an 8U single-channel Mat to 32F. */
+    private static Mat toFloat(Mat src) {
+        Mat dst = new Mat();
+        src.convertTo(dst, CvType.CV_32F);
+        return dst;
+    }
+
+    /** Returns element-wise square of a float Mat. */
+    private static Mat sqr(Mat m) {
+        Mat out = new Mat();
+        Core.multiply(m, m, out);
+        return out;
+    }
+
+    /** Gaussian blur approximating local statistics. */
+    private static Mat gaussBlur(Mat m) {
+        Mat out = new Mat();
+        Imgproc.GaussianBlur(m, out, new Size(SIGMA_PX, SIGMA_PX), SIGMA);
+        return out;
+    }
+
+    /** BGR → grey, optionally masked (non-mask pixels zeroed). */
+    private static Mat toGrey(Mat bgr, Mat mask) {
+        Mat grey = new Mat();
+        if (bgr.channels() == 1) {
+            bgr.copyTo(grey);
+        } else {
+            Imgproc.cvtColor(bgr, grey, Imgproc.COLOR_BGR2GRAY);
+        }
+        if (mask != null && !mask.empty()) {
+            Mat masked = new Mat(grey.size(), grey.type(), Scalar.all(0));
+            grey.copyTo(masked, mask);
+            grey.release();
+            return masked;
+        }
+        return grey;
+    }
+
+    // -------------------------------------------------------------------------
+    // Bbox tightening
+    // -------------------------------------------------------------------------
+
     private static Rect tightenBbox(Mat sceneBGR, Rect window) {
         try {
             int sceneW = sceneBGR.cols(), sceneH = sceneBGR.rows();
@@ -252,9 +314,8 @@ public final class PixelDiffMatcher {
             int ww = Math.min(window.width,  sceneW - wx);
             int wh = Math.min(window.height, sceneH - wy);
             if (ww <= 0 || wh <= 0) return window;
-            Rect safeWin = new Rect(wx, wy, ww, wh);
 
-            Mat crop = new Mat(sceneBGR, safeWin);
+            Mat crop = new Mat(sceneBGR, new Rect(wx, wy, ww, wh));
             Mat grey = new Mat();
             Imgproc.cvtColor(crop, grey, Imgproc.COLOR_BGR2GRAY);
             Mat bin = new Mat();
@@ -273,37 +334,15 @@ public final class PixelDiffMatcher {
             int x1 = Integer.MAX_VALUE, y1 = Integer.MAX_VALUE, x2 = 0, y2 = 0;
             for (MatOfPoint c : contours) {
                 Rect br = Imgproc.boundingRect(c);
-                x1 = Math.min(x1, br.x);
-                y1 = Math.min(y1, br.y);
+                x1 = Math.min(x1, br.x); y1 = Math.min(y1, br.y);
                 x2 = Math.max(x2, br.x + br.width);
                 y2 = Math.max(y2, br.y + br.height);
                 c.release();
             }
-            return new Rect(safeWin.x + x1, safeWin.y + y1,
-                            Math.max(1, x2 - x1), Math.max(1, y2 - y1));
+            return new Rect(wx + x1, wy + y1, Math.max(1, x2 - x1), Math.max(1, y2 - y1));
         } catch (Exception e) {
             return window;
         }
-    }
-
-    // -------------------------------------------------------------------------
-    // Image helpers
-    // -------------------------------------------------------------------------
-
-    /**
-     * Converts a BGR image to CV_8UC1 greyscale, optionally masking out
-     * non-foreground pixels (zeroing them) before returning.
-     */
-    private static Mat toGrey(Mat bgr, Mat mask) {
-        Mat grey = new Mat();
-        Imgproc.cvtColor(bgr, grey, Imgproc.COLOR_BGR2GRAY);
-        if (mask != null && !mask.empty()) {
-            Mat masked = new Mat(grey.size(), grey.type(), Scalar.all(0));
-            grey.copyTo(masked, mask);
-            grey.release();
-            return masked;
-        }
-        return grey;
     }
 
     // -------------------------------------------------------------------------
@@ -314,19 +353,18 @@ public final class PixelDiffMatcher {
                                         ReferenceId refId, SceneEntry sceneEntry,
                                         Path outputDir) {
         try {
-            Path dir  = outputDir.resolve("annotated").resolve(sanitise(variant));
+            Path dir = outputDir.resolve("annotated").resolve(sanitise(variant));
             Files.createDirectories(dir);
             String sceneRef = sceneEntry.primaryReferenceId() != null
                     ? sanitise(sceneEntry.primaryReferenceId().name()) : "neg";
             String fname = sanitise(refId.name()) + "_vs_" + sceneRef
                     + "_" + sanitise(sceneEntry.variantLabel()) + ".png";
-            Path   dest  = dir.resolve(fname);
+            Path dest = dir.resolve(fname);
 
             Mat    m      = scene.clone();
             Scalar colour = score >= 70 ? new Scalar(0, 200, 0)
                           : score >= 40 ? new Scalar(0, 200, 200)
                           :               new Scalar(0, 0, 200);
-
             if (bbox.width > 1 && bbox.height > 1) {
                 Imgproc.rectangle(m,
                         new Point(bbox.x, bbox.y),
@@ -338,7 +376,6 @@ public final class PixelDiffMatcher {
                     new Scalar(200, 200, 200), 1);
             Imgproc.putText(m, String.format("%.1f%%", score),
                     new Point(4, 28), Imgproc.FONT_HERSHEY_SIMPLEX, 0.42, colour, 1);
-
             Imgcodecs.imwrite(dest.toString(), m);
             m.release();
             return outputDir.toAbsolutePath().relativize(dest.toAbsolutePath());
@@ -354,9 +391,9 @@ public final class PixelDiffMatcher {
     private static int    scenePx(SceneEntry s) { return s.sceneMat().cols() * s.sceneMat().rows(); }
     private static String sanitise(String s)    { return s.replaceAll("[^A-Za-z0-9_\\-]", "_"); }
     private static String shortName(String v)   {
-        return v.replace("PIXEL_DIFF_CF_LOOSE", "PD·CFL")
-                .replace("PIXEL_DIFF_CF_TIGHT", "PD·CFT")
-                .replace("PIXEL_DIFF",          "PD");
+        return v.replace("SSIM_CF_LOOSE", "SSIM·CFL")
+                .replace("SSIM_CF_TIGHT", "SSIM·CFT");
     }
 }
+
 

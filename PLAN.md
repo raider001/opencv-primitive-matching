@@ -460,6 +460,9 @@ a single match operation, accounting for the intermediate `Mat` objects each alg
 | Phase Correlation | two complex (float64) FFT mats | ~4× scene |
 | Morphology Analysis | binary threshold + contour storage | ~1.2× scene |
 | Pixel Diff | diff mat (same size as scene) | ~2× scene |
+| SSIM | Gaussian blur mats (6× per window, float32) | ~2.5× scene |
+| Chamfer Distance | edge map + distance-transform float32 mat | ~1.8× scene |
+| Fourier Shape | contour point arrays + two float32 DFT mats | ~1.2× scene |
 
 #### Estimated heap per resolution (scene Mat only, before multiplier)
 
@@ -667,6 +670,77 @@ Used as a fast baseline comparison metric.
 
 ---
 
+### 11. SSIM — Structural Similarity Index (Milestone 17)
+
+Decomposes image similarity into three perceptually meaningful components using Gaussian-weighted
+local statistics:
+
+| Component   | Formula                                         | Captures                       |
+|-------------|------------------------------------------------|--------------------------------|
+| Luminance   | `(2μxμy + C1) / (μx² + μy² + C1)`             | Mean brightness match          |
+| Contrast    | `(2σxσy + C2) / (σx² + σy² + C2)`             | Local variance match           |
+| Structure   | `(σxy + C3) / (σxσy + C3)`                     | Normalised cross-correlation   |
+
+Combined SSIM = luminance × contrast × structure ∈ [−1, 1]; mapped to 0–100%.
+A sliding 128×128 window at stride 8 localises the best match within the scene.
+
+- ✅ More tolerant of uniform brightness/contrast shifts than Pixel Diff or Template Matching
+- ✅ The structure component captures edge alignment without requiring explicit edge detection
+- ❌ Not scale- or rotation-invariant — positions it clearly as a perceptual complement to TM
+
+---
+
+### 12. Chamfer Distance Matching (Milestone 18)
+
+Matches a shape by sampling its **edge pixels into a precomputed distance-transform field** of
+the scene's edge map.
+
+**Pipeline:**
+1. Canny edge detection on the reference → list of edge pixel coordinates
+2. Canny edge detection on the scene → `Imgproc.distanceTransform` (L1 or L2) → distance field
+3. Slide a 128×128 window; for each position, look up every reference edge point in the field
+4. Average sampled distance = Chamfer distance; score = `1 / (1 + avgDist) × 100`
+
+| Distance type | Characteristic                              |
+|---------------|---------------------------------------------|
+| `DIST_L1`     | City-block; faster; more robust on occlusion |
+| `DIST_L2`     | Euclidean; penalises outlier distances more  |
+
+- ✅ Partial occlusion is handled gracefully — missing edge fragments contribute bounded distance
+- ✅ Distance field precomputed once per scene; sampling is very fast
+- ✅ CF variants suppress background edges before extraction, reducing false candidates
+- ❌ Not fully rotation-invariant (edge layout changes with rotation)
+
+---
+
+### 13. Fourier Shape Descriptors (Milestone 19)
+
+Represents a shape as a **1-D frequency-domain signature** derived from its boundary contour.
+
+**Pipeline:**
+1. Extract the largest external contour from a binarised image
+2. Resample uniformly to 128 points along arc length
+3. Encode as a complex signal: `z(t) = (x(t) − cx) + j(y(t) − cy)` (centroid-centred)
+4. Apply 1-D DFT via `Core.dft` on a two-channel packed Mat (real + imag channels)
+5. Compute magnitude spectrum; skip DC (k=0); normalise by coefficient at k=1 (scale invariance)
+6. Keep first 32 normalised magnitudes as the descriptor
+7. Compare with reference descriptor via L2 distance; score = `1 / (1 + dist) × 100`
+
+**Why it is inherently invariant:**
+- **Rotation** — rotating the contour by angle θ multiplies every coefficient by `e^(jkθ)`.
+  This is a global phase shift that vanishes entirely in the **magnitude** spectrum.
+- **Scale** — normalising by the k=1 coefficient (the "fundamental frequency") makes all
+  other coefficients dimensionless ratios independent of absolute size.
+- **Starting point** — the starting point of the contour traversal shifts all phases by a
+  constant, which again vanishes in the magnitude spectrum.
+
+- ✅ True rotation and scale invariance — no RANSAC, no homography, no moment tensor
+- ✅ Low frequency coefficients capture gross shape; higher ones capture fine detail
+- ✅ Naturally suited to the contour-rich synthetic reference library
+- ❌ Requires a clean, connected contour — breaks on heavily occluded or cluttered shapes
+
+---
+
 ### 10. Colour-First Region Proposal (CF1)
 
 A **pipeline architecture** rather than a standalone technique. Instead of masking the full
@@ -743,10 +817,13 @@ Return best-scoring candidate bbox + score
 | Phase Correlation                     | ❌              | ❌                 | ⚡⚡⚡        | Sub-pixel translation only      |
 | Morphology Analysis                   | ✅              | ✅                 | ⚡⚡⚡        | Classifying simple shapes       |
 | Pixel Diff (absdiff)                  | ❌              | ❌                 | ⚡⚡⚡        | Baseline dissimilarity score    |
-| + Colour Pre-filter variants (×9)     | Same as base    | Same as base       | +pre-step     | All of the above, colour-gated  |
+| **SSIM** (Structural Similarity)      | ❌              | ❌                 | ⚡⚡          | Perceptual quality; contrast/brightness tolerance |
+| **Chamfer Distance Matching**         | ⚠️ partial     | ⚠️ partial        | ⚡⚡          | Partial occlusion; edge-based shape proximity |
+| **Fourier Shape Descriptors**         | ✅              | ✅                 | ⚡⚡⚡        | Frequency-domain shape signature; invariant by design |
+| + Colour Pre-filter variants (×12)    | Same as base    | Same as base       | +pre-step     | All of the above, colour-gated  |
 | **Colour-First Region Proposal (CF1)**| Same as wrapped | Same as wrapped    | **⚡⚡⚡⚡** | Colour-distinctive targets, speed-critical |
 
-**Total technique variants: 36** (9 base + 9 CF full-scene mask + 18 CF1 region-proposal variants across all 9 techniques)
+**Total technique variants: 48** (12 base + 12 CF full-scene mask + 18 CF1 region-proposal variants across the original 9 techniques + 6 new variants for SSIM/Chamfer/Fourier)
 
 ---
 
@@ -897,7 +974,10 @@ src/
 │       ├── HistogramMatcher.java       # compareHist — all methods
 │       ├── PhaseCorrelationMatcher.java
 │       ├── MorphologyAnalyzer.java     # approxPolyDP, circularity, etc.
-│       └── PixelDiffMatcher.java       # absdiff baseline
+│       ├── PixelDiffMatcher.java       # absdiff baseline
+│       ├── SsimMatcher.java            # Structural Similarity sliding window
+│       ├── ChamferMatcher.java         # Distance-transform edge matching (L1 + L2)
+│       └── FourierShapeMatcher.java    # 1-D DFT contour shape descriptor
 │
 └── test/java/org/example/
     ├── TemplateMatchingTest.java
@@ -908,6 +988,10 @@ src/
     ├── HistogramMatchingTest.java
     ├── PhaseCorrelationTest.java
     ├── MorphologyAnalysisTest.java
+    ├── PixelDiffTest.java
+    ├── SsimMatchingTest.java
+    ├── ChamferMatchingTest.java
+    ├── FourierShapeMatchingTest.java
     └── MatchingBenchmarkTest.java      # Aggregated benchmark across all techniques
 ```
 
@@ -965,8 +1049,14 @@ test_output/
 │   └── report.html
 ├── pixel_diff/
 │   └── report.html
+├── ssim_matching/
+│   └── report.html
+├── chamfer_matching/
+│   └── report.html
+├── fourier_shape_matching/
+│   └── report.html
 └── benchmark/
-    ├── report.html                         ← unified cross-technique comparison report
+    ├── report.html                         ← unified cross-technique comparison report (Milestone 20)
     └── benchmark_summary.csv              ← method, reference, variant, score%, elapsedMs
 ```
 
@@ -1050,7 +1140,8 @@ test_output/
       `AnalysisOutputWriter` + `HtmlReportWriter` (passing profiles) to write all output
     - **Never asserts / never fails** — errors are caught, recorded, and execution continues
 
-12. **`MatchingBenchmarkTest`** — runs all **18 technique variants** (9 base + 9 CF) against the
+12. **`MatchingBenchmarkTest`** — Milestone 20: runs all **24 technique variants** (12 base + 12 CF,
+    covering the original 9 techniques + SSIM + Chamfer + Fourier Shape Descriptors) against the
     full catalogue, collects every `AnalysisResult` and every `PerformanceProfile`, and produces:
     - `test_output/benchmark/report.html` — unified cross-technique HTML report with a tab
       dedicated to base vs CF comparison for each technique family

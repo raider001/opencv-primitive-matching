@@ -605,6 +605,106 @@ heapMb_720p, heapMb_1080p, heapMb_1440p, heapMb_4K
 
 ---
 
+---
+
+## Milestone 17 — Technique: SSIM (Structural Similarity Index)
+
+**Goal:** Implement a perceptual sliding-window matcher that fills the gap between the dumb
+pixel diff (Milestone 16) and rigid template matching (Milestone 7).
+
+### Deliverables
+- `src/main/java/org/example/matchers/SsimVariant.java` — 3 variants: `SSIM` / `SSIM_CF_LOOSE` / `SSIM_CF_TIGHT`
+- `src/main/java/org/example/matchers/SsimMatcher.java`:
+  - Slides a 128×128 window across the scene at stride 8
+  - Per-window SSIM computed from Gaussian-weighted local statistics:
+    luminance `(2μxμy + C1) / (μx² + μy² + C1)`,
+    contrast `(2σxσy + C2) / (σx² + σy² + C2)`,
+    structure `(σxy + C3) / (σxσy + C3)`
+  - Combined SSIM ∈ [−1, 1] mapped to 0–100%
+  - CF variants zero non-foreground pixels before comparison
+- `src/test/java/org/example/matchingtests/SsimMatchingTest.java` — extends `AnalyticalTestBase`
+
+### What makes SSIM distinct
+- Decomposes similarity into luminance, contrast, and structure components independently
+- More tolerant of uniform brightness/contrast shifts than raw pixel diff or TM
+- Not scale- or rotation-invariant — positions it clearly vs. feature matching
+- Output: `test_output/ssim_matching/report.html`
+
+### Done when
+- A_CLEAN scenes score near 100% (structural match on clean placement)
+- C_DEGRADED contrast-shift variant scores higher than Pixel Diff (luminance component absorbs it)
+- D_NEGATIVE scores substantially lower than Pixel Diff
+
+---
+
+## Milestone 18 — Technique: Chamfer Distance Matching
+
+**Goal:** Implement a distance-field shape matcher that tolerates partial occlusion and
+fragment gaps — filling the space between Hu Moments (global shape moments) and feature
+matching (local keypoints).
+
+### Deliverables
+- `src/main/java/org/example/matchers/ChamferVariant.java` — 6 variants:
+  `CHAMFER_L1` / `CHAMFER_L2` × base / CF_LOOSE / CF_TIGHT
+- `src/main/java/org/example/matchers/ChamferMatcher.java`:
+  - Canny edge extraction on the reference → list of edge pixel coordinates
+  - `Imgproc.distanceTransform` (L1 or L2) computed **once** on the scene's inverted edge map
+  - Slide a 128×128 window; for each position, sample every reference edge point into the
+    scene distance field; average distance is the Chamfer distance for that window
+  - Score = `1 / (1 + avgChamferDistance) × 100`
+  - Falls back gracefully when reference produces too few edge pixels under CF (returns 0%)
+  - CF variants apply colour mask before edge extraction in both reference and scene
+- `src/test/java/org/example/matchingtests/ChamferMatchingTest.java` — extends `AnalyticalTestBase`
+
+### What makes Chamfer Distance distinct
+- Missing edge fragments contribute a bounded finite distance — not a hard failure like pixel diff
+- The distance-field precomputation means searching the full scene is fast (one DT + sampled reads)
+- L1 vs L2 comparison: L1 is more robust on occluded/degraded scenes; L2 penalises outlier distances
+- Output: `test_output/chamfer_matching/report.html`
+
+### Done when
+- A_CLEAN scenes score high (edge map aligns well onto clean distance field)
+- C_DEGRADED/occlusion scores higher than both Pixel Diff and SSIM
+- D_NEGATIVE CF variants score markedly lower than base (background edge suppression)
+
+---
+
+## Milestone 19 — Technique: Fourier Shape Descriptors
+
+**Goal:** Implement a frequency-domain shape signature that is inherently rotation- and
+scale-invariant without any homography or moment computation — a completely different
+axis from Hu Moments (spatial moments) and Feature Matching (keypoint descriptors).
+
+### Deliverables
+- `src/main/java/org/example/matchers/FourierShapeVariant.java` — 3 variants:
+  `FOURIER_SHAPE` / `FOURIER_SHAPE_CF_LOOSE` / `FOURIER_SHAPE_CF_TIGHT`
+- `src/main/java/org/example/matchers/FourierShapeMatcher.java`:
+  - Extracts the largest external contour from a binarised image
+  - Resamples the contour to 128 uniformly-spaced points along its arc length
+  - Encodes as a 1-D complex signal `z(t) = (x(t) − cx) + j(y(t) − cy)` (centroid-centred)
+  - Applies 1-D DFT via `Core.dft` on packed two-channel (real + imag) Mat
+  - Computes magnitude spectrum; skips DC (k=0); normalises by coefficient at k=1 for scale invariance
+  - Keeps first 32 normalised coefficients as the descriptor
+  - **Rotation invariance is free** — rotation is a uniform phase shift, which vanishes in the magnitude spectrum
+  - All scene contours are scored against the reference descriptor via L2 distance
+  - Score = `1 / (1 + l2Distance) × 100`
+  - CF variants mask before contour extraction, suppressing background contour candidates
+- `src/test/java/org/example/matchingtests/FourierShapeMatchingTest.java` — extends `AnalyticalTestBase`
+
+### What makes Fourier Shape Descriptors distinct
+- The only technique in the suite that achieves rotation invariance purely in the frequency domain
+- Orthogonal to Hu Moments: they use spatial polynomial moments; Fourier uses spectral energy
+- Contour-based (not sliding-window): fast on scenes with few contours; degrades gracefully on cluttered ones
+- Scene filter includes all rotation variants (ROT_45 / ROT_90 / ROT_180) specifically to demonstrate the invariance
+- Output: `test_output/fourier_shape_matching/report.html`
+
+### Done when
+- ROT_45 / ROT_90 / ROT_180 scores are within a few % of the clean A_CLEAN score
+- SCALE_0_50 / SCALE_1_50 scores are moderate (scale normalisation absorbs most of the change)
+- D_NEGATIVE scores near 0% for geometrically distinct shapes
+
+---
+
 ## Milestone Summary
 
 | # | Milestone | Key Output |
@@ -625,7 +725,10 @@ heapMb_720p, heapMb_1080p, heapMb_1440p, heapMb_4K
 | 14 | Morphology Analysis | `report.html` — 3 base + 6 CF variants ✅ |
 | 15 | Colour-First Region Proposal | `colour_first/report.html` — CF1 variants for all 9 techniques (18 variants) |
 | 16 | Pixel Diff (baseline) | `report.html` — 1 base + 2 CF variants ✅ |
-| 17 | Unified Benchmark | `benchmark/report.html` (Accuracy + Base vs CF + CF1 + Performance) + full CSV |
+| 17 | SSIM (Structural Similarity) | `ssim_matching/report.html` — 1 base + 2 CF variants ✅ |
+| 18 | Chamfer Distance Matching | `chamfer_matching/report.html` — 2 base + 4 CF variants ✅ |
+| 19 | Fourier Shape Descriptors | `fourier_shape_matching/report.html` — 1 base + 2 CF variants ✅ |
+| 20 | Unified Benchmark | `benchmark/report.html` (Accuracy + Base vs CF + CF1 + Performance) + full CSV |
 
 
 
