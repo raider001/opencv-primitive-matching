@@ -6,6 +6,8 @@ import org.example.ui.panels.*;
 import javax.swing.*;
 import javax.swing.border.*;
 import java.awt.*;
+import java.awt.event.*;
+import java.awt.geom.*;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
@@ -76,8 +78,11 @@ public final class BenchmarkLauncher extends JFrame {
 
     public BenchmarkLauncher() {
         super("Pattern Matching — Benchmark Launcher");
+        setUndecorated(true);                          // drop the OS title bar
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
         getContentPane().setBackground(BG);
+        // Thin border so the window has a visible edge against any desktop background
+        getRootPane().setBorder(BorderFactory.createLineBorder(BORDER, 1));
 
         ctx.reloadCatalogueFileNames();
 
@@ -107,32 +112,188 @@ public final class BenchmarkLauncher extends JFrame {
     }
 
     private JPanel buildSelectView() {
-        JPanel root = new JPanel(new BorderLayout(8, 8));
+        JPanel root = new JPanel(new BorderLayout(0, 0));
         root.setBackground(BG);
-        root.setBorder(new EmptyBorder(12, 12, 12, 12));
-        root.add(buildTopBar(),    BorderLayout.NORTH);
-        root.add(buildWizard(),    BorderLayout.CENTER);
-        root.add(buildActionBar(), BorderLayout.SOUTH);
+
+        JPanel content = new JPanel(new BorderLayout(8, 8));
+        content.setBackground(BG);
+        content.setBorder(new EmptyBorder(8, 12, 12, 12));
+        content.add(buildWizard(),    BorderLayout.CENTER);
+        content.add(buildActionBar(), BorderLayout.SOUTH);
+
+        root.add(buildTopBar(), BorderLayout.NORTH);
+        root.add(content,       BorderLayout.CENTER);
         return root;
     }
 
     private JPanel buildTopBar() {
-        JPanel p = new JPanel(new BorderLayout());
-        p.setBackground(BG);
-        p.setBorder(new EmptyBorder(0, 0, 8, 0));
-        p.add(titleLabel("Pattern Matching — Benchmark Launcher"), BorderLayout.WEST);
+        // ── Outer strip — full-width dark band ────────────────────────────
+        JPanel bar = new JPanel(new BorderLayout(0, 0));
+        bar.setBackground(PANEL);
+        bar.setBorder(new CompoundBorder(
+                BorderFactory.createMatteBorder(0, 0, 1, 0, BORDER),
+                new EmptyBorder(0, 12, 0, 8)));
 
-        JPanel opts = new JPanel(new FlowLayout(FlowLayout.RIGHT, 12, 0));
-        opts.setBackground(BG);
-        optClear     = check("Clear previous output before run", false);
-        optNegatives = check("Include Category D (negative) scenes", false);
+        // ── Left: icon + title + subtitle + options ───────────────────────
+        JPanel left = new JPanel();
+        left.setLayout(new BoxLayout(left, BoxLayout.X_AXIS));
+        left.setBackground(PANEL);
+        left.setOpaque(true);
+
+        JLabel icon  = label("⬡", new Font(Font.SANS_SERIF, Font.BOLD, 18), ACCENT_H);
+        JLabel title = label("  Pattern Matching", new Font(Font.SANS_SERIF, Font.BOLD, 13), WHITE);
+        JLabel sep2  = label("  —  ", SMALL, DIM);
+        JLabel sub   = label("Benchmark Launcher", SMALL, DIM);
+
+        optClear     = check("Clear previous runs", false);
+        optNegatives = check("Include negatives (Cat D)", false);
+        optClear    .setBackground(PANEL);
+        optNegatives.setBackground(PANEL);
         optClear    .addActionListener(e -> cfg.setClearPrevious(optClear.isSelected()));
         optNegatives.addActionListener(e -> cfg.setIncludeNegatives(optNegatives.isSelected()));
-        JButton refreshBtn = smallBtn("↺ Refresh Status");
+
+        // Separator pipe between subtitle and options
+        JLabel pipe = label("  |  ", SMALL, BORDER);
+
+        left.add(Box.createRigidArea(new Dimension(0, 36))); // enforce bar height
+        left.add(icon);
+        left.add(title);
+        left.add(sep2);
+        left.add(sub);
+        left.add(pipe);
+        left.add(optClear);
+        left.add(Box.createRigidArea(new Dimension(12, 0)));
+        left.add(optNegatives);
+
+        // ── Centre: empty draggable spacer ────────────────────────────────
+        JPanel centre = new JPanel();
+        centre.setBackground(PANEL);
+        centre.setOpaque(true);
+
+        // ── Right: refresh + window controls ─────────────────────────────
+        JPanel right = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        right.setBackground(PANEL);
+        right.setOpaque(true);
+
+        JButton refreshBtn = titleBarBtn(TitleBarIcon.REFRESH, DIM, WHITE);
+        refreshBtn.setToolTipText("Refresh status");
         refreshBtn.addActionListener(e -> refreshStatus());
-        opts.add(optClear); opts.add(optNegatives); opts.add(refreshBtn);
-        p.add(opts, BorderLayout.EAST);
-        return p;
+
+        JButton minBtn   = titleBarBtn(TitleBarIcon.MINIMISE, DIM, WHITE);
+        JButton maxBtn   = titleBarBtn(TitleBarIcon.MAXIMISE, DIM, WHITE);
+        JButton closeBtn = titleBarBtn(TitleBarIcon.CLOSE,    DIM, RED);
+        minBtn  .setToolTipText("Minimise");
+        maxBtn  .setToolTipText("Maximise / restore");
+        closeBtn.setToolTipText("Close");
+        minBtn  .addActionListener(e -> setState(JFrame.ICONIFIED));
+        maxBtn  .addActionListener(e -> {
+            if (getExtendedState() == JFrame.MAXIMIZED_BOTH) setExtendedState(JFrame.NORMAL);
+            else setExtendedState(JFrame.MAXIMIZED_BOTH);
+        });
+        closeBtn.addActionListener(e -> dispose());
+
+        right.add(refreshBtn);
+        right.add(Box.createRigidArea(new Dimension(8, 0)));
+        right.add(minBtn); right.add(maxBtn); right.add(closeBtn);
+
+        bar.add(left,   BorderLayout.WEST);
+        bar.add(centre, BorderLayout.CENTER);
+        bar.add(right,  BorderLayout.EAST);
+
+        // ── Drag-to-move (bar, centre, and left all draggable) ────────────
+        MouseAdapter drag = new MouseAdapter() {
+            private Point origin;
+            @Override public void mousePressed(MouseEvent e)  { origin = e.getPoint(); }
+            @Override public void mouseDragged(MouseEvent e)  {
+                if (origin == null) return;
+                Point loc = getLocation();
+                setLocation(loc.x + e.getX() - origin.x, loc.y + e.getY() - origin.y);
+            }
+        };
+        bar.addMouseListener(drag);
+        bar.addMouseMotionListener(drag);
+        centre.addMouseListener(drag);
+        centre.addMouseMotionListener(drag);
+
+        return bar;
+    }
+
+    // ── Title-bar icon enum ───────────────────────────────────────────────
+
+    private enum TitleBarIcon {
+        REFRESH {
+            @Override void paint(Graphics2D g, int w, int h, Color c) {
+                g.setColor(c);
+                g.setStroke(new BasicStroke(1.6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                int cx = w/2, cy = h/2, r = 5;
+                g.drawArc(cx-r, cy-r, r*2, r*2, 30, 280);
+                // arrowhead
+                int ax = cx + r, ay = cy;
+                int[] xs = {ax-3, ax+1, ax+1};
+                int[] ys = {ay-1, ay-3, ay+2};
+                g.fillPolygon(xs, ys, 3);
+            }
+        },
+        MINIMISE {
+            @Override void paint(Graphics2D g, int w, int h, Color c) {
+                g.setColor(c);
+                g.setStroke(new BasicStroke(1.8f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                int y = h/2 + 3;
+                g.drawLine(w/2 - 5, y, w/2 + 5, y);
+            }
+        },
+        MAXIMISE {
+            @Override void paint(Graphics2D g, int w, int h, Color c) {
+                g.setColor(c);
+                g.setStroke(new BasicStroke(1.6f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                int x = w/2 - 5, y = h/2 - 5, s = 10;
+                g.drawRect(x, y, s, s);
+            }
+        },
+        CLOSE {
+            @Override void paint(Graphics2D g, int w, int h, Color c) {
+                g.setColor(c);
+                g.setStroke(new BasicStroke(1.8f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                int m = 5;
+                g.drawLine(w/2 - m, h/2 - m, w/2 + m, h/2 + m);
+                g.drawLine(w/2 + m, h/2 - m, w/2 - m, h/2 + m);
+            }
+        };
+        abstract void paint(Graphics2D g, int w, int h, Color c);
+    }
+
+    /** A compact icon button for the custom title bar — drawn with Graphics2D, no font. */
+    private static JButton titleBarBtn(TitleBarIcon icon, Color normalFg, Color hoverFg) {
+        Color hoverBg = hoverFg == RED
+                ? new Color(0x6e, 0x1a, 0x1a)
+                : new Color(0x2a, 0x2f, 0x38);
+
+        JButton b = new JButton() {
+            private Color currentFg  = normalFg;
+            private Color currentBg  = PANEL;
+            { // instance initialiser — capture fields
+                setOpaque(true);
+                setContentAreaFilled(true);
+                setBorderPainted(false);
+                setFocusPainted(false);
+                setBackground(PANEL);
+                setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+                Dimension d = new Dimension(32, 30);
+                setPreferredSize(d); setMinimumSize(d); setMaximumSize(d);
+                addMouseListener(new MouseAdapter() {
+                    @Override public void mouseEntered(MouseEvent e) { currentFg = hoverFg; currentBg = hoverBg; setBackground(hoverBg); repaint(); }
+                    @Override public void mouseExited (MouseEvent e) { currentFg = normalFg; currentBg = PANEL;   setBackground(PANEL);   repaint(); }
+                });
+            }
+            @Override protected void paintComponent(Graphics g) {
+                super.paintComponent(g);
+                Graphics2D g2 = (Graphics2D) g.create();
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                icon.paint(g2, getWidth(), getHeight(), currentFg);
+                g2.dispose();
+            }
+        };
+        return b;
     }
 
     private JPanel buildWizard() {
