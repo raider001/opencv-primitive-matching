@@ -822,8 +822,9 @@ Return best-scoring candidate bbox + score
 | **Fourier Shape Descriptors**         | ✅              | ✅                 | ⚡⚡⚡        | Frequency-domain shape signature; invariant by design |
 | + Colour Pre-filter variants (×12)    | Same as base    | Same as base       | +pre-step     | All of the above, colour-gated  |
 | **Colour-First Region Proposal (CF1)**| Same as wrapped | Same as wrapped    | **⚡⚡⚡⚡** | Colour-distinctive targets, speed-critical |
+| **Multi-Colour-First (MCF1)**         | Same as wrapped | Same as wrapped    | **⚡⚡⚡⚡** | Multi-hue targets; richer localisation than single CF1 |
 
-**Total technique variants: 48** (12 base + 12 CF full-scene mask + 18 CF1 region-proposal variants across the original 9 techniques + 6 new variants for SSIM/Chamfer/Fourier)
+**Total technique variants: 66** (12 base + 12 CF full-scene mask + 18 CF1 single-colour windows + 18 MCF1 multi-colour windows across the original 9 techniques + 6 new variants for SSIM/Chamfer/Fourier)
 
 ---
 
@@ -1055,6 +1056,8 @@ test_output/
 │   └── report.html
 ├── fourier_shape_matching/
 │   └── report.html
+├── multi_colour_first/
+│   └── report.html                         ← MCF1 variants for all 9 techniques (Milestone 21)
 └── benchmark/
     ├── report.html                         ← unified cross-technique comparison report (Milestone 20)
     └── benchmark_summary.csv              ← method, reference, variant, score%, elapsedMs
@@ -1140,13 +1143,20 @@ test_output/
       `AnalysisOutputWriter` + `HtmlReportWriter` (passing profiles) to write all output
     - **Never asserts / never fails** — errors are caught, recorded, and execution continues
 
-12. **`MatchingBenchmarkTest`** — Milestone 20: runs all **24 technique variants** (12 base + 12 CF,
-    covering the original 9 techniques + SSIM + Chamfer + Fourier Shape Descriptors) against the
-    full catalogue, collects every `AnalysisResult` and every `PerformanceProfile`, and produces:
+12. **`MatchingBenchmarkTest`** — Milestone 20: runs all **42 technique variants** (12 base + 12 CF
+    full-scene mask + 18 CF1 single-colour windows, covering the original 9 techniques + SSIM +
+    Chamfer + Fourier Shape Descriptors) against the full catalogue, collects every
+    `AnalysisResult` and every `PerformanceProfile`, and produces:
     - `test_output/benchmark/report.html` — unified cross-technique HTML report with a tab
       dedicated to base vs CF comparison for each technique family
     - `test_output/benchmark/benchmark_summary.csv` — scores + timings + pre-filter ms +
       projections for every method × scene
+
+13. **`MultiColourFirstTest`** — Milestone 21: runs the 9 base matchers' MCF1 variants against
+    the 5 new multi-colour reference shapes plus 3 single-colour controls, producing:
+    - `test_output/multi_colour_first/report.html`
+    Uses `ColourFirstLocator.proposeMulti()` and `extractDistinctColours()` to drive the
+    window-proposal step with N colours instead of 1.
 
 13. **`pom.xml`** — already configured with:
     - Java 25 source/target

@@ -143,7 +143,19 @@ public enum ReferenceId {
     TEXT_O,      // Single large letter "O"
     TEXT_HELLO,  // Small word "HELLO"
     TEXT_123,    // Digits "123"
-    TEXT_MIXED   // Mixed "Ab3" (mixed case + digit)
+    TEXT_MIXED,  // Mixed "Ab3" (mixed case + digit)
+
+    // -------------------------------------------------------------------------
+    // Multi-Colour Shapes  (5) — Milestone 21
+    // These shapes use two or three distinct hues on a solid-black canvas.
+    // They are used to validate the Multi-Colour-First (MCF1) region proposal
+    // engine which must propose windows for each colour independently.
+    // -------------------------------------------------------------------------
+    BICOLOUR_CIRCLE_RING,    // Circle outline in palette colour, filled centre in complementary hue (+90°)
+    BICOLOUR_RECT_HALVES,    // Rectangle split horizontally: top half hue A, bottom half hue B (≥60° apart)
+    TRICOLOUR_TRIANGLE,      // Equilateral triangle with three 120°-apart hue regions
+    BICOLOUR_CROSSHAIR_RING, // Crosshair lines in one colour, surrounding circle ring in a second colour
+    BICOLOUR_CHEVRON_FILLED  // Chevron outline in colour A, interior flood-filled with colour B
 }
 
 

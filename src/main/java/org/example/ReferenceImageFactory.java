@@ -324,7 +324,48 @@ public final class ReferenceImageFactory {
             case TEXT_HELLO -> drawCentredText(m, "HELLO", fg, 1.1, 2);
             case TEXT_123   -> drawCentredText(m, "123",   fg, 1.8, 3);
             case TEXT_MIXED -> drawCentredText(m, "Ab3",   fg, 1.8, 3);
+
+            // Multi-colour shapes (Milestone 21)
+            case BICOLOUR_CIRCLE_RING    -> drawBicolourCircleRing(m);
+            case BICOLOUR_RECT_HALVES    -> drawBicolourRectHalves(m);
+            case TRICOLOUR_TRIANGLE      -> drawTricolourTriangle(m);
+            case BICOLOUR_CROSSHAIR_RING -> drawBicolourCrosshairRing(m);
+            case BICOLOUR_CHEVRON_FILLED -> drawBicolourChevronFilled(m);
         }
+    }
+
+    // =========================================================================
+    // Multi-colour foreground colour registration  (Milestone 21)
+    // =========================================================================
+
+    // Fixed saturated BGR colours used by the multi-colour shapes (well-separated hues)
+    static final Scalar MCOL_RED     = new Scalar(  0,   0, 220);  // H≈0
+    static final Scalar MCOL_GREEN   = new Scalar(  0, 200,   0);  // H≈60
+    static final Scalar MCOL_BLUE    = new Scalar(220,   0,   0);  // H≈120
+    static final Scalar MCOL_YELLOW  = new Scalar(  0, 220, 220);  // H≈30
+    static final Scalar MCOL_CYAN    = new Scalar(220, 220,   0);  // H≈90
+    static final Scalar MCOL_MAGENTA = new Scalar(220,   0, 220);  // H≈150
+    static final Scalar MCOL_ORANGE  = new Scalar(  0, 140, 255);  // H≈15
+
+    /**
+     * Returns the list of distinct foreground BGR colours drawn on this reference.
+     *
+     * <p>Single-colour references return a list of exactly one element
+     * ({@link #foregroundColour(ReferenceId)}).  Multi-colour references (BICOLOUR_*
+     * and TRICOLOUR_*) return each distinct hue in drawing order (primary colour first).
+     *
+     * <p>This is the authoritative source used by
+     * {@link ColourFirstLocator#proposeMulti} to build per-channel HSV windows.
+     */
+    public static List<Scalar> foregroundColours(ReferenceId id) {
+        return switch (id) {
+            case BICOLOUR_CIRCLE_RING    -> List.of(MCOL_RED,    MCOL_GREEN);
+            case BICOLOUR_RECT_HALVES    -> List.of(MCOL_CYAN,   MCOL_MAGENTA);
+            case TRICOLOUR_TRIANGLE      -> List.of(MCOL_RED,    MCOL_GREEN,   MCOL_BLUE);
+            case BICOLOUR_CROSSHAIR_RING -> List.of(MCOL_YELLOW, MCOL_CYAN);
+            case BICOLOUR_CHEVRON_FILLED -> List.of(MCOL_ORANGE, MCOL_MAGENTA);
+            default                      -> List.of(foregroundColour(id));
+        };
     }
 
     // -------------------------------------------------------------------------
@@ -873,6 +914,91 @@ public final class ReferenceImageFactory {
         MatOfPoint mop = new MatOfPoint();
         mop.fromList(pts);
         Imgproc.polylines(m, List.of(mop), true, fg, 2);
+    }
+
+    // -------------------------------------------------------------------------
+    // Multi-colour shape drawing helpers (Milestone 21)
+    // -------------------------------------------------------------------------
+
+    /** Circle outline in RED, filled interior in GREEN. */
+    private static void drawBicolourCircleRing(Mat m) {
+        int r = SIZE / 2 - 12;
+        // Filled centre in green
+        Imgproc.circle(m, centre(), r - 4, MCOL_GREEN, -1);
+        // Circle outline in red (on top)
+        Imgproc.circle(m, centre(), r, MCOL_RED, 3);
+    }
+
+    /** Rectangle split horizontally: top half CYAN, bottom half MAGENTA. */
+    private static void drawBicolourRectHalves(Mat m) {
+        int pad = 14;
+        int mid = SIZE / 2;
+        // Top half — cyan filled
+        Imgproc.rectangle(m,
+                new Point(pad, pad),
+                new Point(SIZE - pad, mid),
+                MCOL_CYAN, -1);
+        // Bottom half — magenta filled
+        Imgproc.rectangle(m,
+                new Point(pad, mid),
+                new Point(SIZE - pad, SIZE - pad),
+                MCOL_MAGENTA, -1);
+    }
+
+    /**
+     * Equilateral triangle divided into three 120°-hue regions:
+     * top vertex sector in RED, bottom-left in GREEN, bottom-right in BLUE.
+     */
+    private static void drawTricolourTriangle(Mat m) {
+        int pad = 10;
+        int cx  = SIZE / 2, cy = SIZE / 2;
+        // Outer triangle vertices
+        Point top = new Point(cx, pad);
+        Point bl  = new Point(pad, SIZE - pad);
+        Point br  = new Point(SIZE - pad, SIZE - pad);
+        Point centreP = centre();
+        // Three sub-triangles share the centroid
+        fillTriangle(m, top, bl, centreP, MCOL_GREEN);
+        fillTriangle(m, bl,  br, centreP, MCOL_BLUE);
+        fillTriangle(m, br, top, centreP, MCOL_RED);
+        // Outline in white to make edges visible
+        MatOfPoint mop = new MatOfPoint(top, bl, br);
+        Imgproc.polylines(m, List.of(mop), true, new Scalar(220, 220, 220), 1);
+    }
+
+    /** Crosshair lines in YELLOW, surrounding circle ring in CYAN. */
+    private static void drawBicolourCrosshairRing(Mat m) {
+        int r = SIZE / 2 - 10;
+        // Circle outline in cyan
+        Imgproc.circle(m, centre(), r, MCOL_CYAN, 3);
+        // Crosshair in yellow
+        Imgproc.line(m, new Point(8, SIZE / 2), new Point(SIZE - 9, SIZE / 2), MCOL_YELLOW, 2);
+        Imgproc.line(m, new Point(SIZE / 2, 8), new Point(SIZE / 2, SIZE - 9), MCOL_YELLOW, 2);
+    }
+
+    /** Chevron outline in ORANGE, interior filled in MAGENTA. */
+    private static void drawBicolourChevronFilled(Mat m) {
+        int pad = 14, mid = SIZE / 2, tip = SIZE - pad;
+        List<Point> pts = List.of(
+                new Point(pad,       pad),
+                new Point(mid,       mid - 8),
+                new Point(SIZE - pad,pad),
+                new Point(SIZE - pad,pad + 20),
+                new Point(mid,       mid + 12),
+                new Point(pad,       pad + 20)
+        );
+        MatOfPoint mop = new MatOfPoint();
+        mop.fromList(pts);
+        // Fill interior with magenta
+        Imgproc.fillPoly(m, List.of(mop), MCOL_MAGENTA);
+        // Outline in orange
+        Imgproc.polylines(m, List.of(mop), true, MCOL_ORANGE, 2);
+    }
+
+    /** Fills a triangle defined by three Points with the given colour. */
+    private static void fillTriangle(Mat m, Point a, Point b, Point c, Scalar colour) {
+        MatOfPoint mop = new MatOfPoint(a, b, c);
+        Imgproc.fillPoly(m, List.of(mop), colour);
     }
 
     // -------------------------------------------------------------------------

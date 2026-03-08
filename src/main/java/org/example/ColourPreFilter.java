@@ -251,6 +251,52 @@ public final class ColourPreFilter {
     // =========================================================================
 
     /**
+     * Builds a {@link ColourRange} from an arbitrary BGR {@link Scalar} and hue tolerance.
+     *
+     * <p>Generalised form of {@link #extractReferenceColourRange} for callers
+     * that need to threshold on an explicit colour rather than a registered reference ID.
+     *
+     * @param bgrColour    the colour to threshold, as a BGR {@link Scalar}
+     * @param hueTolerance full window width in degrees; use {@link #LOOSE} or {@link #TIGHT}
+     * @return a {@link ColourRange} ready to pass to {@link #apply}
+     */
+    public static ColourRange extractColourRange(Scalar bgrColour, double hueTolerance) {
+        String label = String.format("bgr(%.0f,%.0f,%.0f)_H+/-%.0f",
+                bgrColour.val[0], bgrColour.val[1], bgrColour.val[2], hueTolerance);
+
+        Mat bgr1x1 = new Mat(1, 1, CvType.CV_8UC3);
+        bgr1x1.put(0, 0, bgrColour.val[0], bgrColour.val[1], bgrColour.val[2]);
+        Mat hsv1x1 = new Mat();
+        Imgproc.cvtColor(bgr1x1, hsv1x1, Imgproc.COLOR_BGR2HSV);
+        double[] hsv = hsv1x1.get(0, 0);
+        bgr1x1.release(); hsv1x1.release();
+
+        double h = hsv[0], s = hsv[1], v = hsv[2];
+        double hTol  = hueTolerance / 2.0;
+        double sLow  = Math.max(0,   s - SAT_TOLERANCE);
+        double sHigh = Math.min(255, s + SAT_TOLERANCE);
+        double vLow  = Math.max(0,   v - VAL_TOLERANCE);
+        double vHigh = Math.min(255, v + VAL_TOLERANCE);
+        double hLow  = h - hTol;
+        double hHigh = h + hTol;
+
+        if (hLow < 0) {
+            return new ColourRange(
+                    new Scalar(hLow + 180, sLow, vLow),
+                    new Scalar(hHigh,      sHigh, vHigh), label);
+        } else if (hHigh > 179) {
+            return new ColourRange(
+                    new Scalar(hLow,        sLow, vLow),
+                    new Scalar(hHigh - 180, sHigh, vHigh), label);
+        } else {
+            return new ColourRange(
+                    new Scalar(hLow,  sLow, vLow),
+                    new Scalar(hHigh, sHigh, vHigh), label);
+        }
+    }
+
+
+    /**
      * Counts white pixels (value == 255) in a single-channel binary mask and returns the
      * fraction as 0.0–1.0.
      */
