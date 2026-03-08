@@ -59,7 +59,14 @@ public abstract class AnalyticalTestBase {
     protected abstract ReferenceId debugRef();
 
     /**
-     * Variant names whose annotated PNG should be saved to disk.
+     * When {@code true}, skips clearing the output directory on startup and
+     * reloads any existing JSON sidecar files so already-completed scene pairs
+     * are not recomputed.  Override and return {@code true} to resume a
+     * partially completed run.  Default is {@code false} (full fresh run).
+     */
+    protected boolean incrementalMode() { return false; }
+
+    /**
      * Pass an empty set to skip all image saving.
      */
     protected abstract Set<String> saveVariants();
@@ -162,10 +169,13 @@ public abstract class AnalyticalTestBase {
         absOutputDir = outputDir().toAbsolutePath().normalize();
 
         // Clear the output directory so stale results from a previous run
-        // are never mixed with the current one.
-        if (Files.isDirectory(absOutputDir)) {
+        // are never mixed with the current one — unless incremental mode is on,
+        // in which case we intentionally keep prior results.
+        if (!incrementalMode() && Files.isDirectory(absOutputDir)) {
             System.out.printf("[%s] Clearing output directory: %s%n", tag(), absOutputDir);
             clearDirectory(absOutputDir);
+        } else if (incrementalMode() && Files.isDirectory(absOutputDir)) {
+            System.out.printf("[%s] Incremental mode — keeping existing output: %s%n", tag(), absOutputDir);
         }
         Files.createDirectories(absOutputDir);
 
@@ -241,6 +251,20 @@ public abstract class AnalyticalTestBase {
         ConcurrentLinkedQueue<AnalysisResult> bag      = new ConcurrentLinkedQueue<>();
         Map<AnalysisResult, SceneEntry>       sceneMap = new ConcurrentHashMap<>(totalPairs * 2);
 
+        // ── Incremental resume: load existing sidecar results ──────────────
+        Set<String> doneKeys = Collections.synchronizedSet(new HashSet<>());
+        if (incrementalMode()) {
+            System.out.printf("[%s] Loading existing results from disk…%n", tag());
+            Map<AnalysisResult, SceneEntry> prior = ResultMetadataStore.loadAll(absOutputDir);
+            prior.forEach((r, sc) -> {
+                bag.add(r);
+                if (sc != null) sceneMap.put(r, sc);
+                doneKeys.add(ResultMetadataStore.skipKey(r));
+            });
+            System.out.printf("[%s] Resumed %,d prior results — %,d pairs already done%n",
+                    tag(), prior.size(), doneKeys.size());
+        }
+
         // Pre-build all (refId, refMat) pairs so mats are ready before the parallel loop.
         // Each mat is shared read-only across all scene tasks for that ref — safe because
         // matchers never modify the reference mat.
@@ -273,10 +297,18 @@ public abstract class AnalyticalTestBase {
                             .stream()
                             .filter(r -> applyTierFilter(Set.of(r.methodName()))
                                              .contains(r.methodName()))
+                            .filter(r -> {
+                                // Skip if we already have a sidecar for this pair
+                                if (!incrementalMode()) return true;
+                                String key = ResultMetadataStore.skipKey(r);
+                                return doneKeys.add(key); // returns false if already present
+                            })
                             .toList();
                     for (AnalysisResult r : matched) {
                         bag.add(r);
                         sceneMap.put(r, item.scene());
+                        // Write JSON sidecar alongside the PNG
+                        ResultMetadataStore.write(r, item.scene(), absOutputDir);
                     }
                     int n = done.incrementAndGet();
                     progress.update(item.ref().id(), n, bag.size());

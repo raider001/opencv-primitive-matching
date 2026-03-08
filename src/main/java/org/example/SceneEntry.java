@@ -1,6 +1,7 @@
 package org.example;
 
 import org.opencv.core.Mat;
+import org.opencv.core.Rect;
 
 import java.util.Collections;
 import java.util.List;
@@ -30,6 +31,28 @@ public record SceneEntry(
 
     public boolean hasReference() {
         return !placements.isEmpty();
+    }
+
+    /**
+     * Convenience — returns the ground-truth bounding rect of the first placement,
+     * or {@code null} for Category D (negative) scenes.
+     */
+    public Rect groundTruthRect() {
+        return placements.isEmpty() ? null : placements.get(0).placedRect();
+    }
+
+    /**
+     * Creates a minimal stub SceneEntry carrying only enough ground-truth information
+     * to reconstruct a {@link DetectionVerdict}.  The {@code sceneMat} is null.
+     * Used when reloading results from JSON sidecars.
+     */
+    public static SceneEntry stub(ReferenceId refId, SceneCategory category,
+                                   BackgroundId bgId, String variantLabel,
+                                   Rect groundTruthRect) {
+        List<SceneShapePlacement> placements = (refId != null && groundTruthRect != null)
+                ? List.of(SceneShapePlacement.clean(refId, groundTruthRect))
+                : List.of();
+        return new SceneEntry(refId, category, variantLabel, bgId, placements, null);
     }
 }
 

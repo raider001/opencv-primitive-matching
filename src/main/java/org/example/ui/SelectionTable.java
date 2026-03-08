@@ -5,7 +5,9 @@ import javax.swing.border.*;
 import javax.swing.table.*;
 import java.awt.*;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.IntBinaryOperator;
 
 import static org.example.ui.Palette.*;
@@ -40,10 +42,14 @@ public final class SelectionTable extends JPanel {
     // ── Internal model ────────────────────────────────────────────────────
 
     private final DefaultTableModel model;
-    private final JTable            table;
+    private final JTable            jtable;
     private final List<RowData>     rows = new ArrayList<>();
+    /** Suppresses the onCheckChanged callback during bulk operations. */
+    private boolean                 suppressEvents = false;
+    /** Fired whenever any checkbox in column 0 changes (unless suppressed). */
+    private Runnable                onCheckChanged = () -> {};
 
-    // Callback that supplies (generated, total) -> row foreground colour
+    // Callback that supplies (generated, total) -> row foreground colour index
     private static final IntBinaryOperator GEN_COLOUR_IDX = (gen, tot) -> {
         if (tot == 0 || gen == 0) return 0;   // DIM
         if (gen >= tot)           return 2;   // GREEN
@@ -62,17 +68,21 @@ public final class SelectionTable extends JPanel {
             @Override public Class<?> getColumnClass(int c) { return c == 0 ? Boolean.class : String.class; }
             @Override public boolean  isCellEditable(int r, int c) { return c == 0; }
         };
-        table = new JTable(model);
-        table.setBackground(PANEL); table.setForeground(WHITE); table.setFont(BODY);
-        table.setGridColor(BORDER); table.setRowHeight(22); table.setShowGrid(true);
-        table.setSelectionBackground(ROW_SEL); table.setSelectionForeground(WHITE);
-        table.setFillsViewportHeight(true);
-        table.getTableHeader().setBackground(BG); table.getTableHeader().setForeground(DIM);
-        table.getTableHeader().setFont(SMALL);
-        table.getColumnModel().getColumn(0).setMaxWidth(28); table.getColumnModel().getColumn(0).setPreferredWidth(28);
-        table.getColumnModel().getColumn(1).setPreferredWidth(220);
-        table.getColumnModel().getColumn(2).setPreferredWidth(160);
-        table.getColumnModel().getColumn(3).setPreferredWidth(110);
+
+        // Internal listener — gated by suppressEvents
+        model.addTableModelListener(
+                e -> { if (!suppressEvents && e.getColumn() == 0) onCheckChanged.run(); });
+        jtable = new JTable(model);
+        jtable.setBackground(PANEL); jtable.setForeground(WHITE); jtable.setFont(BODY);
+        jtable.setGridColor(BORDER); jtable.setRowHeight(22); jtable.setShowGrid(true);
+        jtable.setSelectionBackground(ROW_SEL); jtable.setSelectionForeground(WHITE);
+        jtable.setFillsViewportHeight(true);
+        jtable.getTableHeader().setBackground(BG); jtable.getTableHeader().setForeground(DIM);
+        jtable.getTableHeader().setFont(SMALL);
+        jtable.getColumnModel().getColumn(0).setMaxWidth(28); jtable.getColumnModel().getColumn(0).setPreferredWidth(28);
+        jtable.getColumnModel().getColumn(1).setPreferredWidth(220);
+        jtable.getColumnModel().getColumn(2).setPreferredWidth(160);
+        jtable.getColumnModel().getColumn(3).setPreferredWidth(110);
 
         // Custom renderer that colour-codes rows based on generation status
         DefaultTableCellRenderer rowRenderer = new DefaultTableCellRenderer() {
@@ -92,9 +102,9 @@ public final class SelectionTable extends JPanel {
                 return this;
             }
         };
-        for (int c = 1; c < 4; c++) table.getColumnModel().getColumn(c).setCellRenderer(rowRenderer);
+        for (int c = 1; c < 4; c++) jtable.getColumnModel().getColumn(c).setCellRenderer(rowRenderer);
 
-        JScrollPane sp = scrollPane(table);
+        JScrollPane sp = scrollPane(jtable);
         sp.setAlignmentX(Component.LEFT_ALIGNMENT);
         sp.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
         add(sp);
@@ -115,6 +125,31 @@ public final class SelectionTable extends JPanel {
     }
 
     /**
+     * Replaces all rows, restoring the checked state for any row whose name
+     * appears in {@code previouslyChecked}.  Rows not in the set are unchecked.
+     */
+    public void setRows(List<RowData> data, Set<String> previouslyChecked) {
+        rows.clear(); rows.addAll(data);
+        model.setRowCount(0);
+        for (RowData rd : data)
+            model.addRow(new Object[]{previouslyChecked.contains(rd.name()), rd.name(),
+                    rd.variantsLabel(), genLabel(rd.generated(), rd.total())});
+    }
+
+    /**
+     * Returns the names of all currently checked rows.
+     * Use this before a rebuild to capture state for restoration via
+     * {@link #setRows(List, Set)}.
+     */
+    public Set<String> checkedNames() {
+        Set<String> names = new HashSet<>();
+        for (int r = 0; r < model.getRowCount(); r++)
+            if (Boolean.TRUE.equals(model.getValueAt(r, 0)) && r < rows.size())
+                names.add(rows.get(r).name());
+        return names;
+    }
+
+    /**
      * Updates the generation fraction of an existing row and refreshes the
      * display string in the Generated column.
      */
@@ -123,7 +158,7 @@ public final class SelectionTable extends JPanel {
         RowData old = rows.get(row);
         rows.set(row, new RowData(old.name(), old.variantsLabel(), generated, total));
         model.setValueAt(genLabel(generated, total), row, 3);
-        table.repaint();
+        jtable.repaint();
     }
 
     /** Updates the "Status" string in col 2 (Variants column) for a running row. */
@@ -145,13 +180,22 @@ public final class SelectionTable extends JPanel {
     /** Returns {@code true} if at least one row is checked. */
     public boolean hasSelection() { return !selectedIndices().isEmpty(); }
 
-    /** Selects or deselects all rows. */
+    /** Selects or deselects all rows, firing {@code onCheckChanged} exactly once. */
     public void selectAll(boolean selected) {
-        for (int r = 0; r < model.getRowCount(); r++) model.setValueAt(selected, r, 0);
+        suppressEvents = true;
+        try {
+            for (int r = 0; r < model.getRowCount(); r++) model.setValueAt(selected, r, 0);
+        } finally {
+            suppressEvents = false;
+        }
+        onCheckChanged.run();
     }
 
-    /** Direct access to the underlying JTable (e.g. for attaching list selection listeners). */
-    public JTable table() { return table; }
+    /** Sets a callback fired whenever a checkbox changes (or after a bulk selectAll). */
+    public void setOnCheckChanged(Runnable r) { this.onCheckChanged = r; }
+
+    /** Direct access to the underlying {@link JTable}. */
+    public JTable jtable() { return jtable; }
 
     /** Number of data rows. */
     public int rowCount() { return model.getRowCount(); }
