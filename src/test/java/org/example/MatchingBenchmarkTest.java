@@ -71,13 +71,13 @@ public class MatchingBenchmarkTest {
     );
 
     @BeforeAll
-    void setup() throws IOException {
+    public void setup() throws IOException {
         Files.createDirectories(BENCHMARK_DIR.toAbsolutePath().normalize());
     }
 
     @Test @Order(1)
     @DisplayName("Collate and analyse per-technique reports into unified benchmark HTML")
-    void collateBenchmarkReport() throws IOException {
+    public void collateBenchmarkReport() throws IOException {
         Path absOut = BENCHMARK_DIR.resolve("report.html").toAbsolutePath().normalize();
 
         List<TechniqueReport> available = KNOWN_REPORTS.stream()

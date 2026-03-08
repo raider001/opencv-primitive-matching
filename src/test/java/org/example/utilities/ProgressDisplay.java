@@ -2,78 +2,84 @@ package org.example.utilities;
 
 import org.example.ReferenceId;
 
-import java.io.FileDescriptor;
-import java.io.FileOutputStream;
-import java.io.PrintStream;
+import javax.swing.*;
+import javax.swing.border.EmptyBorder;
+import java.awt.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * In-place terminal progress display for the analytical test double-loop.
+ * Progress display for the analytical test double-loop.
  *
- * <p>Renders a fixed-height block of lines using ANSI escape codes to move the
- * cursor back up and overwrite previous output.  Every call to {@link #update}
- * rewrites the exact same screen region, so the terminal never scrolls during
- * a run.
- *
- * <p>Output is written to <b>stderr</b> so that Maven Surefire's stdout
- * buffering never interferes with the in-place rewrite.
- *
- * <p>Layout (fixed line count = {@code 4 + refs.length}):
+ * <p>Shows a Swing window that mirrors the original ANSI terminal layout:
  * <pre>
- *  Line 0  [tag] N refs × M scenes | T threads
- *  Line 1  Progress  [████████████████░░░░░░░░░░░░░░░░]  47.3%
- *  Line 2  Pairs     1,234 / 2,610  |  elapsed 48s  |  ETA ~54s  |  885 results
- *  Line 3  ── per-reference ──────────────────────────────────────
- *  Line 4+ one line per ref:  REF_NAME  [████░░░░░░]  12/26  ✓ done / ◌ running
+ *  [TAG]  N refs × M scenes  |  T threads
+ *  Progress  [████████████░░░░░░░░]  47.3%
+ *  Pairs  1,234 / 2,610  |  elapsed 48s  |  ETA ~54s  |  885 results
+ *  ── per-reference ──────────────────────────────────────
+ *  REF_NAME  [████░░░░░░]  12/26   ✓ done / ◌ running
+ *  ...
+ *  ── post-processing ────────────────────────────────────
+ *  ▶ Computing verdicts...
  * </pre>
  *
- * <p>Falls back to plain line-by-line output (every ~5%) when ANSI is not
- * detected.
+ * <p>Falls back to plain stderr line output when headless (e.g. CI servers).
  */
 public final class ProgressDisplay {
 
-    // -------------------------------------------------------------------------
-    // ANSI codes
-    // -------------------------------------------------------------------------
-    private static final String RESET    = "\u001B[0m";
-    private static final String BOLD     = "\u001B[1m";
-    private static final String DIM      = "\u001B[2m";
-    private static final String GREEN    = "\u001B[32m";
-    private static final String YELLOW   = "\u001B[33m";
-    private static final String CYAN     = "\u001B[36m";
-    private static final String MAGENTA  = "\u001B[35m";
-    private static final String WHITE    = "\u001B[97m";
-    private static final String BG_BAR   = "\u001B[48;5;236m";
-    private static final String FG_FILL  = "\u001B[38;5;75m";
-    private static final String FG_EMPTY = "\u001B[38;5;238m";
-    private static final String UP       = "\u001B[%dA";        // cursor up N lines (kept for reference)
-    private static final String COL1     = "\u001B[1G";         // move to column 1
-    private static final String ERASE    = "\u001B[2K";         // erase entire line
+    // ── Colour palette (matches original ANSI colours) ────────────────────
+    private static final Color C_BG        = new Color(0x0d, 0x11, 0x17);
+    private static final Color C_HEADER    = new Color(0x58, 0xa6, 0xff);
+    private static final Color C_WHITE     = new Color(0xc9, 0xd1, 0xd9);
+    private static final Color C_DIM       = new Color(0x58, 0x62, 0x6e);
+    private static final Color C_GREEN     = new Color(0x56, 0xd3, 0x64);
+    private static final Color C_YELLOW    = new Color(0xd2, 0x99, 0x22);
+    private static final Color C_MAGENTA   = new Color(0xbc, 0x8c, 0xff);
+    private static final Color C_BAR_FILL  = new Color(0x38, 0x8b, 0xff);
+    private static final Color C_BAR_EMPTY = new Color(0x21, 0x26, 0x2d);
+    private static final Color C_BAR_BG    = new Color(0x16, 0x1b, 0x22);
+    private static final Color C_SEP       = new Color(0x30, 0x36, 0x3d);
+    private static final Color C_STATUS    = new Color(0x79, 0xc0, 0xff);
 
-    private static final int BAR_WIDTH = 40;
+    private static final Font MONO      = new Font(Font.MONOSPACED, Font.PLAIN,  13);
+    private static final Font MONO_BOLD = new Font(Font.MONOSPACED, Font.BOLD,   13);
+    private static final Font MONO_SM   = new Font(Font.MONOSPACED, Font.PLAIN,  12);
 
-    // -------------------------------------------------------------------------
-    // State
-    // -------------------------------------------------------------------------
+    private static final int BAR_W     = 320;   // global progress bar width (px)
+    private static final int REF_BAR_W = 110;   // per-ref mini bar width (px)
+
+    // ── State ──────────────────────────────────────────────────────────────
     private final String        tag;
     private final ReferenceId[] refs;
     private final int           totalPairs;
+    private final int           scenesPerRef;
     private final int           numThreads;
     private final long          tStart;
-    private final boolean       ansiSupported;
-    private final PrintStream   out;          // always stderr
-    private final int           BLOCK_LINES;
+    private final boolean       headless;
 
     private final ConcurrentHashMap<ReferenceId, AtomicInteger> refDone = new ConcurrentHashMap<>();
-    private final int scenesPerRef;
 
-    private volatile boolean initialised  = false;
-    private volatile String  statusLine   = "";   // current post-processing step
+    private volatile int     lastDone    = 0;
+    private volatile int     lastResults = 0;
+    private volatile long    lastElapsed = 0;
+    private volatile String  statusLine  = "";
+    private volatile boolean initialised = false;
 
-    // -------------------------------------------------------------------------
-    // Constructor
-    // -------------------------------------------------------------------------
+    // ── Swing widgets ──────────────────────────────────────────────────────
+    private JFrame    frame;
+    private JLabel    headerLabel;
+    private BarPanel  globalBar;
+    private JLabel    pairsLabel;
+    private JPanel    refPanel;
+    private JLabel    statusLabel;
+    private Timer     repaintTimer;
+
+    private JLabel[]  refNameLabels;
+    private BarPanel[] refBars;
+    private JLabel[]  refCountLabels;
+    private JLabel[]  refStateLabels;
+
+    // ── Constructor ────────────────────────────────────────────────────────
 
     public ProgressDisplay(String tag, ReferenceId[] refs, int totalPairs,
                            int scenesPerRef, int numThreads, long tStart) {
@@ -83,267 +89,344 @@ public final class ProgressDisplay {
         this.scenesPerRef = scenesPerRef;
         this.numThreads   = numThreads;
         this.tStart       = tStart;
-        this.BLOCK_LINES  = 4 + refs.length + 2;  // header+bar+numbers+sep+refs + post-sep+status
-        this.out          = openRawStderr();
-
+        this.headless     = GraphicsEnvironment.isHeadless();
         for (ReferenceId r : refs) refDone.put(r, new AtomicInteger(0));
-
-        this.ansiSupported = detectAnsi();
     }
 
-    /**
-     * Opens a {@link PrintStream} backed directly by {@link FileDescriptor#err},
-     * bypassing any stream replacement done by Surefire or IntelliJ's test runner.
-     * Falls back to {@link System#err} if the raw open fails.
-     */
-    private static PrintStream openRawStderr() {
-        try {
-            return new PrintStream(new FileOutputStream(FileDescriptor.err), true, "UTF-8");
-        } catch (Exception e) {
-            return System.err;
-        }
-    }
+    // ── Public API ─────────────────────────────────────────────────────────
 
-    /**
-     * Detects whether the current environment supports ANSI escape codes.
-     *
-     * <p>Checks (in order):
-     * <ul>
-     *   <li>{@code WT_SESSION} env var — Windows Terminal</li>
-     *   <li>{@code ANSICON} env var — ConEmu / Cmder ANSI shim</li>
-     *   <li>{@code COLORTERM} env var — any colour-capable terminal</li>
-     *   <li>{@code TERM} env var — non-dumb Unix terminal</li>
-     *   <li>{@code idea.vendor.name}, {@code idea.active}, {@code java.class.path}
-     *       containing "idea_rt" — IntelliJ's test runner</li>
-     *   <li>{@code TERM_PROGRAM} — e.g. iTerm2, VSCode terminal</li>
-     * </ul>
-     */
-    private static boolean detectAnsi() {
-        // Windows Terminal
-        if (System.getenv("WT_SESSION") != null) return true;
-        // ANSI shims (ConEmu, ANSICON, Cmder)
-        if (System.getenv("ANSICON") != null)    return true;
-        // Any colour-capable terminal declares this
-        if (System.getenv("COLORTERM") != null)  return true;
-        // Generic TERM (Unix / Git-Bash / WSL)
-        String term = System.getenv("TERM");
-        if (term != null && !term.isEmpty() && !term.equals("dumb")) return true;
-        // VS Code or other named terminal programs
-        if (System.getenv("TERM_PROGRAM") != null) return true;
-        // IntelliJ run/test runner (sets one or more of these)
-        if (System.getProperty("idea.vendor.name") != null) return true;
-        if (System.getProperty("idea.active")      != null) return true;
-        String cp = System.getProperty("java.class.path", "");
-        if (cp.contains("idea_rt")) return true;
-        return false;
-    }
-
-    // -------------------------------------------------------------------------
-    // Public API
-    // -------------------------------------------------------------------------
-
-    private static final String CLEAR_SCREEN  = "\u001B[2J";   // erase entire display
-    private static final String CURSOR_HOME   = "\u001B[H";    // move cursor to top-left
-
-    /** Prints the initial blank block and renders the 0% state. */
     public void start() {
-        if (!ansiSupported) {
-            out.printf("%n[%s] Starting: %d refs \u00d7 %d scenes  |  threads: %d%n",
+        initialised = true;
+        if (headless) {
+            stderr("[%s] Starting: %d refs × %d scenes  |  threads: %d%n",
                     tag, refs.length, scenesPerRef, numThreads);
-            out.flush();
-            initialised = true;
             return;
         }
-        // Clear the entire screen and move to top-left so the block owns the
-        // terminal from a known position — no stale lines above us to collide with.
-        out.print(CLEAR_SCREEN + CURSOR_HOME);
-        out.flush();
-        initialised = true;
-        render(0, 0, 0);
+        SwingUtilities.invokeLater(this::buildFrame);
     }
 
-    /**
-     * Called after each pair completes.
-     *
-     * @param refId       the reference that just completed a scene
-     * @param totalDone   total pairs completed so far
-     * @param resultCount total AnalysisResult objects collected so far
-     */
     public void update(ReferenceId refId, int totalDone, int resultCount) {
         if (!initialised) return;
         refDone.computeIfAbsent(refId, __ -> new AtomicInteger(0)).incrementAndGet();
-        if (ansiSupported) {
-            render(totalDone, resultCount, System.currentTimeMillis() - tStart);
-        } else {
-            int reportEvery = Math.max(1, totalPairs / 20);
-            if (totalDone % reportEvery == 0 || totalDone == totalPairs) {
-                long   elapsed = System.currentTimeMillis() - tStart;
-                double pct     = totalDone * 100.0 / totalPairs;
-                long   eta     = elapsed > 0 ? (long)((elapsed / pct) * (100.0 - pct) / 1000) : 0;
-                out.printf("[%s] %5.1f%%  %,d/%,d  elapsed %ds  ETA ~%ds  results %,d%n",
-                        tag, pct, totalDone, totalPairs, elapsed / 1000, eta, resultCount);
-                out.flush();
+        lastDone    = totalDone;
+        lastResults = resultCount;
+        lastElapsed = System.currentTimeMillis() - tStart;
+        if (headless) {
+            int every = Math.max(1, totalPairs / 20);
+            if (totalDone % every == 0 || totalDone == totalPairs) {
+                double pct = totalDone * 100.0 / totalPairs;
+                long eta   = lastElapsed > 0 && pct > 0
+                        ? (long)((lastElapsed / pct) * (100.0 - pct) / 1000) : 0;
+                stderr("[%s] %5.1f%%  %,d/%,d  elapsed %ds  ETA ~%ds  results %,d%n",
+                        tag, pct, totalDone, totalPairs,
+                        lastElapsed / 1000, eta, resultCount);
             }
         }
     }
 
-    /** Renders 100% and prints a completion line below the block. */
     public void finish(int totalDone, int resultCount) {
-        status("");   // clear status line at end
-        if (!initialised) return;
-        if (ansiSupported) {
-            render(totalDone, resultCount, System.currentTimeMillis() - tStart);
-            // Move cursor below the block so subsequent output doesn't overwrite it
-            out.print(String.format("\u001B[%dB", BLOCK_LINES + 1));
+        status("");
+        lastDone    = totalDone;
+        lastResults = resultCount;
+        lastElapsed = System.currentTimeMillis() - tStart;
+        if (headless) {
+            stderr("[%s] Complete: %,d results in %.1f s%n%n",
+                    tag, resultCount, lastElapsed / 1000.0);
+            return;
         }
-        double elapsed = (System.currentTimeMillis() - tStart) / 1000.0;
-        out.printf("%n[%s] Complete: %,d results in %.1f s%n%n", tag, resultCount, elapsed);
-        out.flush();
+        SwingUtilities.invokeLater(() -> {
+            if (repaintTimer != null) repaintTimer.stop();
+            repaintAll();
+        });
     }
 
-    /**
-     * Updates the post-processing status line at the bottom of the display.
-     * Call this for each significant step during {@code @AfterAll} output writing.
-     * In plain (non-ANSI) mode, prints a timestamped line instead.
-     *
-     * @param step short description, e.g. {@code "Computing verdicts..."}
-     */
     public void status(String step) {
         if (!initialised) return;
         statusLine = step == null ? "" : step;
-        if (ansiSupported) {
-            // Re-use last known done/result counts — just redraw the status area
-            renderStatusOnly();
-        } else if (!step.isEmpty()) {
-            out.printf("[%s] %s%n", tag, step);
-            out.flush();
-        }
+        if (headless && step != null && !step.isEmpty())
+            stderr("[%s] %s%n", tag, step);
     }
 
-    // -------------------------------------------------------------------------
-    // Rendering
-    // -------------------------------------------------------------------------
+    // ── Frame construction ─────────────────────────────────────────────────
 
-    private synchronized void render(int done, int results, long elapsedMs) {
-        double pct    = totalPairs > 0 ? done * 100.0 / totalPairs : 0;
-        long   etaSec = (elapsedMs > 0 && pct > 0 && pct < 100)
-                      ? (long)((elapsedMs / pct) * (100.0 - pct) / 1000) : 0;
+    private void buildFrame() {
+        frame = new JFrame("[" + tag + "] Pattern Matching — Progress");
+        frame.setDefaultCloseOperation(JFrame.DO_NOTHING_ON_CLOSE);
+        frame.getContentPane().setBackground(C_BG);
 
+        JPanel root = new JPanel();
+        root.setLayout(new BoxLayout(root, BoxLayout.Y_AXIS));
+        root.setBackground(C_BG);
+        root.setBorder(new EmptyBorder(14, 18, 14, 18));
+
+        // ── Header ─────────────────────────────────────────────────────────
+        headerLabel = label(
+                "[" + tag + "]  " + refs.length + " refs × " + scenesPerRef
+                        + " scenes  |  " + numThreads + " threads",
+                MONO_BOLD, C_HEADER);
+        root.add(headerLabel);
+        root.add(vgap(10));
+
+        // ── Global progress bar + percentage ──────────────────────────────
+        root.add(label("Progress", MONO_SM, C_DIM));
+        root.add(vgap(3));
+        globalBar = new BarPanel(BAR_W, 24, C_BAR_FILL, C_BAR_EMPTY, C_BAR_BG, true);
+        globalBar.setAlignmentX(Component.LEFT_ALIGNMENT);
+        root.add(globalBar);
+        root.add(vgap(8));
+
+        // ── Pairs / elapsed / ETA / results ───────────────────────────────
+        pairsLabel = label("Pairs  0 / " + totalPairs, MONO, C_WHITE);
+        root.add(pairsLabel);
+        root.add(vgap(10));
+
+        // ── Per-reference separator ────────────────────────────────────────
+        root.add(separator("── per-reference "));
+        root.add(vgap(5));
+
+        // ── Per-ref rows (in a scroll pane if many) ───────────────────────
+        refPanel       = new JPanel();
+        refPanel.setLayout(new BoxLayout(refPanel, BoxLayout.Y_AXIS));
+        refPanel.setBackground(C_BG);
+        refPanel.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        refNameLabels  = new JLabel[refs.length];
+        refBars        = new BarPanel[refs.length];
+        refCountLabels = new JLabel[refs.length];
+        refStateLabels = new JLabel[refs.length];
+
+        for (int i = 0; i < refs.length; i++) {
+            refPanel.add(buildRefRow(i));
+            if (i < refs.length - 1) refPanel.add(vgap(2));
+        }
+
+        int visRows = Math.min(refs.length, 20);
+        JScrollPane scroll = new JScrollPane(refPanel,
+                JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
+                JScrollPane.HORIZONTAL_SCROLLBAR_NEVER);
+        scroll.setBackground(C_BG);
+        scroll.getViewport().setBackground(C_BG);
+        scroll.setBorder(BorderFactory.createLineBorder(C_SEP, 1));
+        scroll.setAlignmentX(Component.LEFT_ALIGNMENT);
+        Dimension scrollSize = new Dimension(700, visRows * 23 + 6);
+        scroll.setPreferredSize(scrollSize);
+        scroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, scrollSize.height));
+        root.add(scroll);
+        root.add(vgap(10));
+
+        // ── Post-processing separator + status ────────────────────────────
+        root.add(separator("── post-processing "));
+        root.add(vgap(5));
+        statusLabel = label("", MONO, C_STATUS);
+        root.add(statusLabel);
+
+        frame.setContentPane(root);
+        frame.pack();
+        frame.setMinimumSize(new Dimension(740, 250));
+        frame.setLocationRelativeTo(null);
+        frame.setVisible(true);
+
+        // 100 ms repaint timer
+        repaintTimer = new Timer(100, e -> repaintAll());
+        repaintTimer.start();
+    }
+
+    private JPanel buildRefRow(int i) {
+        JPanel row = new JPanel();
+        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
+        row.setBackground(C_BG);
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        // Name (fixed width)
+        String name = refs[i].name();
+        if (name.length() > 26) name = name.substring(0, 25) + "~";
+        refNameLabels[i] = label(padRight(name, 26), MONO_SM, C_DIM);
+        refNameLabels[i].setPreferredSize(new Dimension(200, 18));
+        refNameLabels[i].setMinimumSize(new Dimension(200, 18));
+        refNameLabels[i].setMaximumSize(new Dimension(200, 18));
+        row.add(refNameLabels[i]);
+        row.add(hgap(8));
+
+        // Mini bar
+        refBars[i] = new BarPanel(REF_BAR_W, 16, C_BAR_FILL, C_BAR_EMPTY, C_BAR_BG, false);
+        row.add(refBars[i]);
+        row.add(hgap(8));
+
+        // Count  e.g. "  0/726"
+        refCountLabels[i] = label(padLeft("0", 4) + "/" + scenesPerRef, MONO_SM, C_DIM);
+        refCountLabels[i].setPreferredSize(new Dimension(76, 18));
+        refCountLabels[i].setMinimumSize(new Dimension(76, 18));
+        refCountLabels[i].setMaximumSize(new Dimension(76, 18));
+        row.add(refCountLabels[i]);
+        row.add(hgap(6));
+
+        // State badge
+        refStateLabels[i] = label("◌ running", MONO_SM, C_YELLOW);
+        row.add(refStateLabels[i]);
+
+        return row;
+    }
+
+    // ── Repaint (called on EDT by timer) ───────────────────────────────────
+
+    private void repaintAll() {
+        int    done    = lastDone;
+        int    results = lastResults;
+        long   elapsed = lastElapsed;
+        double pct     = totalPairs > 0 ? done * 100.0 / totalPairs : 0;
+        long   etaSec  = (elapsed > 0 && pct > 0 && pct < 100)
+                       ? (long)((elapsed / pct) * (100.0 - pct) / 1000) : 0;
+
+        // Global bar
+        globalBar.setFraction(pct / 100.0);
+        globalBar.setLabel(String.format("%.1f%%", pct));
+        globalBar.setFillColor(pct >= 100 ? C_GREEN : pct >= 50 ? C_BAR_FILL : C_YELLOW);
+
+        // Pairs line — mirrors terminal exactly:
+        // Pairs  1,234 / 2,610  |  elapsed 48s  |  ETA ~54s  |  results 885
         StringBuilder sb = new StringBuilder();
+        sb.append(String.format("Pairs  %,d / %,d", done, totalPairs));
+        sb.append(String.format("  |  elapsed %ds", elapsed / 1000));
+        if (pct > 0 && pct < 100)
+            sb.append(String.format("  |  ETA ~%ds", etaSec));
+        sb.append(String.format("  |  results %,d", results));
+        pairsLabel.setText(sb.toString());
 
-        // Always return to top-left of the cleared screen — no line counting needed
-        sb.append(CURSOR_HOME);
+        // Per-ref rows
+        for (int i = 0; i < refs.length; i++) {
+            int  cnt      = refDone.getOrDefault(refs[i], new AtomicInteger(0)).get();
+            boolean done2 = cnt >= scenesPerRef;
+            double frac   = scenesPerRef > 0 ? (double) cnt / scenesPerRef : 0;
 
-        // ── Line 0: header ──────────────────────────────────────────────────
-        sb.append(ERASE).append(COL1);
-        sb.append(BOLD).append(CYAN).append("[").append(tag).append("]").append(RESET);
-        sb.append("  ").append(WHITE).append(refs.length).append(RESET).append(" refs \u00d7 ");
-        sb.append(WHITE).append(scenesPerRef).append(RESET).append(" scenes");
-        sb.append(DIM).append("  |  ").append(numThreads).append(" threads").append(RESET);
-        sb.append("\n").append(COL1);
-
-        // ── Line 1: progress bar ─────────────────────────────────────────────
-        int filled = Math.max(0, Math.min(BAR_WIDTH, (int) Math.round(pct / 100.0 * BAR_WIDTH)));
-        sb.append(ERASE).append(COL1);
-        sb.append(DIM).append("Progress  ").append(RESET);
-        sb.append(BG_BAR).append(FG_FILL).append("\u2588".repeat(filled));
-        sb.append(FG_EMPTY).append("\u2592".repeat(BAR_WIDTH - filled)).append(RESET);
-        sb.append("  ");
-        String barColour = pct >= 100 ? GREEN : pct >= 50 ? CYAN : YELLOW;
-        sb.append(barColour).append(BOLD).append(padLeft(String.format("%.1f%%", pct), 6)).append(RESET);
-        sb.append("\n").append(COL1);
-
-        // ── Line 2: numbers ───────────────────────────────────────────────────
-        sb.append(ERASE).append(COL1);
-        sb.append(DIM).append("Pairs     ").append(RESET);
-        sb.append(WHITE).append(String.format("%,d", done)).append(RESET);
-        sb.append(DIM).append(" / ").append(RESET).append(String.format("%,d", totalPairs));
-        sb.append(DIM).append("  |  elapsed ").append(RESET);
-        sb.append(CYAN).append(elapsedMs / 1000).append("s").append(RESET);
-        if (pct < 100 && pct > 0) {
-            sb.append(DIM).append("  |  ETA ~").append(RESET);
-            sb.append(YELLOW).append(etaSec).append("s").append(RESET);
-        }
-        sb.append(DIM).append("  |  results ").append(RESET);
-        sb.append(MAGENTA).append(String.format("%,d", results)).append(RESET);
-        sb.append("\n").append(COL1);
-
-        // ── Line 3: separator ─────────────────────────────────────────────────
-        sb.append(ERASE).append(COL1);
-        sb.append(DIM).append("\u2500\u2500 per-reference ");
-        sb.append("\u2500".repeat(BAR_WIDTH + 18)).append(RESET);
-        sb.append("\n").append(COL1);
-
-        // ── Lines 4+: one per ref ─────────────────────────────────────────────
-        for (ReferenceId ref : refs) {
-            int refCount = refDone.getOrDefault(ref, new AtomicInteger(0)).get();
-            boolean complete = refCount >= scenesPerRef;
-            int mini = Math.max(0, Math.min(12,
-                    scenesPerRef > 0 ? refCount * 12 / scenesPerRef : 0));
-
-            sb.append(ERASE).append(COL1);
-            String refName = ref.name().length() > 28
-                    ? ref.name().substring(0, 27) + "~" : ref.name();
-            sb.append(complete ? GREEN : DIM).append(padRight(refName, 30)).append(RESET);
-            sb.append("  ");
-            sb.append(BG_BAR);
-            sb.append(complete ? GREEN : FG_FILL).append("\u2588".repeat(mini));
-            sb.append(FG_EMPTY).append("\u2592".repeat(12 - mini)).append(RESET);
-            sb.append("  ");
-            sb.append(padLeft(String.valueOf(refCount), 4));
-            sb.append(DIM).append("/").append(RESET);
-            sb.append(padRight(String.valueOf(scenesPerRef), 4));
-            sb.append("  ");
-            sb.append(complete ? GREEN + "\u2713 done   " : YELLOW + "\u25cc running");
-            sb.append(RESET).append("\n").append(COL1);
+            refNameLabels[i].setForeground(done2 ? C_GREEN : C_DIM);
+            refBars[i].setFraction(frac);
+            refBars[i].setFillColor(done2 ? C_GREEN : C_BAR_FILL);
+            refCountLabels[i].setText(padLeft(String.valueOf(cnt), 4) + "/" + scenesPerRef);
+            refCountLabels[i].setForeground(done2 ? C_GREEN : C_DIM);
+            refStateLabels[i].setText(done2 ? "✓ done   " : "◌ running");
+            refStateLabels[i].setForeground(done2 ? C_GREEN : C_YELLOW);
         }
 
-        // ── Post-processing section ───────────────────────────────────────────
-        sb.append(ERASE).append(COL1);
-        sb.append(DIM).append("\u2500\u2500 post-processing ");
-        sb.append("\u2500".repeat(BAR_WIDTH + 15)).append(RESET);
-        sb.append("\n").append(COL1);
+        // Status
+        String s = statusLine;
+        statusLabel.setText(s.isEmpty() ? "" : "▶ " + s);
 
-        sb.append(ERASE).append(COL1);
-        if (!statusLine.isEmpty()) {
-            sb.append(CYAN).append("\u25b6 ").append(RESET);
-            sb.append(WHITE).append(statusLine).append(RESET);
-        }
-        // no trailing newline — cursor stays on this line
-
-        out.print(sb);
-        out.flush();
+        frame.repaint();
     }
+
+    // ── Custom bar component ───────────────────────────────────────────────
 
     /**
-     * Redraws only the post-processing status line without touching the rest of
-     * the block — used by {@link #status(String)} during {@code @AfterAll}.
+     * Filled progress bar rendered via paintComponent — styled to match the
+     * ANSI block-character bars from the original terminal display.
      */
-    private synchronized void renderStatusOnly() {
-        // Row of the status line = BLOCK_LINES - 1 lines below the top (0-indexed)
-        // Since we use CURSOR_HOME we navigate down to the exact row.
-        int statusRow = BLOCK_LINES;   // 1-based row from top of cleared screen
-        StringBuilder sb = new StringBuilder();
-        sb.append(String.format("\u001B[%d;1H", statusRow));   // move to row N, col 1
-        sb.append(ERASE).append(COL1);
-        if (!statusLine.isEmpty()) {
-            sb.append(CYAN).append("\u25b6 ").append(RESET);
-            sb.append(WHITE).append(statusLine).append(RESET);
+    private static final class BarPanel extends JPanel {
+        private double  fraction  = 0.0;
+        private String  label     = "";
+        private Color   fillColor;
+        private final Color  emptyColor;
+        private final Color  bgColor;
+        private final int    fixedW, fixedH;
+        private final boolean showLabel;
+
+        BarPanel(int w, int h, Color fill, Color empty, Color bg, boolean showLabel) {
+            this.fixedW     = w;
+            this.fixedH     = h;
+            this.fillColor  = fill;
+            this.emptyColor = empty;
+            this.bgColor    = bg;
+            this.showLabel  = showLabel;
+            Dimension d = new Dimension(w, h);
+            setPreferredSize(d); setMinimumSize(d); setMaximumSize(d);
+            setOpaque(false);
         }
-        out.print(sb);
-        out.flush();
+
+        void setFraction(double f)  { this.fraction  = Math.max(0, Math.min(1, f)); repaint(); }
+        void setLabel(String l)     { this.label = l == null ? "" : l; }
+        void setFillColor(Color c)  { this.fillColor = c; }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,      RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+
+            int w = fixedW, h = fixedH, arc = 5;
+
+            // Track background
+            g2.setColor(bgColor);
+            g2.fillRoundRect(0, 0, w, h, arc, arc);
+
+            // Empty track
+            g2.setColor(emptyColor);
+            g2.fillRoundRect(0, 0, w, h, arc, arc);
+
+            // Filled portion
+            int fillW = (int) Math.round(fraction * w);
+            if (fillW > 0) {
+                g2.setColor(fillColor);
+                // Use plain rect for the right edge so it doesn't look rounded mid-bar
+                if (fillW >= w) {
+                    g2.fillRoundRect(0, 0, w, h, arc, arc);
+                } else {
+                    g2.fillRoundRect(0, 0, fillW + arc, h, arc, arc);
+                    g2.fillRect(fillW, 0, 1, h); // square off the right edge
+                }
+            }
+
+            // Percentage label centred inside the bar (global bar only)
+            if (showLabel && !label.isEmpty()) {
+                Font f = new Font(Font.MONOSPACED, Font.BOLD, 11);
+                g2.setFont(f);
+                FontMetrics fm = g2.getFontMetrics();
+                int tx = (w - fm.stringWidth(label)) / 2;
+                int ty = (h + fm.getAscent() - fm.getDescent()) / 2;
+                g2.setColor(new Color(0, 0, 0, 180));
+                g2.drawString(label, tx + 1, ty + 1);
+                g2.setColor(Color.WHITE);
+                g2.drawString(label, tx, ty);
+            }
+
+            g2.dispose();
+        }
     }
 
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
+    // ── Factory / layout helpers ───────────────────────────────────────────
 
-    private static String padLeft(String s, int width) {
-        return s.length() >= width ? s : " ".repeat(width - s.length()) + s;
+    private static JLabel label(String text, Font font, Color fg) {
+        JLabel l = new JLabel(text);
+        l.setFont(font);
+        l.setForeground(fg);
+        l.setAlignmentX(Component.LEFT_ALIGNMENT);
+        return l;
     }
 
-    private static String padRight(String s, int width) {
-        return s.length() >= width ? s : s + " ".repeat(width - s.length());
+    private static Component vgap(int h) { return Box.createRigidArea(new Dimension(0, h)); }
+    private static Component hgap(int w) { return Box.createRigidArea(new Dimension(w, 0)); }
+
+    /** Separator row: dim label on the left, coloured line stretching right. */
+    private JPanel separator(String text) {
+        JPanel p = new JPanel(new BorderLayout(6, 0));
+        p.setBackground(C_BG);
+        p.setAlignmentX(Component.LEFT_ALIGNMENT);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, 16));
+        JLabel lbl = label(text, MONO_SM, C_DIM);
+        p.add(lbl, BorderLayout.WEST);
+        JSeparator sep = new JSeparator(JSeparator.HORIZONTAL);
+        sep.setForeground(C_SEP);
+        sep.setBackground(C_BG);
+        p.add(sep, BorderLayout.CENTER);
+        return p;
+    }
+
+    private static String padRight(String s, int w) {
+        return s.length() >= w ? s : s + " ".repeat(w - s.length());
+    }
+    private static String padLeft(String s, int w) {
+        return s.length() >= w ? s : " ".repeat(w - s.length()) + s;
+    }
+    private static void stderr(String fmt, Object... args) {
+        System.err.printf(fmt, args);
+        System.err.flush();
     }
 }
-

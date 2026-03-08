@@ -230,7 +230,9 @@ public abstract class AnalyticalTestBase {
         int           totalPairs  = refs.length * catalogue.size();
         AtomicInteger done        = new AtomicInteger(0);
         long          tStart      = System.currentTimeMillis();
-        int           numThreads  = 8;
+
+        // Use all available processors, capped at 16, leaving at least 1 for the JVM/GC.
+        int numThreads = Math.max(1, Math.min(32, Runtime.getRuntime().availableProcessors() - 1));
 
         progress = new ProgressDisplay(
                 tag(), refs, totalPairs, catalogue.size(), numThreads, tStart);
@@ -239,35 +241,53 @@ public abstract class AnalyticalTestBase {
         ConcurrentLinkedQueue<AnalysisResult> bag      = new ConcurrentLinkedQueue<>();
         Map<AnalysisResult, SceneEntry>       sceneMap = new ConcurrentHashMap<>(totalPairs * 2);
 
+        // Pre-build all (refId, refMat) pairs so mats are ready before the parallel loop.
+        // Each mat is shared read-only across all scene tasks for that ref — safe because
+        // matchers never modify the reference mat.
+        record RefEntry(ReferenceId id, Mat mat) {}
+        List<RefEntry> refEntries = Arrays.stream(refs)
+                .map(id -> new RefEntry(id, ReferenceImageFactory.build(id)))
+                .toList();
+
+        // Flatten to individual (ref, scene) work items — this is the unit of parallelism.
+        // With N refs × M scenes we get N×M independent tasks, keeping all threads
+        // busy regardless of ref count (previously only N tasks existed).
+        record WorkItem(RefEntry ref, SceneEntry scene) {}
+        List<WorkItem> workItems = new ArrayList<>(totalPairs);
+        for (RefEntry re : refEntries) {
+            for (SceneEntry scene : catalogue) {
+                workItems.add(new WorkItem(re, scene));
+            }
+        }
+
+        // Pre-compute tiered save set once — it's the same for every work item.
+        Set<String> tieredSave = applyTierFilter(saveVariants());
+
         ForkJoinPool pool = new ForkJoinPool(numThreads);
         try {
             pool.submit(() ->
-                Arrays.stream(refs).parallel().forEach(refId -> {
-                    Mat refMat = ReferenceImageFactory.build(refId);
-                    try {
-                        for (SceneEntry scene : catalogue) {
-                            Set<String> tieredSave = applyTierFilter(saveVariants());
-                            List<AnalysisResult> matched =
-                                    runMatcher(refId, refMat, scene, tieredSave, absOutputDir)
-                                    .stream()
-                                    .filter(r -> applyTierFilter(Set.of(r.methodName())).contains(r.methodName()))
-                                    .toList();
-                            for (AnalysisResult r : matched) {
-                                bag.add(r);
-                                sceneMap.put(r, scene);
-                            }
-                            int n = done.incrementAndGet();
-                            progress.update(refId, n, bag.size());
-                        }
-                    } finally {
-                        refMat.release();
+                workItems.parallelStream().forEach(item -> {
+                    List<AnalysisResult> matched =
+                            runMatcher(item.ref().id(), item.ref().mat(),
+                                       item.scene(), tieredSave, absOutputDir)
+                            .stream()
+                            .filter(r -> applyTierFilter(Set.of(r.methodName()))
+                                             .contains(r.methodName()))
+                            .toList();
+                    for (AnalysisResult r : matched) {
+                        bag.add(r);
+                        sceneMap.put(r, item.scene());
                     }
+                    int n = done.incrementAndGet();
+                    progress.update(item.ref().id(), n, bag.size());
                 })
             ).get();
         } catch (Exception e) {
             throw new RuntimeException("Parallel matcher loop failed", e);
         } finally {
             pool.shutdown();
+            // Release all reference mats now that the parallel work is complete.
+            refEntries.forEach(re -> re.mat().release());
         }
 
         results        = new ArrayList<>(bag);
@@ -319,15 +339,10 @@ public abstract class AnalyticalTestBase {
         // 3. Print verdict summary
         printVerdictSummary(verdicts);
 
-        // 4. No-op for annotated images (already written by matcher)
+        // 5. No-op for annotated images (already written by matcher)
         progress.status("Saving annotated images...");
         AnalysisOutputWriter.saveAnnotatedImages(results, absOutputDir.resolve("annotated"));
 
-        // 5. Reference grids
-        progress.status("Saving reference grids...");
-        AnalysisOutputWriter.saveReferenceGrids(
-                results.stream().filter(r -> r.annotatedPath() != null).toList(),
-                absOutputDir);
 
         // 6. Performance profiles
         progress.status("Profiling performance...");

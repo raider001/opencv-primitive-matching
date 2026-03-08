@@ -111,11 +111,10 @@ class AnalysisInfrastructureTest {
     // -------------------------------------------------------------------------
 
     @Test @Order(2)
-    @DisplayName("Save annotated images and reference grids")
-    void saveImages() throws IOException {
+    @DisplayName("Save annotated images")
+    void saveImages() {
         AnalysisOutputWriter.saveAnnotatedImages(results, OUT.resolve("annotated"));
-        AnalysisOutputWriter.saveReferenceGrids(results, OUT);
-        System.out.printf("Annotated images and grids saved to %s%n%n", OUT.toAbsolutePath());
+        System.out.printf("Annotated images saved to %s%n%n", OUT.toAbsolutePath());
     }
 
     // -------------------------------------------------------------------------
