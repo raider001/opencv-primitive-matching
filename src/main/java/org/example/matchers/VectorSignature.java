@@ -520,31 +520,27 @@ public final class VectorSignature {
         }
 
         // ── 5. Segment descriptor — geometric traversal (primary structural signal) ──
-        // Traverses the raw contour classifying segments as STRAIGHT or CURVED,
-        // with noise connections naturally terminated at curvature spikes.
-        // This is noise-resistant and scale/rotation invariant.
         double segScore;
         if (this.segmentDescriptor != null && ref.segmentDescriptor != null) {
             segScore = this.segmentDescriptor.similarity(ref.segmentDescriptor);
         } else {
-            segScore = 0.5;
+            // No descriptor available — no free score
+            segScore = 0.0;
         }
 
         // ── 6. Topology — legacy connected edge structure ─────────────────
-        // Still useful as corroboration alongside segmentDescriptor.
         double topoScore;
         if (this.topology != null && ref.topology != null) {
             topoScore = this.topology.similarity(ref.topology);
-        } else if (this.topology == null && ref.topology == null) {
-            topoScore = 1.0;
         } else {
-            topoScore = 0.5;
+            // Unknown topology — no free score
+            topoScore = 0.0;
         }
 
         // ── 7. Angle histogram intersection — rotation invariant ──────────
         double angleScore = histogramIntersection(this.angleHistogram, ref.angleHistogram);
 
-        // ── 7. Aspect ratio — scale invariant ─────────────────────────────
+        // ── 8. Aspect ratio — scale invariant ─────────────────────────────
         double arA = Math.max(this.aspectRatio, 1.0);
         double arB = Math.max(ref.aspectRatio,  1.0);
         double aspectScore = 1.0 - Math.abs(arA - arB) / Math.max(arA, arB);
@@ -556,10 +552,11 @@ public final class VectorSignature {
             componentPenalty = 0.15 * ((double) Math.abs(this.componentCount - ref.componentCount) / maxC);
         }
 
-        // Weights — segmentDescriptor is the primary structural discriminator
-        double score = typeScore     * 0.15   // type classification
-                     + segScore      * 0.35   // geometric segment traversal (PRIMARY)
-                     + topoScore     * 0.15   // legacy topology (corroboration)
+        // Weights — segmentDescriptor is the primary structural discriminator.
+        // No field gives free partial credit — every null/unknown contributes 0.
+        double score = typeScore     * 0.15   // type classification (hard gate applies)
+                     + segScore      * 0.40   // geometric segment traversal (PRIMARY — raised)
+                     + topoScore     * 0.10   // topology (corroboration — lowered, no free credit)
                      + circScore     * 0.13   // circularity ratio
                      + solidityScore * 0.12   // solidity ratio
                      + vertexScore   * 0.06   // vertex count tiebreaker
@@ -569,8 +566,8 @@ public final class VectorSignature {
 
         double result = Math.max(0.0, Math.min(1.0, score));
 
-        // Hard gate: cap cross-type matches well below the 50% pass threshold
-        if (hardGate) result = Math.min(result, 0.35);
+        // Hard gate: cap cross-type matches well below any pass threshold
+        if (hardGate) result = Math.min(result, 0.25);
 
         return result;
     }

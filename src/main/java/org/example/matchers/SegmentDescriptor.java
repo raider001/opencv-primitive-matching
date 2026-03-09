@@ -289,8 +289,8 @@ public final class SegmentDescriptor {
         int delta = Math.abs(na - nb);
         if (delta > 3) return 0.0;
 
-        // Hard cap per extra/missing segment
-        double cap = Math.max(0.0, 1.0 - delta * 0.20);
+        // Hard cap per extra/missing segment — stricter than before
+        double cap = Math.max(0.0, 1.0 - delta * 0.30);
 
         List<Seg> aSegs = na <= nb ? this.segments : ref.segments;
         List<Seg> bSegs = na <= nb ? ref.segments  : this.segments;
@@ -314,8 +314,8 @@ public final class SegmentDescriptor {
 
     /** Score two individual segments against each other. Returns [0, 1]. */
     private static double segScore(Seg a, Seg b) {
-        // Type mismatch — hard penalty
-        if (a.type != b.type) return 0.15;
+        // Type mismatch — no partial credit; straight and curved are fundamentally different
+        if (a.type != b.type) return 0.0;
 
         // Normalised length similarity
         double lenSim = Math.max(0.0, 1.0 - Math.abs(a.normLen - b.normLen) / Math.max(a.normLen, b.normLen + 1e-9));
