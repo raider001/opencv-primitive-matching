@@ -286,11 +286,33 @@ public final class SegmentDescriptor {
 
         int na = this.segments.size();
         int nb = ref.segments.size();
+        int refCount = nb; // nb is always the reference side (caller passes ref)
         int delta = Math.abs(na - nb);
-        if (delta > 3) return 0.0;
 
-        // Hard cap per extra/missing segment — stricter than before
-        double cap = Math.max(0.0, 1.0 - delta * 0.30);
+        // ── Ratio-based missing-segment penalty ───────────────────────────
+        // Distinguish two cases:
+        //
+        // (A) Scene has FEWER segments than reference — structurally incomplete.
+        //     Penalise hard: cap = matched/expected.  Hard reject below 50%.
+        //     e.g. ref=4 (rect), scene=2 → cap=0.50, hard reject at scene=1.
+        //
+        // (B) Scene has MORE segments than reference — noise added extra segments.
+        //     Softer penalty: we still match the best ref-count segments from the
+        //     scene, but cap at 1.0 - (extra/total)*0.4 so pure noise can't win.
+        //     e.g. ref=1 (circle), scene=3 → cap = 1.0 - (2/3)*0.4 = 0.73.
+        double cap;
+        if (na < nb) {
+            // Scene is missing segments — strict fraction-based cap
+            double matchedFraction = (double) na / refCount;
+            if (matchedFraction < 0.5) return 0.0; // fewer than half — hard reject
+            cap = matchedFraction;
+        } else if (na > nb) {
+            // Scene has extra noise segments — soft penalty
+            double extraFraction = (double)(na - nb) / na;
+            cap = Math.max(0.40, 1.0 - extraFraction * 0.40);
+        } else {
+            cap = 1.0; // exact match
+        }
 
         List<Seg> aSegs = na <= nb ? this.segments : ref.segments;
         List<Seg> bSegs = na <= nb ? ref.segments  : this.segments;
@@ -305,7 +327,9 @@ public final class SegmentDescriptor {
                 Seg b = bSegs.get((i + offset) % lg);
                 sum += segScore(a, b);
             }
-            double score = sum / sm;
+            // Average over the reference count — unmatched reference segments
+            // implicitly contribute 0 (they are missing from the scene).
+            double score = sum / Math.max(refCount, 1);
             if (score > best) best = score;
         }
 

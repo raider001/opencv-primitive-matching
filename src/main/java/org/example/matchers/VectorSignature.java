@@ -456,6 +456,43 @@ public final class VectorSignature {
     public double similarity(VectorSignature ref) {
         if (ref == null) return 0.0;
 
+        // ── 0. Normalised-area gate ────────────────────────────────────────
+        // Note: in VectorMatcher, this = refSig (NaN normArea), ref = sceneSig.
+        //
+        // Rule (a): image-border reject — if the scene candidate fills >95% of
+        // the image it's almost certainly the frame border, not a real shape.
+        //
+        // Rule (b): minimum-size reject — if the scene candidate is a tiny noise
+        // fragment (< 0.3% of image area) it cannot be a meaningful shape match.
+        // This eliminates small line intersections and random fragments that share
+        // geometric features with real shapes only by coincidence.
+        //
+        // Rule (c): area-ratio reject — only fires when BOTH sides have a finite
+        // normalisedArea (e.g. scene-vs-scene comparison).
+        if (!Double.isNaN(ref.normalisedArea)) {
+            // Rule (a): near-full-image reject
+            if (ref.normalisedArea > 0.80) {
+                System.err.println("[GATE-A] normArea=" + ref.normalisedArea + " type=" + ref.type + " raw=" + computeRawSimilarity(ref));
+                return Math.min(0.25, computeRawSimilarity(ref));
+            }
+            // Rule (b): minimum-size reject
+            if (ref.normalisedArea < 0.003) {
+                return Math.min(0.25, computeRawSimilarity(ref));
+            }
+        }
+        if (!Double.isNaN(this.normalisedArea) && !Double.isNaN(ref.normalisedArea)
+                && ref.normalisedArea > 0 && this.normalisedArea > 0) {
+            double areaRatio = ref.normalisedArea / this.normalisedArea;
+            if (areaRatio < (1.0 / 10.0) || areaRatio > 10.0) {
+                return Math.min(0.25, computeRawSimilarity(ref));
+            }
+        }
+
+        return computeRawSimilarity(ref);
+    }
+
+    private double computeRawSimilarity(VectorSignature ref) {
+
         // ── 1. Type scoring with hard gate ────────────────────────────────
         // Incompatible types get a hard cap so they can never pass threshold.
         // Exception: CIRCLE vs CLOSED_CONVEX_POLY where the circle-typed side has
@@ -467,8 +504,10 @@ public final class VectorSignature {
             typeScore = 1.0;
         } else if ((this.type  == ShapeType.CLOSED_CONVEX_POLY || this.type  == ShapeType.CLOSED_CONCAVE_POLY)
                 && (ref.type   == ShapeType.CLOSED_CONVEX_POLY || ref.type   == ShapeType.CLOSED_CONCAVE_POLY)) {
-            // Same broad polygon family but concavity differs — moderate penalty
-            typeScore = 0.5;
+            // Same broad polygon family but concavity classification differs.
+            // Noisy backgrounds add spurious concavities to otherwise-convex shapes,
+            // so we use a light penalty (0.70) rather than a moderate one (0.50).
+            typeScore = 0.70;
         } else if ((this.type == ShapeType.CIRCLE && ref.type == ShapeType.CLOSED_CONVEX_POLY)
                 || (this.type == ShapeType.CLOSED_CONVEX_POLY && ref.type == ShapeType.CIRCLE)) {
             // Borderline: one classified as CIRCLE, one as POLY.
@@ -491,7 +530,16 @@ public final class VectorSignature {
         // ── 2. Circularity ratio — enforces "how round the shape is" ─────
         // A circle has circularity ≈ 1.0; a rectangle ≈ 0.78; a triangle ≈ 0.60.
         // These are preserved across scale and rotation.
+        //
+        // Special gate: when the reference is a CIRCLE (circ > 0.82), the scene
+        // candidate MUST also be reasonably circular.  A gradient stripe or
+        // any non-round shape has circularity well below 0.65 and cannot
+        // legitimately match a filled circle.
         double circScore = 1.0 - Math.abs(this.circularity - ref.circularity);
+        if (this.type == ShapeType.CIRCLE && ref.circularity < 0.65) {
+            // Clearly non-circular candidate vs circular reference — hard gate
+            hardGate = true;
+        }
 
         // ── 3. Solidity ratio — enforces convexity / fill ratio ───────────
         // A filled rectangle ≈ 1.0; a star ≈ 0.5; a circle outline ring ≈ 0.15.
@@ -499,24 +547,33 @@ public final class VectorSignature {
         // and a rectangle outline or thin shape, and between a filled shape and a ring.
         double solidityScore = 1.0 - Math.abs(this.solidity - ref.solidity);
 
-        // ── 4. Vertex count — topology invariant ─────────────────────────
-        // For small vertex counts (3=triangle, 4=rect, 5=pentagon) each additional
-        // vertex is highly significant. Use a stepped absolute-delta penalty that
-        // is steeper at low counts and levels out for high-vertex shapes.
-        int minV = Math.min(this.vertexCount, ref.vertexCount);
-        int maxV = Math.max(this.vertexCount, ref.vertexCount);
+        // ── 4. Vertex count — ratio-based penalty ────────────────────────
+        // Score = matched / expected, where "expected" is the reference count.
+        // Missing half the expected vertices gives 0.50, missing all gives 0.0.
+        // This scales relative to how structurally complex the reference is —
+        // a triangle missing 1 vertex (33% deficit) is penalised more than an
+        // octagon missing 1 vertex (12% deficit).
+        //
+        // Special case: if the reference has 0 vertices (circle / line), the shape
+        // type already handles discrimination — don't penalise the scene for picking
+        // up noise vertices in the polygon approximation.
         double vertexScore;
-        if (maxV == 0) {
+        if (ref.vertexCount == 0) {
+            // Reference is a circle or line — vertex count not a discriminator here
             vertexScore = 1.0;
-        } else if (minV <= 6) {
-            // Low vertex count: treat each delta vertex as a large jump
-            // 0 diff → 1.0, 1 diff → 0.70, 2 diff → 0.40, 3+ → 0.10
-            int delta = maxV - minV;
-            vertexScore = Math.max(0.0, 1.0 - delta * 0.30);
+        } else if (this.vertexCount == 0) {
+            // Scene produced no vertices but reference expects some — full penalty
+            vertexScore = 0.0;
         } else {
-            // Higher vertex counts: relative penalty (octagons vs hexagons etc)
-            double relDelta = (double)(maxV - minV) / Math.max(1, minV);
-            vertexScore = Math.max(0.0, 1.0 - relDelta * relDelta);
+            // Both have vertices.
+            // Penalise missing vertices linearly but tolerate extra vertices from
+            // background noise (up to 50% over reference count is not penalised).
+            // e.g. vRef=4, vDet=6 → ratio = 4/4 = 1.0 (within tolerance)
+            //      vRef=4, vDet=2 → ratio = 2/4 = 0.50
+            //      vRef=5, vDet=2 → ratio = 2/5 = 0.40
+            int effective = Math.min(this.vertexCount, (int)(ref.vertexCount * 1.5));
+            double ratio  = (double) Math.min(effective, ref.vertexCount) / ref.vertexCount;
+            vertexScore = Math.min(1.0, ratio);
         }
 
         // ── 5. Segment descriptor — geometric traversal (primary structural signal) ──
@@ -524,7 +581,6 @@ public final class VectorSignature {
         if (this.segmentDescriptor != null && ref.segmentDescriptor != null) {
             segScore = this.segmentDescriptor.similarity(ref.segmentDescriptor);
         } else {
-            // No descriptor available — no free score
             segScore = 0.0;
         }
 
@@ -533,7 +589,6 @@ public final class VectorSignature {
         if (this.topology != null && ref.topology != null) {
             topoScore = this.topology.similarity(ref.topology);
         } else {
-            // Unknown topology — no free score
             topoScore = 0.0;
         }
 
@@ -553,14 +608,13 @@ public final class VectorSignature {
         }
 
         // Weights — segmentDescriptor is the primary structural discriminator.
-        // No field gives free partial credit — every null/unknown contributes 0.
         double score = typeScore     * 0.15   // type classification (hard gate applies)
-                     + segScore      * 0.40   // geometric segment traversal (PRIMARY — raised)
-                     + topoScore     * 0.10   // topology (corroboration — lowered, no free credit)
+                     + segScore      * 0.34   // geometric segment traversal (PRIMARY)
+                     + topoScore     * 0.12   // topology (corroboration — raised)
                      + circScore     * 0.13   // circularity ratio
                      + solidityScore * 0.12   // solidity ratio
-                     + vertexScore   * 0.06   // vertex count tiebreaker
-                     + angleScore    * 0.03   // angle histogram
+                     + vertexScore   * 0.08   // vertex count (reduced — noisy bg adds vertices)
+                     + angleScore    * 0.05   // angle histogram (raised — rotation invariant)
                      + aspectScore   * 0.01   // aspect ratio
                      - componentPenalty;
 
@@ -570,7 +624,7 @@ public final class VectorSignature {
         if (hardGate) result = Math.min(result, 0.25);
 
         return result;
-    }
+    } // end computeRawSimilarity
 
     // -------------------------------------------------------------------------
     // Helpers

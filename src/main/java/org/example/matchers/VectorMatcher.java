@@ -359,8 +359,11 @@ public final class VectorMatcher {
         Imgproc.cvtColor(refBgr, grey, Imgproc.COLOR_BGR2GRAY);
         Imgproc.threshold(grey, bin, 20, 255, Imgproc.THRESH_BINARY);
         grey.release();
-        double refArea = (double) refBgr.rows() * refBgr.cols();
-        VectorSignature sig = VectorSignature.build(bin, epsilonFactor, refArea);
+        // Pass NaN for imageArea so normalisedArea = NaN on the reference.
+        // The area-ratio gate in VectorSignature.similarity() only fires when
+        // BOTH sides have a finite normalisedArea — this prevents false-gating
+        // when the reference is drawn at a different scale than the scene.
+        VectorSignature sig = VectorSignature.build(bin, epsilonFactor, Double.NaN);
         bin.release();
         return sig;
     }
