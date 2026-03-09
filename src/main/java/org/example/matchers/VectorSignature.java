@@ -92,10 +92,17 @@ public final class VectorSignature {
     public final ContourTopology topology;
 
     /**
+     * Geometric segment descriptor: the contour traversed and classified into
+     * STRAIGHT and CURVED segments, with scale-invariant length/radius ratios.
+     * This is the primary structural discriminator — it is immune to noise
+     * connections because curvature spikes at noise joins terminate segments.
+     * {@code null} for COMPOUND shapes.
+     */
+    public final SegmentDescriptor segmentDescriptor;
+
+    /**
      * Normalised area: contour area divided by the bounding-box area of the
-     * full image from which this signature was extracted.  Stored as a
-     * fraction in (0, 1] so that it can be compared across different image
-     * sizes.  Set to {@code Double.NaN} when not available (legacy paths).
+     * full image from which this signature was extracted.
      */
     public final double normalisedArea;
 
@@ -106,17 +113,19 @@ public final class VectorSignature {
     private VectorSignature(ShapeType type, int vertexCount, double circularity,
                              double concavityRatio, double[] angleHistogram,
                              int componentCount, double aspectRatio,
-                             double solidity, ContourTopology topology, double normalisedArea) {
-        this.type            = type;
-        this.vertexCount     = vertexCount;
-        this.circularity     = circularity;
-        this.concavityRatio  = concavityRatio;
-        this.angleHistogram  = angleHistogram;
-        this.componentCount  = componentCount;
-        this.aspectRatio     = aspectRatio;
-        this.solidity        = solidity;
-        this.topology        = topology;
-        this.normalisedArea  = normalisedArea;
+                             double solidity, ContourTopology topology,
+                             SegmentDescriptor segmentDescriptor, double normalisedArea) {
+        this.type               = type;
+        this.vertexCount        = vertexCount;
+        this.circularity        = circularity;
+        this.concavityRatio     = concavityRatio;
+        this.angleHistogram     = angleHistogram;
+        this.componentCount     = componentCount;
+        this.aspectRatio        = aspectRatio;
+        this.solidity           = solidity;
+        this.topology           = topology;
+        this.segmentDescriptor  = segmentDescriptor;
+        this.normalisedArea     = normalisedArea;
     }
 
     // -------------------------------------------------------------------------
@@ -149,22 +158,34 @@ public final class VectorSignature {
     public static VectorSignature buildFromContour(MatOfPoint contour, double epsilon, double imageArea) {
         if (contour == null || contour.empty()) return unknown();
 
-        // Render the contour FILLED into a tight bounding-box crop.
-        // This matches what the reference pipeline does (filled mask → findContours),
-        // and is far cheaper than rendering to full scene size.
         Rect bb = Imgproc.boundingRect(contour);
         if (bb.width < 4 || bb.height < 4) return unknown();
 
-        // Shift contour points to crop-local coordinates
+        // Pre-reduce with STRICT approxPolyDP before rendering into the crop.
+        // This collapses the 7-8 pixel-stepping points per corner down to the
+        // true geometric corners (e.g. 4 for a rect, 3 for a triangle).
+        double perim     = Imgproc.arcLength(new MatOfPoint2f(contour.toArray()), true);
+        double strictEps = Math.max(0.02 * perim, 2.0);
+        MatOfPoint2f approxF = new MatOfPoint2f();
+        Imgproc.approxPolyDP(new MatOfPoint2f(contour.toArray()), approxF, strictEps, true);
+        Point[] approxPts = approxF.toArray();
+        approxF.release();
+
+        // Fall back to raw if approx collapsed to < 3 points
+        Point[] renderPts = (approxPts.length >= 3) ? approxPts : contour.toArray();
+
+        // Shift to crop-local coordinates
         int pad = 2;
         Mat crop = Mat.zeros(bb.height + pad * 2, bb.width + pad * 2, CvType.CV_8UC1);
-        Point[] pts = contour.toArray();
-        Point[] shifted = new Point[pts.length];
-        for (int i = 0; i < pts.length; i++) {
-            shifted[i] = new Point(pts[i].x - bb.x + pad, pts[i].y - bb.y + pad);
+        Point[] shifted = new Point[renderPts.length];
+        for (int i = 0; i < renderPts.length; i++) {
+            shifted[i] = new Point(renderPts[i].x - bb.x + pad, renderPts[i].y - bb.y + pad);
         }
+
+        // Use fillPoly — handles non-simple polygons that approxPolyDP can produce,
+        // unlike drawContours which throws a convexityDefects self-intersection error.
         MatOfPoint shiftedMat = new MatOfPoint(shifted);
-        Imgproc.drawContours(crop, List.of(shiftedMat), 0, new Scalar(255), -1);
+        Imgproc.fillPoly(crop, List.of(shiftedMat), new Scalar(255));
         shiftedMat.release();
 
         VectorSignature sig = build(crop, epsilon, imageArea);
@@ -282,8 +303,21 @@ public final class VectorSignature {
         // Inter-vertex angle histogram
         double[] angleHist = computeAngleHistogram(approx);
 
-        // Contour topology — connected edge structure (scale + rotation invariant)
+        // Contour topology — legacy connected edge structure
         ContourTopology topology = ContourTopology.build(approx, perimeter);
+
+        // Segment descriptor — built from the approxPolyDP-reduced contour so that
+        // we start from clean corners (4 for a rect, 3 for a triangle) rather than
+        // hundreds of pixel-level stepping points that confuse the traversal.
+        // We use the STRICT epsilon (0.02) regardless of the variant epsilon so the
+        // descriptor always sees the true geometric corners.
+        double strictEps = Math.max(0.02 * perimeter, 2.0);
+        MatOfPoint2f strictApprox = new MatOfPoint2f();
+        Imgproc.approxPolyDP(contour2f, strictApprox, strictEps, true);
+        MatOfPoint strictContour = new MatOfPoint(strictApprox.toArray());
+        SegmentDescriptor segDesc = SegmentDescriptor.build(strictContour, perimeter);
+        strictApprox.release();
+        strictContour.release();
 
         // Concavity ratio via convex hull
         double concavityRatio = computeConcavityRatio(contour, perimeter);
@@ -304,7 +338,7 @@ public final class VectorSignature {
         contour2f.release();
 
         return new VectorSignature(type, vertexCount, circularity,
-                concavityRatio, angleHist, 1, aspectRatio, solidity, topology, normArea);
+                concavityRatio, angleHist, 1, aspectRatio, solidity, topology, segDesc, normArea);
     }
 
     private static VectorSignature buildCompound(List<MatOfPoint> contours, double epsilon, double imageArea) {
@@ -342,7 +376,7 @@ public final class VectorSignature {
 
         return new VectorSignature(ShapeType.COMPOUND,
                 rep.vertexCount, rep.circularity, rep.concavityRatio,
-                combined, contours.size(), rep.aspectRatio, rep.solidity, null, normArea);
+                combined, contours.size(), rep.aspectRatio, rep.solidity, null, null, normArea);
     }
 
     // -------------------------------------------------------------------------
@@ -509,22 +543,29 @@ public final class VectorSignature {
             vertexScore = Math.max(0.0, 1.0 - relDelta * relDelta);
         }
 
-        // ── 5. Topology — connected edge structure (the core new discriminator) ──
-        // Matches the cyclic sequence of (normalised edge length, turn angle) pairs.
-        // This captures HOW the contour's edges connect — a rectangle has 4 edges
-        // meeting at ~90° turns; a triangle has 3 edges at ~120° turns; etc.
-        // The cyclic alignment makes this rotation-invariant.
+        // ── 5. Segment descriptor — geometric traversal (primary structural signal) ──
+        // Traverses the raw contour classifying segments as STRAIGHT or CURVED,
+        // with noise connections naturally terminated at curvature spikes.
+        // This is noise-resistant and scale/rotation invariant.
+        double segScore;
+        if (this.segmentDescriptor != null && ref.segmentDescriptor != null) {
+            segScore = this.segmentDescriptor.similarity(ref.segmentDescriptor);
+        } else {
+            segScore = 0.5;
+        }
+
+        // ── 6. Topology — legacy connected edge structure ─────────────────
+        // Still useful as corroboration alongside segmentDescriptor.
         double topoScore;
         if (this.topology != null && ref.topology != null) {
             topoScore = this.topology.similarity(ref.topology);
         } else if (this.topology == null && ref.topology == null) {
-            topoScore = 1.0;  // both compound — no topology to compare
+            topoScore = 1.0;
         } else {
-            topoScore = 0.5;  // one has topology, other doesn't
+            topoScore = 0.5;
         }
 
-        // ── 6. Angle histogram intersection — rotation invariant ──────────
-        // Still useful as a fast pre-filter but now secondary to topology.
+        // ── 7. Angle histogram intersection — rotation invariant ──────────
         double angleScore = histogramIntersection(this.angleHistogram, ref.angleHistogram);
 
         // ── 7. Aspect ratio — scale invariant ─────────────────────────────
@@ -539,14 +580,15 @@ public final class VectorSignature {
             componentPenalty = 0.15 * ((double) Math.abs(this.componentCount - ref.componentCount) / maxC);
         }
 
-        // Weights — topology is now the primary structural discriminator
-        double score = typeScore     * 0.20   // type classification
-                     + topoScore     * 0.30   // connected edge topology (NEW — primary)
-                     + circScore     * 0.15   // circularity ratio
-                     + solidityScore * 0.15   // solidity ratio
-                     + vertexScore   * 0.10   // vertex count (subsumed by topology but kept as tiebreaker)
-                     + angleScore    * 0.07   // angle histogram (secondary to topology)
-                     + aspectScore   * 0.03   // aspect ratio
+        // Weights — segmentDescriptor is the primary structural discriminator
+        double score = typeScore     * 0.15   // type classification
+                     + segScore      * 0.35   // geometric segment traversal (PRIMARY)
+                     + topoScore     * 0.15   // legacy topology (corroboration)
+                     + circScore     * 0.13   // circularity ratio
+                     + solidityScore * 0.12   // solidity ratio
+                     + vertexScore   * 0.06   // vertex count tiebreaker
+                     + angleScore    * 0.03   // angle histogram
+                     + aspectScore   * 0.01   // aspect ratio
                      - componentPenalty;
 
         double result = Math.max(0.0, Math.min(1.0, score));
@@ -585,7 +627,7 @@ public final class VectorSignature {
 
     private static VectorSignature unknown() {
         return new VectorSignature(ShapeType.UNKNOWN, 0, 0, 0,
-                new double[]{1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6}, 0, 1.0, 0, null, Double.NaN);
+                new double[]{1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6}, 0, 1.0, 0, null, null, Double.NaN);
     }
 
     @Override

@@ -2,6 +2,7 @@ package org.example.matchers;
 
 import org.example.analytics.AnalysisResult;
 import org.example.colour.ColourPreFilter;
+import org.example.colour.SceneColourClusters;
 import org.example.factories.ReferenceId;
 import org.example.scene.SceneEntry;
 import org.opencv.core.*;
@@ -108,23 +109,33 @@ public final class VectorMatcher {
                                       Path outputDir) {
         long t0 = System.currentTimeMillis();
         try {
-            List<MatOfPoint> contours = extractContours(sceneForExtraction);
-
             double sceneArea = (double) sceneForExtraction.rows() * sceneForExtraction.cols();
 
             double bestScore = 0.0;
             Rect   bestBbox  = null;
 
-            for (MatOfPoint c : contours) {
-                // Fast path: build signature directly from tight bounding-box crop (no full-scene render)
-                VectorSignature sceneSig = VectorSignature.buildFromContour(
-                        c, variant.epsilonFactor(), sceneArea);
+            // ── Colour-isolated contour extraction ───────────────────────
+            // Decompose the scene into per-colour clusters and extract
+            // contours from each independently.  This keeps each contour
+            // clean — noise of a different colour never merges with the
+            // target shape's contour.
+            List<SceneColourClusters.Cluster> clusters =
+                    SceneColourClusters.extract(sceneForExtraction);
 
-                // Full similarity (includes vertex graph)
-                double sim = refSig.similarity(sceneSig);
-                if (sim > bestScore) {
-                    bestScore = sim;
-                    bestBbox  = Imgproc.boundingRect(c);
+            for (SceneColourClusters.Cluster cluster : clusters) {
+                Mat masked = SceneColourClusters.applyMask(sceneForExtraction, cluster);
+                List<MatOfPoint> contours = extractContoursFromBinary(masked);
+                masked.release();
+                cluster.release();
+
+                for (MatOfPoint c : contours) {
+                    VectorSignature sceneSig = VectorSignature.buildFromContour(
+                            c, variant.epsilonFactor(), sceneArea);
+                    double sim = refSig.similarity(sceneSig);
+                    if (sim > bestScore) {
+                        bestScore = sim;
+                        bestBbox  = Imgproc.boundingRect(c);
+                    }
                 }
             }
 
@@ -157,10 +168,10 @@ public final class VectorMatcher {
     // -------------------------------------------------------------------------
 
     /**
-     * Converts a BGR scene (or CF-masked BGR scene) into a list of candidate
-     * contours that are large enough to be real shapes.
+     * Converts a BGR scene into a list of candidate contours.
+     * Contours smaller than {@code minArea} pixels are discarded.
      */
-    public static List<MatOfPoint> extractContours(Mat bgrScene) {
+    public static List<MatOfPoint> extractContours(Mat bgrScene, double minArea) {
         Mat grey = new Mat();
         Mat bin  = new Mat();
         Mat edge = new Mat();
@@ -179,8 +190,155 @@ public final class VectorMatcher {
         bin.release();
         edge.release();
 
+        contours.removeIf(c -> Imgproc.contourArea(c) < minArea);
+        return contours;
+    }
+
+    /** Extracts contours using the default minimum area (64 px²). */
+    public static List<MatOfPoint> extractContours(Mat bgrScene) {
+        return extractContours(bgrScene, MIN_AREA);
+    }
+
+    /**
+     * Extracts contours from a colour-isolated (masked) BGR image using
+     * threshold-only binarisation — no Canny.
+     *
+     * <p>Because the input is already colour-isolated (only one colour cluster
+     * is present), the threshold produces a clean binary mask with true filled
+     * shapes. {@code CHAIN_APPROX_SIMPLE} on a filled shape gives exact corner
+     * points (4 for a rect, 3 for a triangle) with no aliased intermediate points.
+     * This is the primary contour extraction path for the colour-isolated matcher.
+     */
+    public static List<MatOfPoint> extractContoursFromBinary(Mat maskedBgr) {
+        Mat grey = new Mat();
+        Mat bin  = new Mat();
+        Imgproc.cvtColor(maskedBgr, grey, Imgproc.COLOR_BGR2GRAY);
+        Imgproc.threshold(grey, bin, 20, 255, Imgproc.THRESH_BINARY);
+        grey.release();
+
+        List<MatOfPoint> contours = new ArrayList<>();
+        Mat hierarchy = new Mat();
+        Imgproc.findContours(bin, contours, hierarchy,
+                Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE);
+        hierarchy.release();
+        bin.release();
+
         contours.removeIf(c -> Imgproc.contourArea(c) < MIN_AREA);
         return contours;
+    }
+
+    /**
+     * Returns the raw binary edge map (threshold OR Canny) before any noise reduction.
+     * Used for the "All Points &amp; Connections" visualisation step in the HTML report.
+     */
+    public static Mat extractBinaryRaw(Mat bgrScene) {
+        Mat grey = new Mat();
+        Mat bin  = new Mat();
+        Mat edge = new Mat();
+        Imgproc.cvtColor(bgrScene, grey, Imgproc.COLOR_BGR2GRAY);
+        Imgproc.threshold(grey, bin, 20, 255, Imgproc.THRESH_BINARY);
+        Imgproc.Canny(grey, edge, CANNY_LO, CANNY_HI);
+        Core.bitwise_or(bin, edge, bin);
+        grey.release();
+        edge.release();
+        return bin; // caller must release
+    }
+
+    /**
+     * Returns the binary edge map after morphological opening — erode then dilate
+     * with a 3×3 kernel.  This breaks thin 1–2 px noise bridges that connect
+     * background edges to the target shape's contour, without affecting the thick
+     * edges of real filled shapes.
+     * Used for the "Reduced Points &amp; Connections" visualisation step.
+     */
+    public static Mat extractBinaryReduced(Mat bgrScene) {
+        Mat raw    = extractBinaryRaw(bgrScene);
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+        Mat opened = new Mat();
+        Imgproc.morphologyEx(raw, opened, Imgproc.MORPH_OPEN, kernel);
+        raw.release();
+        kernel.release();
+        return opened; // caller must release
+    }
+
+    /**
+     * Renders a contour graph visualisation onto a black canvas.
+     *
+     * <p>Layer 1 (dark grey): the raw binary edge map as underlay.
+     * <p>Layer 2 (coloured, per-contour): connecting edges as thick lines.
+     * <p>Layer 3 (white dots): vertices as filled circles.
+     *
+     * @param size      output canvas size
+     * @param binary    binary edge map to show as grey underlay (single-channel, may be null)
+     * @param contours  contours to visualise
+     * @param epsilon   approxPolyDP factor. Pass {@code 0} to show ALL raw contour
+     *                  points without any approximation (the "All Points" view).
+     *                  Pass a non-zero value (e.g. 0.02) to show only the approximated
+     *                  polygon vertices (the "Reduced Points" view).
+     */
+    public static Mat drawContourGraph(Size size, Mat binary,
+                                        List<MatOfPoint> contours, double epsilon) {
+        Mat out = Mat.zeros((int) size.height, (int) size.width, CvType.CV_8UC3);
+
+        int dotRaw     = 2;
+        int dotApprox  = 5;
+        int lineApprox = 1;
+
+        // Layer 1 — raw edge map as dark grey underlay
+        if (binary != null && !binary.empty()) {
+            Mat grey3 = new Mat();
+            Imgproc.cvtColor(binary, grey3, Imgproc.COLOR_GRAY2BGR);
+            Core.multiply(grey3, new Scalar(0.4, 0.4, 0.4), grey3);
+            Core.add(out, grey3, out);
+            grey3.release();
+        }
+
+        // Colour palette (BGR)
+        int[][] palette = {
+            {80,80,255},{80,255,80},{255,80,80},{80,255,255},
+            {255,80,255},{255,255,80},{80,160,255},{255,80,160},
+            {160,255,80},{255,160,80}
+        };
+
+        for (int ci = 0; ci < contours.size(); ci++) {
+            int[]  col     = palette[ci % palette.length];
+            Scalar edgeCol = new Scalar(col[0], col[1], col[2]);
+            Scalar vertCol = new Scalar(255, 255, 255);
+
+            MatOfPoint c = contours.get(ci);
+            Point[] pts;
+
+            if (epsilon <= 0) {
+                // ALL raw contour points — no approximation
+                pts = c.toArray();
+            } else {
+                // Approximated polygon
+                double perim = Imgproc.arcLength(new MatOfPoint2f(c.toArray()), true);
+                double eps   = Math.max(epsilon * perim, 2.0);
+                MatOfPoint2f approx = new MatOfPoint2f();
+                Imgproc.approxPolyDP(new MatOfPoint2f(c.toArray()), approx, eps, true);
+                pts = approx.toArray();
+                approx.release();
+            }
+
+            int n = pts.length;
+            if (n == 0) continue;
+
+            boolean isApprox = (epsilon > 0);
+            int lineW = isApprox ? lineApprox : 1;
+            int dotR  = isApprox ? dotApprox  : dotRaw;
+
+            // Edges
+            for (int i = 0; i < n; i++) {
+                Imgproc.line(out, pts[i], pts[(i + 1) % n], edgeCol, lineW);
+            }
+            // Vertices
+            for (Point p : pts) {
+                Imgproc.circle(out, p, dotR, vertCol, -1);
+                Imgproc.circle(out, p, dotR, edgeCol, lineW);
+            }
+        }
+        return out;
     }
 
     /**
@@ -296,6 +454,12 @@ public final class VectorMatcher {
                 .replace("_CF_TIGHT", "-CFT");
     }
 }
+
+
+
+
+
+
 
 
 
