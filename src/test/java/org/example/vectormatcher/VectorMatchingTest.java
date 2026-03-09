@@ -75,46 +75,6 @@ class VectorMatchingTest {
                      String sceneAnnot,
                      double iou, boolean falsePositive) {}
 
-    /**
-     * Returns true when the background genuinely contains instances of the
-     * same shape type as the reference, so a low-IoU match is not a "false positive"
-     * in the algorithmic sense — the matcher correctly found a real occurrence.
-     *
-     * <p>Examples:
-     * <ul>
-     *   <li>CIRCLE_FILLED on BG_RANDOM_CIRCLES → circles ARE drawn → not a FP</li>
-     *   <li>RECT_FILLED   on BG_RANDOM_CIRCLES → no rects         → IS a FP</li>
-     *   <li>RECT_FILLED   on BG_RANDOM_MIXED   → rects ARE drawn  → not a FP</li>
-     * </ul>
-     */
-    private static boolean backgroundContainsShape(BackgroundId bgId, ReferenceId refId) {
-        if (bgId == null || refId == null) return false;
-        VectorSignature.ShapeType refType = shapeTypeOf(refId);
-        return switch (bgId) {
-            case BG_RANDOM_CIRCLES -> refType == VectorSignature.ShapeType.CIRCLE;
-            case BG_RANDOM_LINES   -> refType == VectorSignature.ShapeType.LINE_SEGMENT;
-            case BG_RANDOM_MIXED   ->
-                // mixed contains lines, circles AND rectangles
-                refType == VectorSignature.ShapeType.CIRCLE
-                || refType == VectorSignature.ShapeType.LINE_SEGMENT
-                || refType == VectorSignature.ShapeType.CLOSED_CONVEX_POLY;
-            case BG_CIRCUIT_LIKE   -> refType == VectorSignature.ShapeType.LINE_SEGMENT
-                                   || refType == VectorSignature.ShapeType.CIRCLE;
-            case BG_ORGANIC        -> refType == VectorSignature.ShapeType.CIRCLE;
-            default -> false;
-        };
-    }
-
-    /** Maps a ReferenceId to its primary VectorSignature ShapeType. */
-    private static VectorSignature.ShapeType shapeTypeOf(ReferenceId refId) {
-        return switch (refId) {
-            case CIRCLE_FILLED, ELLIPSE_H -> VectorSignature.ShapeType.CIRCLE;
-            case LINE_CROSS               -> VectorSignature.ShapeType.COMPOUND;
-            case STAR_5_FILLED, CONCAVE_ARROW_HEAD -> VectorSignature.ShapeType.CLOSED_CONCAVE_POLY;
-            default                       -> VectorSignature.ShapeType.CLOSED_CONVEX_POLY;
-        };
-    }
-
     private final List<ReportRow> REPORT_ROWS = new CopyOnWriteArrayList<>();
 
     @BeforeAll
@@ -179,13 +139,13 @@ class VectorMatchingTest {
             assertTrue(onRect > onCirc, "own=" + onRect + " wrong=" + onCirc);
         }
 
-        @Test @Order(5) @DisplayName("S1e — All 9 variants return without error")
+        @Test @Order(5) @DisplayName("S1e — All 3 variants return without error")
         void allVariantsReturnWithoutError() {
             Mat ref = ReferenceImageFactory.build(ReferenceId.CIRCLE_FILLED);
             Mat scene = whiteCircleOnBlack(320, 240, 60);
             List<AnalysisResult> results = runMatcher(ReferenceId.CIRCLE_FILLED, ref, scene);
             ref.release(); scene.release();
-            assertEquals(9, results.size());
+            assertEquals(3, results.size());
             for (AnalysisResult r : results)
                 assertFalse(r.isError(), r.methodName() + ": " + r.errorMessage());
         }
@@ -355,7 +315,7 @@ class VectorMatchingTest {
             Core.randu(noise, 0.0, 255.0);
             assertDoesNotThrow(() -> {
                 List<AnalysisResult> results = runMatcher(ReferenceId.RECT_FILLED, ref, noise);
-                assertEquals(9, results.size());
+                assertEquals(3, results.size());
                 for (AnalysisResult r : results)
                     assertFalse(r.isError(), r.methodName() + " threw");
             });

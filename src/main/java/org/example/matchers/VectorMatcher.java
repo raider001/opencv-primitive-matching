@@ -18,24 +18,22 @@ import java.util.Set;
  * Vector Matcher — detects primitive shapes (lines, polygons, circles) using
  * colour-isolated contour analysis.
  *
- * <h2>Why it is scale and rotation invariant</h2>
- * <p>Shapes are encoded as {@link VectorSignature} objects whose fields
- * (circularity, vertex count, angle histogram, segment descriptor) are all
- * computed from normalised geometry — absolute position and scale are discarded.
- *
  * <h2>Pipeline (per variant)</h2>
  * <ol>
  *   <li>Binarise the reference → build {@link VectorSignature}.</li>
- *   <li>Decompose the scene into per-colour clusters via {@link SceneColourClusters}.</li>
- *   <li>For each cluster: threshold → {@code findContours} (CHAIN_APPROX_SIMPLE).</li>
+ *   <li>Use a pre-computed {@link SceneDescriptor} (contours grouped by colour cluster).</li>
  *   <li>Score each candidate contour's {@link VectorSignature} against the reference; keep best.</li>
  *   <li>Return one {@link AnalysisResult} per variant (score 0–100, bounding rect).</li>
  * </ol>
  *
+ * <h2>Performance</h2>
+ * <p>When matching multiple references against the same scene, build a
+ * {@link SceneDescriptor} once via {@link SceneDescriptor#build(Mat)} and pass it
+ * to {@link #match(ReferenceId, Mat, SceneEntry, SceneDescriptor, Set, Path)}.
+ * This avoids re-scanning the scene for every reference.
+ *
  * <h2>Variants</h2>
- * <p>3 variants — one per approximation epsilon level (STRICT/NORMAL/LOOSE).
- * Colour isolation is applied automatically to all variants via {@link SceneColourClusters};
- * no separate CF variants are needed.
+ * <p>3 variants — STRICT / NORMAL / LOOSE epsilon levels.
  */
 public final class VectorMatcher {
 
@@ -44,39 +42,66 @@ public final class VectorMatcher {
     private VectorMatcher() {}
 
     // -------------------------------------------------------------------------
-    // Public entry point
+    // Public entry points
     // -------------------------------------------------------------------------
 
+    /**
+     * Primary entry point — uses the {@link SceneDescriptor} already built into the
+     * {@link SceneEntry}.  The descriptor is computed once at scene construction and
+     * reused across every reference matched against that scene.
+     *
+     * <p>If the scene has no descriptor (stub entry with null mat) a temporary one is
+     * built and released after matching.
+     */
     public static List<AnalysisResult> match(ReferenceId referenceId,
                                              Mat refMat,
                                              SceneEntry scene,
                                              Set<String> saveVariants,
                                              Path outputDir) {
-        List<AnalysisResult> out = new ArrayList<>(3);
-        Mat sceneMat = scene.sceneMat();
+        SceneDescriptor descriptor = scene.descriptor();
+        if (descriptor != null) {
+            return matchWithDescriptor(referenceId, refMat, scene, descriptor, saveVariants, outputDir);
+        }
+        // Fallback for stub entries that have no mat/descriptor
+        SceneDescriptor temp = SceneDescriptor.build(scene.sceneMat());
+        try {
+            return matchWithDescriptor(referenceId, refMat, scene, temp, saveVariants, outputDir);
+        } finally {
+            temp.release();
+        }
+    }
 
-        // Build reference signatures once per epsilon level
+    /**
+     * Overload for callers that manage their own {@link SceneDescriptor} lifecycle —
+     * e.g. when a descriptor is shared across multiple scenes or built externally.
+     * The descriptor is not released by this method.
+     */
+    public static List<AnalysisResult> match(ReferenceId referenceId,
+                                             Mat refMat,
+                                             SceneEntry scene,
+                                             SceneDescriptor descriptor,
+                                             Set<String> saveVariants,
+                                             Path outputDir) {
+        return matchWithDescriptor(referenceId, refMat, scene, descriptor, saveVariants, outputDir);
+    }
+
+    private static List<AnalysisResult> matchWithDescriptor(ReferenceId referenceId,
+                                                             Mat refMat,
+                                                             SceneEntry scene,
+                                                             SceneDescriptor descriptor,
+                                                             Set<String> saveVariants,
+                                                             Path outputDir) {
         VectorSignature refStrict = buildRefSignature(refMat, VectorVariant.VECTOR_STRICT.epsilonFactor());
         VectorSignature refNormal = buildRefSignature(refMat, VectorVariant.VECTOR_NORMAL.epsilonFactor());
         VectorSignature refLoose  = buildRefSignature(refMat, VectorVariant.VECTOR_LOOSE.epsilonFactor());
 
-        // Extract colour clusters once — shared across all 3 variants
-        List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(sceneMat);
-        List<List<MatOfPoint>> contoursPerCluster  = new ArrayList<>(clusters.size());
-        for (SceneColourClusters.Cluster cluster : clusters) {
-            Mat masked = SceneColourClusters.applyMask(sceneMat, cluster);
-            contoursPerCluster.add(extractContoursFromBinary(masked));
-            masked.release();
-            cluster.release();
-        }
-
-        out.add(runVariant(VectorVariant.VECTOR_STRICT, refStrict, contoursPerCluster,
-                sceneMat, referenceId, scene, saveVariants, outputDir));
-        out.add(runVariant(VectorVariant.VECTOR_NORMAL, refNormal, contoursPerCluster,
-                sceneMat, referenceId, scene, saveVariants, outputDir));
-        out.add(runVariant(VectorVariant.VECTOR_LOOSE,  refLoose,  contoursPerCluster,
-                sceneMat, referenceId, scene, saveVariants, outputDir));
-
+        List<AnalysisResult> out = new ArrayList<>(3);
+        out.add(runVariant(VectorVariant.VECTOR_STRICT, refStrict, descriptor,
+                scene.sceneMat(), referenceId, scene, saveVariants, outputDir));
+        out.add(runVariant(VectorVariant.VECTOR_NORMAL, refNormal, descriptor,
+                scene.sceneMat(), referenceId, scene, saveVariants, outputDir));
+        out.add(runVariant(VectorVariant.VECTOR_LOOSE,  refLoose,  descriptor,
+                scene.sceneMat(), referenceId, scene, saveVariants, outputDir));
         return out;
     }
 
@@ -86,7 +111,7 @@ public final class VectorMatcher {
 
     static AnalysisResult runVariant(VectorVariant variant,
                                       VectorSignature refSig,
-                                      List<List<MatOfPoint>> contoursPerCluster,
+                                      SceneDescriptor descriptor,
                                       Mat sceneForAnnotation,
                                       ReferenceId referenceId,
                                       SceneEntry scene,
@@ -94,14 +119,13 @@ public final class VectorMatcher {
                                       Path outputDir) {
         long t0 = System.currentTimeMillis();
         try {
-            double sceneArea = (double) sceneForAnnotation.rows() * sceneForAnnotation.cols();
             double bestScore = 0.0;
             Rect   bestBbox  = null;
 
-            for (List<MatOfPoint> contours : contoursPerCluster) {
+            for (List<MatOfPoint> contours : descriptor.contoursPerCluster()) {
                 for (MatOfPoint c : contours) {
                     VectorSignature sceneSig = VectorSignature.buildFromContour(
-                            c, variant.epsilonFactor(), sceneArea);
+                            c, variant.epsilonFactor(), descriptor.sceneArea);
                     double sim = refSig.similarity(sceneSig);
                     if (sim > bestScore) {
                         bestScore = sim;
@@ -122,14 +146,14 @@ public final class VectorMatcher {
             return new AnalysisResult(variant.variantName(), referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     scorePercent, bestBbox, elapsed, 0L,
-                    scene.sceneMat().cols() * scene.sceneMat().rows(),
+                    (int) descriptor.sceneArea,
                     savedPath, false, null);
 
         } catch (Exception e) {
             return AnalysisResult.error(variant.variantName(), referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     System.currentTimeMillis() - t0,
-                    scene.sceneMat().cols() * scene.sceneMat().rows(),
+                    (int) descriptor.sceneArea,
                     e.getMessage());
         }
     }
@@ -140,9 +164,8 @@ public final class VectorMatcher {
 
     /**
      * Extracts contours from a colour-isolated masked BGR image using
-     * threshold-only binarisation.  Because the input has only one colour cluster,
-     * the threshold produces clean filled shapes.  {@code CHAIN_APPROX_SIMPLE} on
-     * a filled shape gives exact corner points with no aliased stepping.
+     * threshold-only binarisation.  {@code CHAIN_APPROX_SIMPLE} on a filled
+     * shape gives exact corner points with no aliased stepping.
      */
     public static List<MatOfPoint> extractContoursFromBinary(Mat maskedBgr) {
         Mat grey = new Mat();
@@ -226,8 +249,7 @@ public final class VectorMatcher {
             int n = pts.length;
             if (n == 0) continue;
 
-            boolean isApprox = (epsilon > 0);
-            int dotR  = isApprox ? 5 : 2;
+            int dotR = (epsilon > 0) ? 5 : 2;
             for (int i = 0; i < n; i++)
                 Imgproc.line(out, pts[i], pts[(i + 1) % n], edgeCol, 1);
             for (Point p : pts) {
