@@ -41,19 +41,28 @@ import java.util.List;
 public final class SceneColourClusters {
 
     /** Maximum number of chromatic clusters extracted from the scene. */
-    public static final int MAX_CLUSTERS = 6;
+    public static final int MAX_CLUSTERS = 12;
 
-    /** Hue tolerance around each peak (OpenCV half-degrees, so 15 = ±15°). */
-    public static final double HUE_TOLERANCE = 15.0;
+    /**
+     * Hue window half-width for mask generation (OpenCV half-degrees, 10 = ±10°).
+     * Tighter than before so adjacent hues (e.g. yellow vs green) are not merged.
+     */
+    public static final double HUE_TOLERANCE = 10.0;
+
+    /**
+     * Minimum hue separation between two peaks to be treated as distinct colours.
+     * Must be > HUE_TOLERANCE to avoid gaps between adjacent cluster masks.
+     */
+    private static final int   PEAK_MIN_SEPARATION = 12;
 
     /** Minimum saturation to be considered chromatic (0–255). */
-    private static final double MIN_SAT = 40.0;
+    private static final double MIN_SAT = 35.0;
 
     /** Minimum value to be considered non-black (0–255). */
-    private static final double MIN_VAL = 30.0;
+    private static final double MIN_VAL = 25.0;
 
-    /** Minimum fraction of image pixels a cluster must have to be kept. */
-    private static final double MIN_COVERAGE = 0.005; // 0.5%
+    /** Minimum number of chromatic pixels a peak must have to be kept. */
+    private static final int MIN_PIXEL_COUNT = 64;
 
     // -------------------------------------------------------------------------
 
@@ -96,16 +105,14 @@ public final class SceneColourClusters {
         Mat hsv = new Mat();
         Imgproc.cvtColor(bgrScene, hsv, Imgproc.COLOR_BGR2HSV);
 
-        int totalPx = bgrScene.rows() * bgrScene.cols();
-
-        // ── Achromatic mask (low saturation) ─────────────────────────────
+        // ── Achromatic mask (low saturation or near-black) ─────────────────
         Mat achromaticMask = new Mat();
         Core.inRange(hsv,
                 new Scalar(0,   0,       MIN_VAL),
                 new Scalar(179, MIN_SAT, 255),
                 achromaticMask);
 
-        // ── Chromatic mask (high saturation only) ─────────────────────────
+        // ── Chromatic mask (sufficient saturation + brightness) ────────────
         Mat chromaticMask = new Mat();
         Core.inRange(hsv,
                 new Scalar(0,   MIN_SAT, MIN_VAL),
@@ -116,20 +123,16 @@ public final class SceneColourClusters {
         float[] hueHist = buildHueHistogram(hsv, chromaticMask);
         chromaticMask.release();
 
-        // ── Find top hue peaks ────────────────────────────────────────────
-        List<Integer> peaks = findPeaks(hueHist, (int)(totalPx * MIN_COVERAGE));
+        // ── Find hue peaks ─────────────────────────────────────────────────
+        List<Integer> peaks = findPeaks(hueHist, MIN_PIXEL_COUNT);
 
-        // ── Build cluster masks ───────────────────────────────────────────
+        // ── Build cluster masks ────────────────────────────────────────────
         List<Cluster> clusters = new ArrayList<>();
-
         for (int peakHue : peaks) {
             if (clusters.size() >= MAX_CLUSTERS) break;
-
-            // Handle hue wrap-around at 0/179
             Mat clusterMask = hueRangeMask(hsv, peakHue, HUE_TOLERANCE);
-
             int coverage = Core.countNonZero(clusterMask);
-            if (coverage < totalPx * MIN_COVERAGE) {
+            if (coverage < MIN_PIXEL_COUNT) {
                 clusterMask.release();
                 continue;
             }
@@ -137,7 +140,7 @@ public final class SceneColourClusters {
         }
 
         // Always add achromatic cluster if it has coverage
-        if (Core.countNonZero(achromaticMask) > totalPx * MIN_COVERAGE) {
+        if (Core.countNonZero(achromaticMask) >= MIN_PIXEL_COUNT) {
             clusters.add(new Cluster(achromaticMask, Double.NaN, true));
         } else {
             achromaticMask.release();
@@ -162,53 +165,67 @@ public final class SceneColourClusters {
     // Helpers
     // =========================================================================
 
-    /** Builds a 180-bin hue histogram over chromatic pixels only. */
+    /** Builds a 180-bin hue histogram over chromatic pixels only using OpenCV calcHist. */
     private static float[] buildHueHistogram(Mat hsv, Mat chromaticMask) {
-        float[] hist = new float[180];
-        int rows = hsv.rows(), cols = hsv.cols();
-        for (int r = 0; r < rows; r++) {
-            for (int c = 0; c < cols; c++) {
-                if (chromaticMask.get(r, c)[0] > 0) {
-                    int hue = (int) hsv.get(r, c)[0];
-                    if (hue >= 0 && hue < 180) hist[hue]++;
-                }
-            }
+        // Extract hue channel only
+        List<Mat> hsvChannels = new ArrayList<>();
+        Core.split(hsv, hsvChannels);
+        Mat hueChannel = hsvChannels.get(0);
+
+        // calcHist: 180 bins, range [0, 180), masked to chromatic pixels only
+        Mat hist = new Mat();
+        Imgproc.calcHist(
+                List.of(hueChannel),
+                new MatOfInt(0),
+                chromaticMask,
+                hist,
+                new MatOfInt(180),
+                new MatOfFloat(0f, 180f)
+        );
+
+        // Copy into float array
+        float[] result = new float[180];
+        for (int i = 0; i < 180; i++) {
+            result[i] = (float) hist.get(i, 0)[0];
         }
-        return hist;
+
+        hist.release();
+        hueChannel.release();
+        for (int i = 1; i < hsvChannels.size(); i++) hsvChannels.get(i).release();
+
+        return result;
     }
 
     /**
-     * Finds the top hue peaks in the histogram, merging peaks within
-     * {@link #HUE_TOLERANCE} of each other into a single peak.
-     * Returns peak hues sorted by count (highest first), capped at {@link #MAX_CLUSTERS}.
+     * Finds hue peaks in the histogram.
+     * Peaks closer than {@link #PEAK_MIN_SEPARATION} to a stronger peak are suppressed.
+     * Returns peak hues sorted by pixel count (highest first).
      */
     private static List<Integer> findPeaks(float[] hist, int minCount) {
-        // Smooth with a small window to merge adjacent hue bins
+        // Smooth with a small window to merge adjacent single-bin spikes
         float[] smoothed = new float[180];
-        int smoothR = 3;
+        int smoothR = 2;
         for (int i = 0; i < 180; i++) {
             float sum = 0;
-            for (int d = -smoothR; d <= smoothR; d++) {
+            for (int d = -smoothR; d <= smoothR; d++)
                 sum += hist[(i + d + 180) % 180];
-            }
             smoothed[i] = sum / (2 * smoothR + 1);
         }
 
         // Find local maxima above minCount
-        List<int[]> peaks = new ArrayList<>(); // [hue, count]
+        List<int[]> peaks = new ArrayList<>();
         for (int i = 0; i < 180; i++) {
             float prev = smoothed[(i - 1 + 180) % 180];
             float curr = smoothed[i];
             float next = smoothed[(i + 1) % 180];
-            if (curr > prev && curr >= next && curr >= minCount) {
+            if (curr > prev && curr >= next && curr >= minCount)
                 peaks.add(new int[]{i, (int) curr});
-            }
         }
 
-        // Sort by count descending
+        // Sort by pixel count descending
         peaks.sort((a, b) -> b[1] - a[1]);
 
-        // Suppress peaks within HUE_TOLERANCE of a stronger peak
+        // Suppress peaks within PEAK_MIN_SEPARATION of a stronger peak
         List<Integer> result = new ArrayList<>();
         boolean[] suppressed = new boolean[peaks.size()];
         for (int i = 0; i < peaks.size() && result.size() < MAX_CLUSTERS; i++) {
@@ -216,8 +233,8 @@ public final class SceneColourClusters {
             result.add(peaks.get(i)[0]);
             for (int j = i + 1; j < peaks.size(); j++) {
                 int hueDiff = Math.abs(peaks.get(i)[0] - peaks.get(j)[0]);
-                hueDiff = Math.min(hueDiff, 180 - hueDiff); // wrap-around
-                if (hueDiff <= HUE_TOLERANCE) suppressed[j] = true;
+                hueDiff = Math.min(hueDiff, 180 - hueDiff);
+                if (hueDiff < PEAK_MIN_SEPARATION) suppressed[j] = true;
             }
         }
         return result;

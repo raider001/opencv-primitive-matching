@@ -42,9 +42,13 @@ public final class SceneDescriptor {
     /** Total pixel area of the scene (rows × cols), used for normalised-area scoring. */
     public final double sceneArea;
 
-    private SceneDescriptor(List<List<MatOfPoint>> contoursPerCluster, double sceneArea) {
+    /** Wall-clock time in ms taken to build this descriptor (colour extraction + findContours). */
+    public final long buildMs;
+
+    private SceneDescriptor(List<List<MatOfPoint>> contoursPerCluster, double sceneArea, long buildMs) {
         this.contoursPerCluster = contoursPerCluster;
         this.sceneArea          = sceneArea;
+        this.buildMs            = buildMs;
     }
 
     // -------------------------------------------------------------------------
@@ -61,6 +65,7 @@ public final class SceneDescriptor {
      * @return pre-computed descriptor ready for matching
      */
     public static SceneDescriptor build(Mat bgrScene) {
+        long t0   = System.currentTimeMillis();
         double area = (double) bgrScene.rows() * bgrScene.cols();
 
         List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(bgrScene);
@@ -73,7 +78,7 @@ public final class SceneDescriptor {
             cluster.release();
         }
 
-        return new SceneDescriptor(contoursPerCluster, area);
+        return new SceneDescriptor(contoursPerCluster, area, System.currentTimeMillis() - t0);
     }
 
     // -------------------------------------------------------------------------

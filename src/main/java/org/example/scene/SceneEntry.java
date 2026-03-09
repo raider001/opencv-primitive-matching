@@ -71,6 +71,11 @@ public final class SceneEntry {
     /** Pre-computed colour-cluster contour descriptor. May be null for stub entries. */
     public SceneDescriptor descriptor()              { return descriptor; }
 
+    /** Time taken to build the descriptor in ms. 0 for stub entries. */
+    public long descriptorBuildMs() {
+        return descriptor != null ? descriptor.buildMs : 0L;
+    }
+
     public List<SceneShapePlacement> placements() {
         return Collections.unmodifiableList(placements);
     }

@@ -69,11 +69,12 @@ class VectorMatchingTest {
      */
     record ReportRow(String stage, String label, String shapeName, String sceneDesc,
                      double score, boolean passed,
-                     String refOrig, String refPoints, String refPointsApprox,
+                     String refOrig, String refPoints,
                      String sceneOrig, String sceneBin,
                      String allPoints,
                      String sceneAnnot,
-                     double iou, boolean falsePositive) {}
+                     double iou, boolean falsePositive,
+                     long elapsedMs, long descriptorMs) {}
 
     private final List<ReportRow> REPORT_ROWS = new CopyOnWriteArrayList<>();
 
@@ -143,7 +144,7 @@ class VectorMatchingTest {
         void allVariantsReturnWithoutError() {
             Mat ref = ReferenceImageFactory.build(ReferenceId.CIRCLE_FILLED);
             Mat scene = whiteCircleOnBlack(320, 240, 60);
-            List<AnalysisResult> results = runMatcher(ReferenceId.CIRCLE_FILLED, ref, scene);
+            List<AnalysisResult> results = runMatcher(ReferenceId.CIRCLE_FILLED, ref, scene).results();
             ref.release(); scene.release();
             assertEquals(3, results.size());
             for (AnalysisResult r : results)
@@ -314,7 +315,7 @@ class VectorMatchingTest {
             Mat noise = new Mat(480, 640, CvType.CV_8UC3);
             Core.randu(noise, 0.0, 255.0);
             assertDoesNotThrow(() -> {
-                List<AnalysisResult> results = runMatcher(ReferenceId.RECT_FILLED, ref, noise);
+                List<AnalysisResult> results = runMatcher(ReferenceId.RECT_FILLED, ref, noise).results();
                 assertEquals(3, results.size());
                 for (AnalysisResult r : results)
                     assertFalse(r.isError(), r.methodName() + " threw");
@@ -936,11 +937,15 @@ class VectorMatchingTest {
     // Helpers — matcher invocation + result recording
     // =========================================================================
 
-    private List<AnalysisResult> runMatcher(ReferenceId refId, Mat ref, Mat sceneMat) {
+    private record MatchRun(List<AnalysisResult> results, long descriptorMs) {}
+
+    private MatchRun runMatcher(ReferenceId refId, Mat ref, Mat sceneMat) {
         SceneEntry scene = new SceneEntry(
                 refId, SceneCategory.A_CLEAN, "step5_synthetic",
                 BackgroundId.BG_SOLID_BLACK, Collections.emptyList(), sceneMat);
-        return VectorMatcher.match(refId, ref, scene, Collections.emptySet(), OUTPUT);
+        long descriptorMs = scene.descriptorBuildMs();
+        List<AnalysisResult> results = VectorMatcher.match(refId, ref, scene, Collections.emptySet(), OUTPUT);
+        return new MatchRun(results, descriptorMs);
     }
 
     /**
@@ -948,6 +953,8 @@ class VectorMatchingTest {
      * colour first, so CF variants actually find something to filter on.
      * Used by {@link #record} so both the standard and CF scores are meaningful.
      */
+    private static double normalScore(MatchRun run) { return normalScore(run.results()); }
+
     private static double normalScore(List<AnalysisResult> results) {
         return results.stream()
                 .filter(r -> r.methodName().equals(VectorVariant.VECTOR_NORMAL.variantName()))
@@ -959,15 +966,26 @@ class VectorMatchingTest {
     /** Overload with no ground-truth rect — auto-derives GT from the scene mat's white pixels. */
     private double record(String stage, String testId, String shapeName,
                           String sceneDesc, Mat sceneMat,
-                          List<AnalysisResult> results) {
-        // For clean scenes the scene IS the shape, so GT = bounding rect of white pixels
+                          MatchRun run) {
         Rect gt = groundTruthRect(sceneMat);
-        return record(stage, testId, shapeName, sceneDesc, sceneMat, gt, results);
+        return record(stage, testId, shapeName, sceneDesc, sceneMat, gt, run);
     }
 
     /**
      * Records one matcher result into {@link #REPORT_ROWS}, capturing the full
-     * pipeline as thumbnail images:
+     * pipeline as thumbnail images.
+     * @param groundTruth bounding rect of the target shape in the scene (null = unknown)
+     */
+    private double record(String stage, String testId, String shapeName,
+                          String sceneDesc, Mat sceneMat,
+                          Rect groundTruth,
+                          MatchRun run) {
+        return record(stage, testId, shapeName, sceneDesc, sceneMat, groundTruth, run.results(), run.descriptorMs());
+    }
+
+    /**
+     * Records one matcher result into {@link #REPORT_ROWS}, capturing the full
+     * pipeline as thumbnail images.
      *   1. Reference original (coloured, from ReferenceImageFactory)
      *   2. Reference binary  (greyscale + threshold — what the matcher uses)
      *   3. Scene original
@@ -979,7 +997,7 @@ class VectorMatchingTest {
     private double record(String stage, String testId, String shapeName,
                           String sceneDesc, Mat sceneMat,
                           Rect groundTruth,
-                          List<AnalysisResult> results) {
+                          List<AnalysisResult> results, long descriptorMs) {
         double score = normalScore(results);
 
         ReferenceId rid = results.isEmpty() ? null : results.get(0).referenceId();
@@ -990,9 +1008,8 @@ class VectorMatchingTest {
         Mat sceneWithRef = rid != null ? recolourToRef(sceneMat, rid) : sceneMat.clone();
 
         // ── Ref original + Ref Points (raw) + Ref Points (approx) ───────────
-        String refOrigPng        = "";
-        String refPointsPng      = "";
-        String refPointsApproxPng = "";
+        String refOrigPng   = "";
+        String refPointsPng = "";
         if (rid != null) {
             Mat refOrig = ReferenceImageFactory.build(rid);
             refOrigPng = matToBase64Png(refOrig);
@@ -1000,15 +1017,10 @@ class VectorMatchingTest {
             Mat refBin = VectorMatcher.extractBinaryRaw(refOrig);
             List<MatOfPoint> refContours = VectorMatcher.extractContoursFromBinary(refOrig);
 
-            // Raw — every pixel-level point (epsilon=0)
             Mat refGraphRaw = VectorMatcher.drawContourGraph(refOrig.size(), refBin, refContours, 0);
             refPointsPng = matToBase64Png(refGraphRaw);
             refGraphRaw.release();
 
-            // Approx — STRICT epsilon (0.02), what SegmentDescriptor actually sees
-            Mat refGraphApprox = VectorMatcher.drawContourGraph(refOrig.size(), refBin, refContours, 0.02);
-            refPointsApproxPng = matToBase64Png(refGraphApprox);
-            refGraphApprox.release();
 
             refBin.release();
             refOrig.release();
@@ -1067,13 +1079,17 @@ class VectorMatchingTest {
 
         sceneWithRef.release();
 
+        // Timing — sum elapsed across all 3 variants; descriptor time from scene entry
+        long elapsedMs    = results.stream().mapToLong(AnalysisResult::elapsedMs).sum();
+
         REPORT_ROWS.add(new ReportRow(stage, testId, shapeName, sceneDesc,
                 score, true,
-                refOrigPng, refPointsPng, refPointsApproxPng,
+                refOrigPng, refPointsPng,
                 sceneWithRefPng, sceneBinPng,
                 allPointsPng,
                 sceneAnnotPng,
-                iou, falsePositive));
+                iou, falsePositive,
+                elapsedMs, descriptorMs));
         return score;
     }
 
@@ -1417,8 +1433,7 @@ class VectorMatchingTest {
           .append("<div class='legend-title'>Pipeline (per test entry)</div>")
           .append("<div class='legend-row'>")
           .append("<span class='pl-step'>Ref</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Ref Points (raw)</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Ref Points (approx)</span><span class='pl-arrow'>→</span>")
+          .append("<span class='pl-step'>Ref Points</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Scene</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Edges (ref)</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Colour Clusters</span><span class='pl-arrow'>→</span>")
@@ -1426,7 +1441,8 @@ class VectorMatchingTest {
           .append("<span class='pl-step'>Score %</span>")
           .append("</div>")
           .append("<p style='font-size:.70rem;color:#8b949e;margin-top:5px'>")
-          .append("Colour Clusters = scene decomposed into per-colour layers; contours extracted per layer.")
+          .append("Colour Clusters = scene decomposed into per-colour layers; contours extracted per layer. ")
+          .append("Timing shows descriptor build ms + match ms.")
           .append("</p>")
           .append("</div>")
           .append("<div class='legend-block'>")
@@ -1479,18 +1495,23 @@ class VectorMatchingTest {
                     sb.append("<span class='iou-val ").append(iouCls).append("'>")
                       .append("IoU ").append(String.format("%.2f", r.iou())).append("</span>");
                 }
+                // Timing badge
+                sb.append("<span class='timing-badge'>")
+                  .append("desc: ").append(r.descriptorMs()).append("ms")
+                  .append(" &nbsp;·&nbsp; match: ").append(r.elapsedMs()).append("ms")
+                  .append(" &nbsp;·&nbsp; total: ").append(r.descriptorMs() + r.elapsedMs()).append("ms")
+                  .append("</span>");
                 sb.append("</div>");
 
-                // ── Standard pipeline sub-row ────────────────────────────
+                // ── Pipeline row ─────────────────────────────────────────
                 sb.append("<div class='pipeline-row'>")
                   .append("<div class='pipeline'>");
-                pipelineStep(sb, r.refOrig(),          "Ref");
-                pipelineStep(sb, r.refPoints(),        "Ref Points (raw)");
-                pipelineStep(sb, r.refPointsApprox(),  "Ref Points (approx)");
-                pipelineStep(sb, r.sceneOrig(),        "Scene");
-                pipelineStep(sb, r.sceneBin(),         "Edges (ref)");
-                pipelineStep(sb, r.allPoints(),        "Colour Clusters");
-                pipelineStep(sb, r.sceneAnnot(),       "Match");
+                pipelineStep(sb, r.refOrig(),    "Ref");
+                pipelineStep(sb, r.refPoints(),  "Ref Points");
+                pipelineStep(sb, r.sceneOrig(),  "Scene");
+                pipelineStep(sb, r.sceneBin(),   "Edges (ref)");
+                pipelineStep(sb, r.allPoints(),  "Colour Clusters");
+                pipelineStep(sb, r.sceneAnnot(), "Match");
                 sb.append("</div>")
                   .append("<div class='pipeline-score'>")
                   .append("<span class='score-val ").append(scoreClass(r.score())).append("'>")
@@ -1601,6 +1622,8 @@ class VectorMatchingTest {
                       border-radius:3px;padding:1px 6px;white-space:nowrap}
             .iou-val{font-size:.72rem;font-weight:600;white-space:nowrap}
             .iou-good{color:#56d364}.iou-warn{color:#d29922}.iou-bad{color:#f85149}
+            .timing-badge{font-size:.68rem;color:#8b949e;background:#21262d;border:1px solid #30363d;
+                           border-radius:4px;padding:1px 8px;white-space:nowrap;margin-left:auto;flex-shrink:0}
             .row-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
             .row-id{font-size:.72rem;font-weight:700;background:#21262d;border-radius:3px;
                     padding:1px 6px;color:#79c0ff;white-space:nowrap}
