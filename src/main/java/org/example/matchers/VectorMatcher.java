@@ -119,19 +119,31 @@ public final class VectorMatcher {
                                       Path outputDir) {
         long t0 = System.currentTimeMillis();
         try {
-            double bestScore = 0.0;
-            Rect   bestBbox  = null;
+            double bestScore      = 0.0;
+            Rect   bestBbox       = null;
+            int    bestClusterIdx = -1;
 
-            for (List<MatOfPoint> contours : descriptor.contoursPerCluster()) {
-                for (MatOfPoint c : contours) {
+            List<SceneDescriptor.ClusterContours> clusters = descriptor.clusters();
+            for (int ci = 0; ci < clusters.size(); ci++) {
+                for (MatOfPoint c : clusters.get(ci).contours) {
                     VectorSignature sceneSig = VectorSignature.buildFromContour(
                             c, variant.epsilonFactor(), descriptor.sceneArea);
                     double sim = refSig.similarity(sceneSig);
                     if (sim > bestScore) {
-                        bestScore = sim;
-                        bestBbox  = Imgproc.boundingRect(c);
+                        bestScore      = sim;
+                        bestBbox       = Imgproc.boundingRect(c);
+                        bestClusterIdx = ci;
                     }
                 }
+            }
+
+            // ── Multi-cluster penalty ─────────────────────────────────────
+            // If the best bbox region is significantly covered by pixels from
+            // other clusters, the "shape" spans multiple colours — it is likely
+            // background noise, not a real single-colour shape.
+            if (bestBbox != null && bestClusterIdx >= 0 && clusters.size() > 1) {
+                bestScore = applyMultiClusterPenalty(
+                        bestScore, bestBbox, bestClusterIdx, clusters, sceneForAnnotation);
             }
 
             double scorePercent = bestScore * 100.0;
@@ -158,6 +170,97 @@ public final class VectorMatcher {
         }
     }
 
+    /**
+     * Penalises a match score when the candidate bbox region contains significant
+     * pixel coverage from clusters other than the one the match came from.
+     *
+     * <p>Logic:
+     * <ol>
+     *   <li>Count pixels in the bbox belonging to the winning cluster (own pixels).</li>
+     *   <li>Count pixels belonging to every other cluster in the same bbox (foreign pixels).</li>
+     *   <li>Compute {@code foreignRatio = foreignPx / (ownPx + foreignPx)}.</li>
+     *   <li>Apply penalty: {@code score *= (1 - foreignRatio * PENALTY_WEIGHT)}.</li>
+     * </ol>
+     *
+     * <p>A foreignRatio of 0 means the shape is cleanly one colour — no penalty.
+     * A foreignRatio of 0.5 means half the bbox is other colours — substantial penalty.
+     */
+    private static double applyMultiClusterPenalty(
+            double score, Rect bbox, int winnerIdx,
+            List<SceneDescriptor.ClusterContours> clusters,
+            Mat scene) {
+
+        // We need the cluster masks — re-extract them from the scene for the bbox only.
+        // This is lightweight: small sub-mat + countNonZero only.
+        Mat hsv = new Mat();
+        Imgproc.cvtColor(scene, hsv, Imgproc.COLOR_BGR2HSV);
+
+        // Clamp bbox to scene bounds
+        int x1 = Math.max(0, bbox.x);
+        int y1 = Math.max(0, bbox.y);
+        int x2 = Math.min(scene.cols(), bbox.x + bbox.width);
+        int y2 = Math.min(scene.rows(), bbox.y + bbox.height);
+        if (x2 <= x1 || y2 <= y1) { hsv.release(); return score; }
+
+        Mat hsvRoi = hsv.submat(y1, y2, x1, x2);
+
+        // Count own-cluster pixels vs foreign-cluster pixels in bbox
+        long ownPx     = 0;
+        long foreignPx = 0;
+
+        for (int ci = 0; ci < clusters.size(); ci++) {
+            SceneDescriptor.ClusterContours cc = clusters.get(ci);
+            Mat mask = buildHueMask(hsvRoi, cc);
+            long px  = Core.countNonZero(mask);
+            mask.release();
+            if (ci == winnerIdx) ownPx     += px;
+            else                  foreignPx += px;
+        }
+
+        hsvRoi.release();
+        hsv.release();
+
+        long total = ownPx + foreignPx;
+        if (total == 0) return score;
+
+        double foreignRatio = (double) foreignPx / total;
+
+        // Scale penalty: foreignRatio=0 → no penalty, foreignRatio=1 → 80% reduction
+        double penalty = foreignRatio * 0.80;
+        return score * (1.0 - penalty);
+    }
+
+    /** Rebuilds a binary mask for a cluster's hue range over a (small) HSV ROI. */
+    private static Mat buildHueMask(Mat hsvRoi, SceneDescriptor.ClusterContours cc) {
+        Mat mask = new Mat();
+        if (cc.achromatic) {
+            // Achromatic: low saturation
+            Core.inRange(hsvRoi,
+                    new Scalar(0,   0,  25),
+                    new Scalar(179, 35, 255),
+                    mask);
+        } else {
+            double lo = cc.hue - SceneColourClusters.HUE_TOLERANCE;
+            double hi = cc.hue + SceneColourClusters.HUE_TOLERANCE;
+            if (lo < 0) {
+                Mat m1 = new Mat(), m2 = new Mat();
+                Core.inRange(hsvRoi, new Scalar(0, 35, 25), new Scalar(hi, 255, 255), m1);
+                Core.inRange(hsvRoi, new Scalar(180 + lo, 35, 25), new Scalar(179, 255, 255), m2);
+                Core.bitwise_or(m1, m2, mask);
+                m1.release(); m2.release();
+            } else if (hi > 179) {
+                Mat m1 = new Mat(), m2 = new Mat();
+                Core.inRange(hsvRoi, new Scalar(lo, 35, 25), new Scalar(179, 255, 255), m1);
+                Core.inRange(hsvRoi, new Scalar(0, 35, 25), new Scalar(hi - 180, 255, 255), m2);
+                Core.bitwise_or(m1, m2, mask);
+                m1.release(); m2.release();
+            } else {
+                Core.inRange(hsvRoi, new Scalar(lo, 35, 25), new Scalar(hi, 255, 255), mask);
+            }
+        }
+        return mask;
+    }
+
     // -------------------------------------------------------------------------
     // Contour extraction
     // -------------------------------------------------------------------------
@@ -168,21 +271,7 @@ public final class VectorMatcher {
      * shape gives exact corner points with no aliased stepping.
      */
     public static List<MatOfPoint> extractContoursFromBinary(Mat maskedBgr) {
-        Mat grey = new Mat();
-        Mat bin  = new Mat();
-        Imgproc.cvtColor(maskedBgr, grey, Imgproc.COLOR_BGR2GRAY);
-        Imgproc.threshold(grey, bin, 20, 255, Imgproc.THRESH_BINARY);
-        grey.release();
-
-        List<MatOfPoint> contours = new ArrayList<>();
-        Mat hierarchy = new Mat();
-        Imgproc.findContours(bin, contours, hierarchy,
-                Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE);
-        hierarchy.release();
-        bin.release();
-
-        contours.removeIf(c -> Imgproc.contourArea(c) < MIN_AREA);
-        return contours;
+        return SceneDescriptor.extractContours(maskedBgr);
     }
 
     /**
