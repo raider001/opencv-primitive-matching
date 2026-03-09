@@ -1,6 +1,10 @@
 package org.example.matchers;
 
-import org.example.*;
+import org.example.analytics.AnalysisResult;
+import org.example.colour.ColourFirstLocator;
+import org.example.colour.ColourPreFilter;
+import org.example.factories.ReferenceId;
+import org.example.scene.SceneEntry;
 import org.opencv.calib3d.Calib3d;
 import org.opencv.core.*;
 import org.opencv.features2d.*;
@@ -83,10 +87,10 @@ public final class FeatureMatcher {
      * @return list of {@link AnalysisResult} (up to 15: 5 detectors × 3 modes, fewer if SIFT absent)
      */
     public static List<AnalysisResult> match(ReferenceId referenceId,
-                                              Mat refMat,
-                                              SceneEntry scene,
-                                              Set<String> saveVariants,
-                                              Path outputDir) {
+                                             Mat refMat,
+                                             SceneEntry scene,
+                                             Set<String> saveVariants,
+                                             Path outputDir) {
         List<AnalysisResult> out = new ArrayList<>();
         Mat sceneMat = scene.sceneMat();
 

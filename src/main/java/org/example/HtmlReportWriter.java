@@ -1,5 +1,14 @@
 package org.example;
 
+import org.example.analytics.AnalysisResult;
+import org.example.analytics.DetectionVerdict;
+import org.example.analytics.PerformanceProfile;
+import org.example.analytics.PerformanceProfiler;
+import org.example.factories.ReferenceId;
+import org.example.scene.SceneCategory;
+import org.example.scene.SceneEntry;
+import org.example.scene.SceneShapePlacement;
+
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;

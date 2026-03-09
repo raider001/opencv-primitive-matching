@@ -1,6 +1,10 @@
 package org.example.setups;
 
 import org.example.*;
+import org.example.colour.ColourPreFilter;
+import org.example.colour.ColourRange;
+import org.example.factories.ReferenceId;
+import org.example.factories.ReferenceImageFactory;
 import org.junit.jupiter.api.*;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;

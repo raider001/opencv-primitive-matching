@@ -1,13 +1,18 @@
 package org.example.ui;
 
 import org.example.*;
+import org.example.analytics.*;
+import org.example.factories.BackgroundFactory;
+import org.example.factories.BackgroundId;
+import org.example.factories.ReferenceId;
+import org.example.factories.ReferenceImageFactory;
+import org.example.scene.*;
 import org.example.ui.panels.*;
 
 import javax.swing.*;
 import javax.swing.border.*;
 import java.awt.*;
 import java.awt.event.*;
-import java.awt.geom.*;
 import java.io.IOException;
 import java.nio.file.*;
 import java.util.*;
@@ -537,7 +542,8 @@ public final class BenchmarkLauncher extends JFrame {
 
         List<MatcherDescriptor> runOrder = new ArrayList<>(matcherVariants.keySet());
         String[] names = runOrder.stream().map(MatcherDescriptor::displayName).toArray(String[]::new);
-        progressPanel.startRun(names, nThr, runOrder.size() * refs.size() * 100);
+        // Total is unknown until the catalogue is loaded — set 0 to show "?" until then
+        progressPanel.startRun(names, nThr, 0);
         // Register variant sub-rows for each matcher immediately
         for (int mi = 0; mi < runOrder.size(); mi++) {
             String[] variantArr = matcherVariants.get(runOrder.get(mi)).toArray(String[]::new);
@@ -557,15 +563,19 @@ public final class BenchmarkLauncher extends JFrame {
                     return sceneVars.stream().anyMatch(sv -> sv.matches(sc));
                 }).toList();
                 final List<SceneEntry> catalogue = cat;
-                final int workPerMatcher = refs.size() * catalogue.size();
-                final int realTotal      = runOrder.size() * workPerMatcher;
+                // Each (ref, scene) pair is one unit of work per matcher
+                final int pairsPerMatcher = refs.size() * catalogue.size();
+                // Global total = one unit per (matcher, ref, scene) combination
+                final int realTotal = runOrder.size() * pairsPerMatcher;
                 SwingUtilities.invokeLater(() -> {
                     progressPanel.setGlobalTotal(realTotal);
                     for (int i = 0; i < runOrder.size(); i++) {
-                        progressPanel.setMatcherTotal(i, workPerMatcher);
+                        // Matcher bar: refs × scenes
+                        progressPanel.setMatcherTotal(i, pairsPerMatcher);
+                        // Variant bar: same refs × scenes (each variant runs on every pair)
                         String[] variantArr = matcherVariants.get(runOrder.get(i)).toArray(String[]::new);
                         for (int vi = 0; vi < variantArr.length; vi++) {
-                            progressPanel.setVariantTotal(i, vi, workPerMatcher);
+                            progressPanel.setVariantTotal(i, vi, pairsPerMatcher);
                         }
                     }
                 });
@@ -642,14 +652,31 @@ public final class BenchmarkLauncher extends JFrame {
             Set<String> doneKeys = Collections.synchronizedSet(new HashSet<>());
             if (!clear) {
                 Map<AnalysisResult, SceneEntry> prior = ResultMetadataStore.loadAll(outDir);
+                // Group prior results by their (ref, scene, variant) work item key to avoid
+                // counting each variant multiple times for the same work item.
+                Set<String> countedPairs = Collections.synchronizedSet(new HashSet<>());
                 prior.forEach((r, sc) -> {
                     bag.add(r);
                     if (sc != null) sceneMap.put(r, sc);
                     doneKeys.add(ResultMetadataStore.skipKey(r));
-                    Integer vi = variantIndex.get(r.methodName());
-                    if (vi != null) progressPanel.incrementVariantDone(fmidx, vi);
-                    progressPanel.incrementDone(fmidx);
                     progressPanel.incrementResults();
+                    // Variant done: count once per (variantName, ref, scene) pair
+                    Integer vi = variantIndex.get(r.methodName());
+                    String pairKey = r.methodName() + "|" + r.referenceId() + "|"
+                            + (sc != null ? sc.variantLabel() + sc.backgroundId() : "?");
+                    if (vi != null && countedPairs.add(pairKey)) {
+                        progressPanel.incrementVariantDone(fmidx, vi);
+                    }
+                });
+                // Matcher done: count unique (ref, scene) work items regardless of how many
+                // variants they produced
+                Set<String> countedWorkItems = new HashSet<>();
+                prior.forEach((r, sc) -> {
+                    String wk = String.valueOf(r.referenceId())
+                            + "|" + (sc != null ? sc.variantLabel() + sc.backgroundId() : "?");
+                    if (countedWorkItems.add(wk)) {
+                        progressPanel.incrementDone(fmidx);
+                    }
                 });
             }
 
@@ -657,19 +684,24 @@ public final class BenchmarkLauncher extends JFrame {
             try {
                 pool.submit(() -> work.parallelStream().forEach(item -> {
                     if (cancelled) return;
-                    md.run(item.ref().id(), item.ref().mat(), item.scene(), activeVariants, outDir)
-                      .stream().filter(r -> activeVariants.contains(r.methodName()))
-                      .filter(r -> doneKeys.add(ResultMetadataStore.skipKey(r)))
-                      .forEach(r -> {
-                          bag.add(r);
-                          sceneMap.put(r, item.scene());
-                          ResultMetadataStore.write(r, item.scene(), outDir);
-                          // Advance this variant's bar for each result it produces
-                          Integer vi = variantIndex.get(r.methodName());
-                          if (vi != null) progressPanel.incrementVariantDone(fmidx, vi);
-                      });
+                    List<AnalysisResult> itemResults =
+                        md.run(item.ref().id(), item.ref().mat(), item.scene(), activeVariants, outDir)
+                          .stream().filter(r -> activeVariants.contains(r.methodName()))
+                          .filter(r -> doneKeys.add(ResultMetadataStore.skipKey(r)))
+                          .toList();
+                    // Track which variants produced results this work item
+                    Set<Integer> variantsHit = new HashSet<>();
+                    for (AnalysisResult r : itemResults) {
+                        bag.add(r);
+                        sceneMap.put(r, item.scene());
+                        ResultMetadataStore.write(r, item.scene(), outDir);
+                        Integer vi = variantIndex.get(r.methodName());
+                        if (vi != null) variantsHit.add(vi);
+                        progressPanel.incrementResults();
+                    }
+                    // Increment each variant's done count once per work item (not once per result)
+                    for (int vi : variantsHit) progressPanel.incrementVariantDone(fmidx, vi);
                     progressPanel.incrementDone(fmidx);
-                    progressPanel.incrementResults();
                 })).get();
             } finally {
                 pool.shutdown();
@@ -680,7 +712,7 @@ public final class BenchmarkLauncher extends JFrame {
 
             List<AnalysisResult>           results = new ArrayList<>(bag);
             Map<AnalysisResult,SceneEntry> sMap    = new LinkedHashMap<>(sceneMap);
-            Map<AnalysisResult,DetectionVerdict> vd = new LinkedHashMap<>();
+            Map<AnalysisResult, DetectionVerdict> vd = new LinkedHashMap<>();
             for (AnalysisResult r : results) {
                 SceneEntry sc = sMap.get(r);
                 if (sc != null) vd.put(r, DetectionVerdict.evaluate(r, sc));

@@ -1,6 +1,6 @@
-﻿package org.example.utilities;
+package org.example.utilities;
 /**
- * Backwards-compatibility shim — the full implementation has moved to
+ * Backwards-compatibility shim - the full implementation has moved to
  * {@link org.example.ui.BenchmarkLauncher}.
  *
  * @deprecated Use {@code org.example.ui.BenchmarkLauncher} directly.

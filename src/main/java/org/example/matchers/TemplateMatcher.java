@@ -1,7 +1,12 @@
 package org.example.matchers;
 
-import org.example.*;
-import org.example.CfMode;
+import org.example.analytics.AnalysisResult;
+import org.example.colour.CfMode;
+import org.example.colour.ColourFirstLocator;
+import org.example.colour.ColourPreFilter;
+import org.example.factories.ReferenceId;
+import org.example.factories.ReferenceImageFactory;
+import org.example.scene.SceneEntry;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
@@ -68,10 +73,10 @@ public final class TemplateMatcher {
      * @return 18 {@link AnalysisResult} objects (one per variant)
      */
     public static List<AnalysisResult> match(ReferenceId referenceId,
-                                              Mat refMat,
-                                              SceneEntry scene,
-                                              Set<String> saveVariants,
-                                              Path outputDir) {
+                                             Mat refMat,
+                                             SceneEntry scene,
+                                             Set<String> saveVariants,
+                                             Path outputDir) {
         List<AnalysisResult> out = new ArrayList<>(18);
         Mat sceneMat = scene.sceneMat();
 

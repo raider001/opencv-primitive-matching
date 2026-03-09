@@ -1,6 +1,6 @@
 package org.example.matchers;
 
-import org.example.CfMode;
+import org.example.colour.CfMode;
 import org.example.MatcherVariant;
 
 /** All 3 Fourier Shape Descriptor variants (1 base + 2 CF modes). */

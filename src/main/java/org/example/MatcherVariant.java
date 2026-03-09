@@ -1,5 +1,7 @@
 package org.example;
 
+import org.example.analytics.AnalysisResult;
+
 /**
  * Marker interface for all per-matcher variant enums.
  *

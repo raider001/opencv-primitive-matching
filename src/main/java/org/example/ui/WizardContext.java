@@ -1,6 +1,11 @@
 package org.example.ui;
 
 import org.example.*;
+import org.example.factories.BackgroundId;
+import org.example.factories.ReferenceId;
+import org.example.scene.SceneCategory;
+import org.example.scene.SceneEntry;
+import org.example.scene.SceneVariant;
 
 import java.io.IOException;
 import java.nio.file.*;

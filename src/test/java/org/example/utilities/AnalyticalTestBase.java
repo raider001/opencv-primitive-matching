@@ -1,6 +1,14 @@
 package org.example.utilities;
 
 import org.example.*;
+import org.example.analytics.*;
+import org.example.colour.CfMode;
+import org.example.factories.ReferenceId;
+import org.example.factories.ReferenceImageFactory;
+import org.example.scene.SceneCatalogue;
+import org.example.scene.SceneCatalogueLoader;
+import org.example.scene.SceneCategory;
+import org.example.scene.SceneEntry;
 import org.junit.jupiter.api.*;
 import org.opencv.core.Mat;
 

@@ -12,16 +12,16 @@ import static org.example.ui.Widgets.*;
 /**
  * The full-screen progress panel shown while matchers are running.
  *
- * <p>Layout mirrors ProgressDisplay exactly:
+ * <p>Layout:
  * <pre>
- *  [TAG]  N matchers × M scenes  |  T threads
+ *  [RUN]  N matchers  |  T threads
  *  Progress  [████████████░░░░░░]  47.3%
- *  Pairs  1,234 / 2,610  |  elapsed 48s  |  ETA ~54s  |  results 885
- *  ── per-matcher ─────────────────────────────────────────────────
- *  Name                    [███░░░░░]  12/26   ◌ running
+ *  Scenes  1,234 / 2,610  |  elapsed 48s  |  ETA ~54s  |  results 885
+ *  -- per-matcher -----------------------------------------------
+ *  Name                    [███░░░░░]  12/26   running
  *  ...
- *  ── post-processing ────────────────────────────────────────────
- *  ▶ Writing report…
+ *  -- post-processing -------------------------------------------
+ *  Writing report...
  * </pre>
  *
  * <p>State is driven by the runner thread via the public {@code update*} methods
@@ -31,9 +31,8 @@ public final class ProgressPanel extends JPanel {
 
     private static final int GLOBAL_BAR_W  = 500;
     private static final int MATCHER_BAR_W = 140;
-    private static final int VARIANT_BAR_W = 110;
 
-    // ── Widgets ───────────────────────────────────────────────────────────
+    // -- Widgets -----------------------------------------------------------
     private final JLabel   headerLabel;
     private final BarPanel globalBar;
     private final JLabel   pairsLabel;
@@ -47,30 +46,22 @@ public final class ProgressPanel extends JPanel {
     private JLabel[]   matcherCountLabels;
     private JLabel[]   matcherStateLabels;
 
-    // Per-variant widgets  [matcherIdx][variantIdx]
-    private JLabel[][]   variantNameLabels;
-    private BarPanel[][] variantBars;
-    private JLabel[][]   variantCountLabels;
-    private JLabel[][]   variantStateLabels;
-
-    // ── Run state (thread-safe) ───────────────────────────────────────────
-    private final ConcurrentHashMap<Integer, AtomicInteger> pairsDone   = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Integer, AtomicInteger> variantDone = new ConcurrentHashMap<>();
-    private volatile int[]   totalPairsPerMatcher;
-    private volatile int[][] totalPairsPerVariant;
-    private volatile int     globalTotal    = 0;
+    // -- Run state (thread-safe) -------------------------------------------
+    private final ConcurrentHashMap<Integer, AtomicInteger> pairsDone = new ConcurrentHashMap<>();
+    private volatile int[]  totalPairsPerMatcher;
+    private volatile int    globalTotal     = 0;
     private final AtomicInteger globalDone  = new AtomicInteger(0);
-    private volatile int     globalResultCnt = 0;
-    private volatile long    startMs         = 0;
-    private volatile String  postStatusText  = "";
+    private volatile int    globalResultCnt = 0;
+    private volatile long   startMs         = 0;
+    private volatile String postStatusText  = "";
 
     private javax.swing.Timer repaintTimer;
 
-    // ── Constructor ───────────────────────────────────────────────────────
+    // -- Constructor -------------------------------------------------------
 
     public ProgressPanel(Runnable onCancelOrBack) {
         setLayout(new BorderLayout()); setBackground(BG);
-        setBorder(new EmptyBorder(20,24,16,24));
+        setBorder(new EmptyBorder(20, 24, 16, 24));
 
         JPanel inner = new JPanel();
         inner.setLayout(new BoxLayout(inner, BoxLayout.Y_AXIS));
@@ -85,11 +76,11 @@ public final class ProgressPanel extends JPanel {
         globalBar.setAlignmentX(Component.LEFT_ALIGNMENT);
         inner.add(globalBar); inner.add(vgap(10));
 
-        pairsLabel = monoLabel("Pairs  0 / 0");
+        pairsLabel = monoLabel("Scenes  0 / 0");
         pairsLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
         inner.add(pairsLabel); inner.add(vgap(12));
 
-        inner.add(sepLine("── per-matcher ")); inner.add(vgap(6));
+        inner.add(sepLine("-- per-matcher ")); inner.add(vgap(6));
 
         matcherRows = new JPanel();
         matcherRows.setLayout(new BoxLayout(matcherRows, BoxLayout.Y_AXIS));
@@ -107,7 +98,7 @@ public final class ProgressPanel extends JPanel {
         scroll.setMaximumSize(new Dimension(Integer.MAX_VALUE, 320));
         inner.add(scroll); inner.add(vgap(10));
 
-        inner.add(sepLine("── post-processing ")); inner.add(vgap(5));
+        inner.add(sepLine("-- post-processing ")); inner.add(vgap(5));
         statusLabel = label("", SMALL, STATUS_LN);
         statusLabel.setAlignmentX(Component.LEFT_ALIGNMENT);
         inner.add(statusLabel);
@@ -117,43 +108,36 @@ public final class ProgressPanel extends JPanel {
         JPanel bottom = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 4));
         bottom.setBackground(BG);
         bottom.setBorder(new EmptyBorder(12, 0, 0, 0));
-        cancelBackBtn = accentBtn("✕  Cancel", BTN_RED);
+        cancelBackBtn = accentBtn("X  Cancel", BTN_RED);
         cancelBackBtn.addActionListener(e -> onCancelOrBack.run());
         bottom.add(cancelBackBtn);
         add(bottom, BorderLayout.SOUTH);
     }
 
-    // ── Initialise for a new run ──────────────────────────────────────────
+    // -- Initialise for a new run ------------------------------------------
 
     /**
      * Resets all state and populates per-matcher rows.
-     * Call {@link #setMatcherVariants} immediately after for each matcher
-     * (before switching to this panel) to insert variant sub-rows.
      */
     public void startRun(String[] matcherNames, int nThreads, int estimatedTotal) {
         int n = matcherNames.length;
-        matcherNameLabels  = new JLabel[n];
-        matcherBars        = new BarPanel[n];
-        matcherCountLabels = new JLabel[n];
-        matcherStateLabels = new JLabel[n];
-        variantNameLabels  = new JLabel[n][];
-        variantBars        = new BarPanel[n][];
-        variantCountLabels = new JLabel[n][];
-        variantStateLabels = new JLabel[n][];
+        matcherNameLabels    = new JLabel[n];
+        matcherBars          = new BarPanel[n];
+        matcherCountLabels   = new JLabel[n];
+        matcherStateLabels   = new JLabel[n];
         totalPairsPerMatcher = new int[n];
-        totalPairsPerVariant = new int[n][];
-        pairsDone.clear(); variantDone.clear();
+        pairsDone.clear();
         globalDone.set(0);
-        globalTotal      = Math.max(estimatedTotal, 1);
-        globalResultCnt  = 0;
-        startMs          = System.currentTimeMillis();
-        postStatusText   = "";
+        globalTotal     = Math.max(estimatedTotal, 1);
+        globalResultCnt = 0;
+        startMs         = System.currentTimeMillis();
+        postStatusText  = "";
 
         headerLabel.setText("[RUN]  " + n + " matcher" + (n == 1 ? "" : "s") + "  |  " + nThreads + " threads");
         globalBar.setFraction(0); globalBar.setLabel("0.0%");
-        pairsLabel.setText("Pairs  0 / ?");
+        pairsLabel.setText("Scenes  0 / ?  |  elapsed 0s");
         statusLabel.setText(""); statusLabel.setForeground(STATUS_LN);
-        cancelBackBtn.setText("✕  Cancel"); cancelBackBtn.setBackground(BTN_RED); cancelBackBtn.setEnabled(true);
+        cancelBackBtn.setText("X  Cancel"); cancelBackBtn.setBackground(BTN_RED); cancelBackBtn.setEnabled(true);
 
         matcherRows.removeAll();
         for (int i = 0; i < n; i++) {
@@ -168,67 +152,32 @@ public final class ProgressPanel extends JPanel {
     }
 
     /**
-     * Inserts per-variant sub-rows for {@code matcherIdx} directly below its
-     * matcher row.  Must be called on the EDT after {@link #startRun} and
-     * before the panel is shown.
+     * No-op kept for call-site compatibility — variant sub-rows have been removed.
      */
-    public void setMatcherVariants(int matcherIdx, String[] variantNames) {
-        int nv = variantNames.length;
-        variantNameLabels[matcherIdx]    = new JLabel[nv];
-        variantBars[matcherIdx]          = new BarPanel[nv];
-        variantCountLabels[matcherIdx]   = new JLabel[nv];
-        variantStateLabels[matcherIdx]   = new JLabel[nv];
-        totalPairsPerVariant[matcherIdx] = new int[nv];
-        for (int vi = 0; vi < nv; vi++) {
-            variantDone.put(variantKey(matcherIdx, vi), new AtomicInteger(0));
-        }
+    @SuppressWarnings("unused")
+    public void setMatcherVariants(int matcherIdx, String[] variantNames) { }
 
-        // Rebuild the full list: all matchers + their already-registered variant rows,
-        // inserting the freshly-built variant rows for matcherIdx.
-        matcherRows.removeAll();
-        for (int mi = 0; mi < matcherNameLabels.length; mi++) {
-            matcherRows.add(matcherRowPanel(mi));
-            if (variantNameLabels[mi] == null) continue;
-            for (int vi = 0; vi < variantNameLabels[mi].length; vi++) {
-                if (mi == matcherIdx && variantNameLabels[mi][vi] == null) {
-                    // Build brand-new variant row for this matcher
-                    matcherRows.add(buildVariantRow(mi, vi, variantNames[vi]));
-                } else if (variantNameLabels[mi][vi] != null) {
-                    // Re-attach already-built widgets
-                    matcherRows.add(variantRowPanel(mi, vi));
-                }
-            }
-        }
-        matcherRows.revalidate(); matcherRows.repaint();
-    }
+    /** No-op kept for call-site compatibility. */
+    @SuppressWarnings("unused")
+    public void setVariantTotal(int matcherIdx, int variantIdx, int total) { }
 
-    /** Sets the total pairs for a variant. */
-    public void setVariantTotal(int matcherIdx, int variantIdx, int total) {
-        if (totalPairsPerVariant != null
-                && matcherIdx < totalPairsPerVariant.length
-                && totalPairsPerVariant[matcherIdx] != null
-                && variantIdx < totalPairsPerVariant[matcherIdx].length) {
-            totalPairsPerVariant[matcherIdx][variantIdx] = total;
-        }
-    }
+    /** No-op kept for call-site compatibility. */
+    @SuppressWarnings("unused")
+    public void incrementVariantDone(int matcherIdx, int variantIdx) { }
 
-    /** Increments the done counter for a specific variant. */
-    public void incrementVariantDone(int matcherIdx, int variantIdx) {
-        variantDone.computeIfAbsent(variantKey(matcherIdx, variantIdx),
-                k -> new AtomicInteger(0)).incrementAndGet();
-    }
-
-    // ── Single-task / benchmark modes ────────────────────────────────────
+    // -- Single-task / benchmark modes ------------------------------------
 
     public void startSingleTask(String lbl) {
-        resetArrays(0);
-        pairsDone.clear(); variantDone.clear();
+        matcherNameLabels = new JLabel[0]; matcherBars = new BarPanel[0];
+        matcherCountLabels = new JLabel[0]; matcherStateLabels = new JLabel[0];
+        totalPairsPerMatcher = new int[0];
+        pairsDone.clear();
         globalDone.set(0); globalTotal = 1; globalResultCnt = 0;
         startMs = System.currentTimeMillis(); postStatusText = "";
         headerLabel.setText(lbl);
         globalBar.setFraction(0); globalBar.setLabel("0.0%");
         pairsLabel.setText(""); statusLabel.setText(""); statusLabel.setForeground(STATUS_LN);
-        cancelBackBtn.setText("✕  Cancel"); cancelBackBtn.setBackground(BTN_RED); cancelBackBtn.setEnabled(true);
+        cancelBackBtn.setText("X  Cancel"); cancelBackBtn.setBackground(BTN_RED); cancelBackBtn.setEnabled(true);
         matcherRows.removeAll(); matcherRows.revalidate(); matcherRows.repaint();
         if (repaintTimer != null) repaintTimer.stop();
         repaintTimer = new javax.swing.Timer(100, ev -> repaint100ms());
@@ -236,24 +185,26 @@ public final class ProgressPanel extends JPanel {
     }
 
     public void startBenchmark() {
-        resetArrays(0);
-        pairsDone.clear(); variantDone.clear();
+        matcherNameLabels = new JLabel[0]; matcherBars = new BarPanel[0];
+        matcherCountLabels = new JLabel[0]; matcherStateLabels = new JLabel[0];
+        totalPairsPerMatcher = new int[0];
+        pairsDone.clear();
         globalDone.set(0); globalTotal = 1; globalResultCnt = 0;
         startMs = System.currentTimeMillis(); postStatusText = "";
-        headerLabel.setText("[BENCHMARK]  Collating all technique reports…");
+        headerLabel.setText("[BENCHMARK]  Collating all technique reports...");
         globalBar.setFraction(0); globalBar.setLabel("0.0%");
         pairsLabel.setText(""); statusLabel.setText(""); statusLabel.setForeground(STATUS_LN);
-        cancelBackBtn.setText("✕  Cancel"); cancelBackBtn.setBackground(BTN_RED); cancelBackBtn.setEnabled(true);
+        cancelBackBtn.setText("X  Cancel"); cancelBackBtn.setBackground(BTN_RED); cancelBackBtn.setEnabled(true);
         matcherRows.removeAll(); matcherRows.revalidate(); matcherRows.repaint();
         if (repaintTimer != null) repaintTimer.stop();
         repaintTimer = new javax.swing.Timer(100, ev -> repaint100ms());
         repaintTimer.start();
     }
 
-    // ── Thread-safe update API ────────────────────────────────────────────
+    // -- Thread-safe update API -------------------------------------------
 
-    public void setGlobalDone(int done)  { globalDone.set(done); }
-    public void setGlobalTotal(int total){ this.globalTotal = Math.max(total, 1); }
+    public void setGlobalDone(int done)   { globalDone.set(done); }
+    public void setGlobalTotal(int total) { this.globalTotal = Math.max(total, 1); }
 
     public void setMatcherTotal(int idx, int total) {
         if (totalPairsPerMatcher != null && idx < totalPairsPerMatcher.length)
@@ -270,16 +221,17 @@ public final class ProgressPanel extends JPanel {
 
     public void setMatcherRunning(int idx) {
         SwingUtilities.invokeLater(() -> {
-            if (matcherStateLabels != null && idx < matcherStateLabels.length)
-                matcherStateLabels[idx].setText("◌ running");
+            if (matcherStateLabels != null && idx < matcherStateLabels.length) {
+                matcherStateLabels[idx].setText("running");
                 matcherStateLabels[idx].setForeground(YELLOW);
+            }
         });
     }
 
     public void setMatcherDone(int idx, double acc) {
         SwingUtilities.invokeLater(() -> {
             if (matcherStateLabels != null && idx < matcherStateLabels.length) {
-                matcherStateLabels[idx].setText(String.format("✓ done  %.0f%% acc", acc));
+                matcherStateLabels[idx].setText(String.format("done  %.0f%% acc", acc));
                 matcherStateLabels[idx].setForeground(GREEN);
                 matcherNameLabels[idx].setForeground(GREEN);
             }
@@ -289,7 +241,7 @@ public final class ProgressPanel extends JPanel {
     public void setMatcherError(int idx) {
         SwingUtilities.invokeLater(() -> {
             if (matcherStateLabels != null && idx < matcherStateLabels.length) {
-                matcherStateLabels[idx].setText("❌ error");
+                matcherStateLabels[idx].setText("error");
                 matcherStateLabels[idx].setForeground(RED);
             }
         });
@@ -298,7 +250,7 @@ public final class ProgressPanel extends JPanel {
     public void setMatcherSkipped(int idx) {
         SwingUtilities.invokeLater(() -> {
             if (matcherStateLabels != null && idx < matcherStateLabels.length) {
-                matcherStateLabels[idx].setText("⚠ skipped");
+                matcherStateLabels[idx].setText("skipped");
                 matcherStateLabels[idx].setForeground(YELLOW);
             }
         });
@@ -309,30 +261,29 @@ public final class ProgressPanel extends JPanel {
             if (repaintTimer != null) repaintTimer.stop();
             repaint100ms();
             String msg = cancelled ? "Cancelled." : (extraMsg.isEmpty() ? "Complete." : extraMsg);
-            statusLabel.setText("▶ " + msg);
+            statusLabel.setText("> " + msg);
             statusLabel.setForeground(cancelled ? YELLOW : GREEN);
-            cancelBackBtn.setText("← Back"); cancelBackBtn.setBackground(ACCENT); cancelBackBtn.setEnabled(true);
+            cancelBackBtn.setText("< Back"); cancelBackBtn.setBackground(ACCENT); cancelBackBtn.setEnabled(true);
         });
     }
 
     public void markError(String msg) {
         SwingUtilities.invokeLater(() -> {
             if (repaintTimer != null) repaintTimer.stop();
-            statusLabel.setText("▶ Error: " + msg); statusLabel.setForeground(RED);
-            cancelBackBtn.setText("← Back"); cancelBackBtn.setBackground(ACCENT); cancelBackBtn.setEnabled(true);
+            statusLabel.setText("> Error: " + msg); statusLabel.setForeground(RED);
+            cancelBackBtn.setText("< Back"); cancelBackBtn.setBackground(ACCENT); cancelBackBtn.setEnabled(true);
         });
     }
 
     public void disableCancelButton() {
         SwingUtilities.invokeLater(() -> {
             cancelBackBtn.setEnabled(false);
-            statusLabel.setText("▶ Cancelling…"); statusLabel.setForeground(YELLOW);
+            statusLabel.setText("> Cancelling..."); statusLabel.setForeground(YELLOW);
         });
     }
 
-    // ── Row builders ──────────────────────────────────────────────────────
+    // -- Row builders -----------------------------------------------------
 
-    /** Creates and wires all matcher-row widgets, returns a fresh JPanel row. */
     private JPanel buildMatcherRow(int i, String name) {
         String nm = name.length() > 28 ? name.substring(0, 27) + "~" : name;
         matcherNameLabels[i] = monoLabel(padRight(nm, 28));
@@ -346,13 +297,9 @@ public final class ProgressPanel extends JPanel {
         matcherCountLabels[i].setPreferredSize(new Dimension(90, 18));
         matcherCountLabels[i].setMinimumSize(new Dimension(90, 18));
         matcherCountLabels[i].setMaximumSize(new Dimension(90, 18));
-        matcherStateLabels[i] = monoLabel("◌ pending");
+        matcherStateLabels[i] = monoLabel("pending");
         matcherStateLabels[i].setForeground(DIM);
-        return matcherRowPanel(i);
-    }
 
-    /** Assembles the stable matcher widgets into a new JPanel row (called on layout rebuild). */
-    private JPanel matcherRowPanel(int i) {
         JPanel row = hStack(); row.setBorder(new EmptyBorder(2, 4, 2, 4));
         row.add(matcherNameLabels[i]); row.add(hgap(8));
         row.add(matcherBars[i]);       row.add(hgap(8));
@@ -361,37 +308,7 @@ public final class ProgressPanel extends JPanel {
         return row;
     }
 
-    /** Creates and wires all variant-row widgets for (mi, vi), returns a fresh JPanel row. */
-    private JPanel buildVariantRow(int mi, int vi, String name) {
-        String nm = name.length() > 26 ? name.substring(0, 25) + "~" : name;
-        variantNameLabels[mi][vi] = monoLabel("  ↳ " + padRight(nm, 26));
-        variantNameLabels[mi][vi].setForeground(DIM);
-        variantNameLabels[mi][vi].setPreferredSize(new Dimension(220, 16));
-        variantNameLabels[mi][vi].setMinimumSize(new Dimension(220, 16));
-        variantNameLabels[mi][vi].setMaximumSize(new Dimension(220, 16));
-        variantBars[mi][vi] = new BarPanel(VARIANT_BAR_W, 12, BAR_FILL, BAR_EMPTY, BAR_BG, false);
-        variantCountLabels[mi][vi] = monoLabel("  0/?");
-        variantCountLabels[mi][vi].setForeground(DIM);
-        variantCountLabels[mi][vi].setPreferredSize(new Dimension(80, 16));
-        variantCountLabels[mi][vi].setMinimumSize(new Dimension(80, 16));
-        variantCountLabels[mi][vi].setMaximumSize(new Dimension(80, 16));
-        variantStateLabels[mi][vi] = monoLabel("◌ pending");
-        variantStateLabels[mi][vi].setForeground(DIM);
-        variantStateLabels[mi][vi].setFont(SMALL);
-        return variantRowPanel(mi, vi);
-    }
-
-    /** Assembles the stable variant widgets into a new JPanel row. */
-    private JPanel variantRowPanel(int mi, int vi) {
-        JPanel row = hStack(); row.setBorder(new EmptyBorder(1, 20, 1, 4));
-        row.add(variantNameLabels[mi][vi]); row.add(hgap(8));
-        row.add(variantBars[mi][vi]);       row.add(hgap(8));
-        row.add(variantCountLabels[mi][vi]);row.add(hgap(6));
-        row.add(variantStateLabels[mi][vi]);
-        return row;
-    }
-
-    // ── EDT repaint ───────────────────────────────────────────────────────
+    // -- EDT repaint ------------------------------------------------------
 
     private void repaint100ms() {
         if (startMs == 0) return;
@@ -406,8 +323,10 @@ public final class ProgressPanel extends JPanel {
         globalBar.setLabel(String.format("%.1f%%", pct));
         globalBar.setFillColor(pct >= 100 ? GREEN : pct >= 50 ? BAR_FILL : YELLOW);
 
-        String pairsText = String.format("Pairs  %,d / %,d  |  elapsed %ds", done, globalTotal, elapsed / 1000);
-        if (pct > 0 && pct < 100) pairsText += String.format("  |  ETA ~%ds", eta);
+        String totalStr  = globalTotal > 1 ? String.format("%,d", globalTotal) : "?";
+        String pairsText = String.format("Scenes  %,d / %s  |  elapsed %ds", done, totalStr, elapsed / 1000);
+        if (pct > 0 && pct < 100 && globalTotal > 1)
+            pairsText += String.format("  |  ETA ~%ds", eta);
         pairsText += String.format("  |  results %,d", results);
         pairsLabel.setText(pairsText);
 
@@ -420,61 +339,28 @@ public final class ProgressPanel extends JPanel {
             matcherNameLabels[i].setForeground(dn ? GREEN : DIM);
             matcherBars[i].setFraction(tot > 0 ? (double) cnt / tot : 0);
             matcherBars[i].setFillColor(dn ? GREEN : BAR_FILL);
-            matcherCountLabels[i].setText(padLeft(String.valueOf(cnt), 4) + "/" + (tot > 0 ? tot : "?"));
+            String matcherTotStr = tot > 0 ? String.valueOf(tot) : "?";
+            matcherCountLabels[i].setText(padLeft(String.valueOf(cnt), 4) + "/" + matcherTotStr);
             matcherCountLabels[i].setForeground(dn ? GREEN : DIM);
-            if (!matcherStateLabels[i].getText().startsWith("✓")
-                    && !matcherStateLabels[i].getText().startsWith("❌")
-                    && !matcherStateLabels[i].getText().startsWith("⚠")) {
-                matcherStateLabels[i].setText(dn ? "✓ done   " : cnt > 0 ? "◌ running" : "◌ pending");
+            if (!matcherStateLabels[i].getText().startsWith("done")
+                    && !matcherStateLabels[i].getText().startsWith("error")
+                    && !matcherStateLabels[i].getText().startsWith("skipped")) {
+                matcherStateLabels[i].setText(dn ? "done   " : cnt > 0 ? "running" : "pending");
                 matcherStateLabels[i].setForeground(dn ? GREEN : cnt > 0 ? YELLOW : DIM);
             }
-
-            // Variant sub-rows
-            if (variantNameLabels[i] == null) continue;
-            for (int vi = 0; vi < variantNameLabels[i].length; vi++) {
-                if (variantNameLabels[i][vi] == null) continue;
-                int     vtot = totalPairsPerVariant != null
-                        && totalPairsPerVariant[i] != null
-                        && vi < totalPairsPerVariant[i].length
-                        ? totalPairsPerVariant[i][vi] : 0;
-                int     vcnt = variantDone.getOrDefault(variantKey(i, vi), new AtomicInteger(0)).get();
-                boolean vdn  = vtot > 0 && vcnt >= vtot;
-
-                variantNameLabels[i][vi].setForeground(vdn ? GREEN : vcnt > 0 ? YELLOW : DIM);
-                variantBars[i][vi].setFraction(vtot > 0 ? (double) vcnt / vtot : 0);
-                variantBars[i][vi].setFillColor(vdn ? GREEN : BAR_FILL);
-                variantCountLabels[i][vi].setText(padLeft(String.valueOf(vcnt), 3) + "/" + (vtot > 0 ? vtot : "?"));
-                variantCountLabels[i][vi].setForeground(vdn ? GREEN : vcnt > 0 ? YELLOW : DIM);
-                if (!variantStateLabels[i][vi].getText().startsWith("✓")) {
-                    variantStateLabels[i][vi].setText(vdn ? "✓ done" : vcnt > 0 ? "◌ running" : "◌ pending");
-                    variantStateLabels[i][vi].setForeground(vdn ? GREEN : vcnt > 0 ? YELLOW : DIM);
-                }
-            }
         }
+
         String s = postStatusText;
-        if (!s.isEmpty()) statusLabel.setText("▶ " + s);
+        if (!s.isEmpty()) statusLabel.setText("> " + s);
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────
+    // -- Helpers ----------------------------------------------------------
 
-    private void resetArrays(int n) {
-        matcherNameLabels  = new JLabel[n];   matcherBars        = new BarPanel[n];
-        matcherCountLabels = new JLabel[n];   matcherStateLabels = new JLabel[n];
-        variantNameLabels  = new JLabel[n][];  variantBars        = new BarPanel[n][];
-        variantCountLabels = new JLabel[n][];  variantStateLabels = new JLabel[n][];
-        totalPairsPerMatcher = new int[n];     totalPairsPerVariant = new int[n][];
-    }
+    private static String padRight(String s, int w) { return s.length() >= w ? s : s + " ".repeat(w - s.length()); }
+    private static String padLeft(String s, int w)  { return s.length() >= w ? s : " ".repeat(w - s.length()) + s; }
 
-    private static int    variantKey(int mi, int vi)  { return mi * 10_000 + vi; }
-    private static String padRight(String s, int w)   { return s.length() >= w ? s : s + " ".repeat(w - s.length()); }
-    private static String padLeft(String s, int w)    { return s.length() >= w ? s : " ".repeat(w - s.length()) + s; }
+    // -- BarPanel ---------------------------------------------------------
 
-    // ── BarPanel ──────────────────────────────────────────────────────────
-
-    /**
-     * Custom-painted progress bar.  Copied from ProgressDisplay so the UI
-     * package is self-contained.
-     */
     public static final class BarPanel extends JPanel {
         private double fraction = 0; private String barLabel = ""; private Color fillColor;
         private final Color emptyColor, bgColor; private final int fw, fh; private final boolean showLabel;

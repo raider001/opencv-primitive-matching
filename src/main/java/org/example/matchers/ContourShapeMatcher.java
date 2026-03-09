@@ -1,6 +1,10 @@
 package org.example.matchers;
 
-import org.example.*;
+import org.example.analytics.AnalysisResult;
+import org.example.colour.ColourFirstLocator;
+import org.example.colour.ColourPreFilter;
+import org.example.factories.ReferenceId;
+import org.example.scene.SceneEntry;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
@@ -33,7 +37,7 @@ import java.util.Set;
  *   <li>{@code _CF_LOOSE} / {@code _CF_TIGHT} — colour pre-filter restricts which
  *       pixels are binarised, reducing false contours from background clutter.</li>
  *   <li>{@code CONTOURS_MATCH_I1_CF1_LOOSE} / {@code _CF1_TIGHT} — Colour-First Region
- *       Proposal (Milestone 15): {@link org.example.ColourFirstLocator} proposes candidate
+ *       Proposal (Milestone 15): {@link ColourFirstLocator} proposes candidate
  *       windows; contour matching runs only inside those windows.</li>
  * </ul>
  */
@@ -73,10 +77,10 @@ public final class ContourShapeMatcher {
     // -------------------------------------------------------------------------
 
     public static List<AnalysisResult> match(ReferenceId referenceId,
-                                              Mat refMat,
-                                              SceneEntry scene,
-                                              Set<String> saveVariants,
-                                              Path outputDir) {
+                                             Mat refMat,
+                                             SceneEntry scene,
+                                             Set<String> saveVariants,
+                                             Path outputDir) {
         List<AnalysisResult> out = new ArrayList<>(11);
 
         // Pre-binarise reference for all 3 modes

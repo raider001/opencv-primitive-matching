@@ -1,8 +1,14 @@
 package org.example.slowmatchingtests;
 
 import org.example.*;
+import org.example.analytics.AnalysisResult;
+import org.example.colour.CfMode;
+import org.example.factories.ReferenceId;
 import org.example.matchers.HistogramMatcher;
 import org.example.matchers.HistVariant;
+import org.example.scene.SceneCategory;
+import org.example.scene.SceneEntry;
+import org.example.scene.SceneVariant;
 import org.example.utilities.AnalyticalTestBase;
 import org.junit.jupiter.api.DisplayName;
 import org.opencv.core.Mat;
@@ -48,12 +54,12 @@ class HistogramMatchingTest extends AnalyticalTestBase {
     private static final Set<SceneVariant> SCENE_VARIANTS = Set.of(
             SceneVariant.SCALE_0_50,
             SceneVariant.SCALE_1_50,
-            SceneVariant.SCALE0_75_ROT30,
+            SceneVariant.SCALE_0_75,
             SceneVariant.ROT_90,
             SceneVariant.ROT_180,
-            SceneVariant.NOISE_S25,
+            SceneVariant.ROT_45,
             SceneVariant.OFFSET_TOPLEFT,
-            SceneVariant.CLEAN_BG_GRADIENT_H_COLOUR
+            SceneVariant.CLEAN
     );
 
     private static final Set<String> SAVE = MatcherVariant.allNamesOf(HistVariant.class);

@@ -1,6 +1,6 @@
 package org.example.ui.panels;
 
-import org.example.*;
+import org.example.factories.BackgroundId;
 import org.example.ui.RunConfiguration;
 import org.example.ui.SelectionTable;
 import org.example.ui.WizardContext;

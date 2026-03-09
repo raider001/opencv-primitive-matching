@@ -1,6 +1,9 @@
 package org.example;
 
+import org.example.analytics.AnalysisResult;
+import org.example.factories.ReferenceId;
 import org.example.matchers.*;
+import org.example.scene.SceneEntry;
 import org.opencv.core.Mat;
 
 import java.nio.file.Path;
@@ -82,7 +85,12 @@ public final class MatcherRegistry {
         descriptor("FSM",     "Fourier Shape Descriptors",
                 Paths.get("test_output", "fourier_shape_matching"),
                 MatcherVariant.allNamesOf(FourierShapeVariant.class),
-                FourierShapeMatcher::match)
+                FourierShapeMatcher::match),
+
+        descriptor("VM",      "Vector Matching",
+                Paths.get("test_output", "vector_matching"),
+                MatcherVariant.allNamesOf(VectorVariant.class),
+                VectorMatcher::match)
     );
 
     /** Returns the descriptor with the given tag, or empty. */

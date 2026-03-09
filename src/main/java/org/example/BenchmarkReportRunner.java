@@ -51,6 +51,7 @@ public final class BenchmarkReportRunner {
         new TechniqueReport("SSIM",                         Paths.get("test_output","ssim_matching",          "report.html"), "SSIM",    true,  false),
         new TechniqueReport("Chamfer Distance",             Paths.get("test_output","chamfer_matching",       "report.html"), "CHAMFER", true,  false),
         new TechniqueReport("Fourier Shape Descriptors",    Paths.get("test_output","fourier_shape_matching", "report.html"), "FSM",     true,  false),
+        new TechniqueReport("Vector Matching",              Paths.get("test_output","vector_matching",        "report.html"), "VM",      true,  false),
         new TechniqueReport("Colour-First Region Proposal", Paths.get("test_output","colour_first",           "report.html"), "CF1",     false, true),
         new TechniqueReport("Multi-Colour-First Proposal",  Paths.get("test_output","multi_colour_first",     "report.html"), "MCF1",    false, false)
     );

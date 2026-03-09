@@ -1,7 +1,7 @@
 package org.example.setups;
 
-import org.example.BackgroundFactory;
-import org.example.BackgroundId;
+import org.example.factories.BackgroundFactory;
+import org.example.factories.BackgroundId;
 import org.example.OpenCvLoader;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;

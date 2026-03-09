@@ -1,6 +1,15 @@
 package org.example.setups;
 
 import org.example.*;
+import org.example.analytics.AnalysisOutputWriter;
+import org.example.analytics.AnalysisResult;
+import org.example.analytics.PerformanceProfile;
+import org.example.analytics.PerformanceProfiler;
+import org.example.factories.ReferenceId;
+import org.example.factories.ReferenceImageFactory;
+import org.example.scene.SceneCatalogue;
+import org.example.scene.SceneCategory;
+import org.example.scene.SceneEntry;
 import org.junit.jupiter.api.*;
 import org.opencv.core.*;
 import org.opencv.imgproc.Imgproc;

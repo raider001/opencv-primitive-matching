@@ -1,7 +1,12 @@
 package org.example.slowmatchingtests;
 
-import org.example.*;
+import org.example.analytics.AnalysisResult;
+import org.example.colour.CfMode;
+import org.example.factories.ReferenceId;
 import org.example.matchers.*;
+import org.example.scene.SceneCategory;
+import org.example.scene.SceneEntry;
+import org.example.scene.SceneVariant;
 import org.example.utilities.AnalyticalTestBase;
 import org.junit.jupiter.api.DisplayName;
 import org.opencv.core.Mat;
@@ -70,9 +75,7 @@ class ColourFirstRegionProposalTest extends AnalyticalTestBase {
     };
 
     private static final Set<SceneVariant> SCENE_VARIANTS = Set.of(
-//        SceneVariant.CLEAN_BG_SOLID_BLACK,
-//        SceneVariant.CLEAN_BG_GRADIENT_H_COLOUR,
-        SceneVariant.CLEAN_BG_RANDOM_MIXED,
+        SceneVariant.CLEAN,
         SceneVariant.SCALE_0_50,
         SceneVariant.SCALE_1_50,
         SceneVariant.ROT_90

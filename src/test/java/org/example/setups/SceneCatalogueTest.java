@@ -1,6 +1,7 @@
 package org.example.setups;
 
 import org.example.*;
+import org.example.scene.*;
 import org.junit.jupiter.api.*;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
@@ -50,15 +51,13 @@ class SceneCatalogueTest {
     void verifyCounts() {
         long a = catalogue.stream().filter(e -> e.category() == SceneCategory.A_CLEAN).count();
         long b = catalogue.stream().filter(e -> e.category() == SceneCategory.B_TRANSFORMED).count();
-        long c = catalogue.stream().filter(e -> e.category() == SceneCategory.C_DEGRADED).count();
         long d = catalogue.stream().filter(e -> e.category() == SceneCategory.D_NEGATIVE).count();
 
         System.out.println("=== Scene counts ===");
         System.out.printf("  A (clean)       : %4d  (expected 352)%n",  a);
-        System.out.printf("  B (transformed) : %4d  (expected 1320)%n", b);
-        System.out.printf("  C (degraded)    : %4d  (expected 616)%n",  c);
+        System.out.printf("  B (transformed) : %4d  (expected 1144)%n", b);
         System.out.printf("  D (negative)    : %4d  (expected 44)%n",   d);
-        System.out.printf("  Total           : %4d  (expected 2332)%n%n", catalogue.size());
+        System.out.printf("  Total           : %4d  (expected 1540)%n%n", catalogue.size());
         System.out.printf("  Multi-shape     : %4d%n%n", multiShapeScenes.size());
     }
 
