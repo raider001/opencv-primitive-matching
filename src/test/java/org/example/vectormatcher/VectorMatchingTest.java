@@ -6,7 +6,6 @@ import org.example.factories.BackgroundFactory;
 import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
 import org.example.factories.ReferenceImageFactory;
-import org.example.colour.ColourPreFilter;
 import org.example.colour.SceneColourClusters;
 import org.example.matchers.VectorMatcher;
 import org.example.matchers.VectorSignature;
@@ -69,18 +68,11 @@ class VectorMatchingTest {
      * falsePositive — score passed threshold but IoU < 0.3 (matched wrong location)
      */
     record ReportRow(String stage, String label, String shapeName, String sceneDesc,
-                     // Standard pipeline
                      double score, boolean passed,
                      String refOrig, String refPoints, String refPointsApprox,
                      String sceneOrig, String sceneBin,
                      String allPoints,
                      String sceneAnnot,
-                     // CF pipeline
-                     double cfScore,
-                     String cfFiltered, String cfEdges,
-                     String cfAllPoints,
-                     String cfAnnot,
-                     // Localisation quality
                      double iou, boolean falsePositive) {}
 
     /**
@@ -996,27 +988,9 @@ class VectorMatchingTest {
      * colour first, so CF variants actually find something to filter on.
      * Used by {@link #record} so both the standard and CF scores are meaningful.
      */
-    private List<AnalysisResult> runMatcherColoured(ReferenceId refId, Mat ref, Mat sceneMat) {
-        Mat coloured = recolourToRef(sceneMat, refId);
-        SceneEntry scene = new SceneEntry(
-                refId, SceneCategory.A_CLEAN, "step5_synthetic",
-                BackgroundId.BG_SOLID_BLACK, Collections.emptyList(), coloured);
-        List<AnalysisResult> results = VectorMatcher.match(refId, ref, scene, Collections.emptySet(), OUTPUT);
-        coloured.release();
-        return results;
-    }
-
     private static double normalScore(List<AnalysisResult> results) {
         return results.stream()
                 .filter(r -> r.methodName().equals(VectorVariant.VECTOR_NORMAL.variantName()))
-                .findFirst()
-                .map(AnalysisResult::matchScorePercent)
-                .orElse(0.0);
-    }
-
-    private static double cfLooseScore(List<AnalysisResult> results) {
-        return results.stream()
-                .filter(r -> r.methodName().equals(VectorVariant.VECTOR_NORMAL_CF_LOOSE.variantName()))
                 .findFirst()
                 .map(AnalysisResult::matchScorePercent)
                 .orElse(0.0);
@@ -1055,17 +1029,6 @@ class VectorMatchingTest {
         // actual reference colour so CF variants see the right colour.
         Mat sceneWithRef = rid != null ? recolourToRef(sceneMat, rid) : sceneMat.clone();
 
-        // CF score — run the matcher again on the recoloured scene so the CF filter
-        // actually finds the colour. The standard score uses the original results
-        // (white-on-black is fine for greyscale threshold matching).
-        double cfScore = 0.0;
-        if (rid != null) {
-            Mat ref = ReferenceImageFactory.build(rid);
-            List<AnalysisResult> cfResults = runMatcherColoured(rid, ref, sceneMat);
-            cfScore = cfLooseScore(cfResults);
-            ref.release();
-        }
-
         // ── Ref original + Ref Points (raw) + Ref Points (approx) ───────────
         String refOrigPng        = "";
         String refPointsPng      = "";
@@ -1075,7 +1038,7 @@ class VectorMatchingTest {
             refOrigPng = matToBase64Png(refOrig);
 
             Mat refBin = VectorMatcher.extractBinaryRaw(refOrig);
-            List<MatOfPoint> refContours = VectorMatcher.extractContours(refOrig);
+            List<MatOfPoint> refContours = VectorMatcher.extractContoursFromBinary(refOrig);
 
             // Raw — every pixel-level point (epsilon=0)
             Mat refGraphRaw = VectorMatcher.drawContourGraph(refOrig.size(), refBin, refContours, 0);
@@ -1124,43 +1087,8 @@ class VectorMatchingTest {
             graph.release();
         }
 
-        String cfFilteredPng  = "";
-        String cfEdgesPng     = "";
-        String cfAllPointsPng = "";
-        if (rid != null) {
-            Mat cfMat = ColourPreFilter.applyMaskedBgrToScene(sceneWithRef, rid, ColourPreFilter.LOOSE);
-            cfFilteredPng = matToBase64Png(cfMat);
-
-            // CF Edges
-            Mat cfBin = VectorMatcher.extractBinaryRaw(cfMat);
-            {
-                Mat bgr = new Mat();
-                Imgproc.cvtColor(cfBin, bgr, Imgproc.COLOR_GRAY2BGR);
-                cfEdgesPng = matToBase64Png(bgr);
-                bgr.release();
-            }
-            cfBin.release();
-
-            // CF All Points — colour-isolated contours from the CF-filtered scene
-            {
-                List<SceneColourClusters.Cluster> cfClusters = SceneColourClusters.extract(cfMat);
-                List<MatOfPoint> cfAllContours = new ArrayList<>();
-                for (SceneColourClusters.Cluster cluster : cfClusters) {
-                    Mat masked = SceneColourClusters.applyMask(cfMat, cluster);
-                    cfAllContours.addAll(VectorMatcher.extractContoursFromBinary(masked));
-                    masked.release();
-                    cluster.release();
-                }
-                Mat graph = VectorMatcher.drawContourGraph(cfMat.size(), null, cfAllContours, 0);
-                cfAllPointsPng = matToBase64Png(graph);
-                graph.release();
-            }
-            cfMat.release();
-        }
-
         // ── Match annotations ─────────────────────────────────────────────
         String sceneAnnotPng = "";
-        String cfAnnotPng    = "";
         double iou           = Double.NaN;
         boolean falsePositive = false;
         {
@@ -1168,13 +1096,7 @@ class VectorMatchingTest {
                     ? VectorMatcher.buildRefSignature(ReferenceImageFactory.build(rid), eps)
                     : null;
 
-            sceneAnnotPng = buildAnnotated(sceneWithRef, sceneWithRef, refSig, groundTruth, score, false);
-
-            if (rid != null) {
-                Mat cfMat = ColourPreFilter.applyMaskedBgrToScene(sceneWithRef, rid, ColourPreFilter.LOOSE);
-                cfAnnotPng = buildAnnotated(cfMat, sceneWithRef, refSig, groundTruth, cfScore, false);
-                cfMat.release();
-            }
+            sceneAnnotPng = buildAnnotated(sceneWithRef, refSig, groundTruth, score);
 
             Rect bestBbox = findBestBbox(sceneWithRef, refSig);
             if (bestBbox != null && groundTruth != null) {
@@ -1191,31 +1113,25 @@ class VectorMatchingTest {
                 sceneWithRefPng, sceneBinPng,
                 allPointsPng,
                 sceneAnnotPng,
-                cfScore,
-                cfFilteredPng, cfEdgesPng,
-                cfAllPointsPng,
-                cfAnnotPng,
                 iou, falsePositive));
         return score;
     }
 
     /** Build an annotated scene image showing best-match bbox. Returns base64 PNG. */
-    private static String buildAnnotated(Mat extractFrom, Mat drawOnto,
-                                          VectorSignature refSig, Rect groundTruth,
-                                          double score, boolean falsePositive) {
-        Rect bestBbox = findBestBbox(extractFrom, refSig);
-        Mat annotated = drawOnto.clone();
+    private static String buildAnnotated(Mat scene, VectorSignature refSig,
+                                          Rect groundTruth, double score) {
+        Rect bestBbox = findBestBbox(scene, refSig);
+        Mat annotated = scene.clone();
         if (groundTruth != null) {
             Imgproc.rectangle(annotated,
                     new Point(groundTruth.x, groundTruth.y),
                     new Point(groundTruth.x + groundTruth.width, groundTruth.y + groundTruth.height),
-                    new Scalar(220, 220, 0), 2); // cyan
+                    new Scalar(220, 220, 0), 2);
         }
         if (bestBbox != null && bestBbox.width > 1 && bestBbox.height > 1) {
-            Scalar col = falsePositive     ? new Scalar(220, 0, 220)
-                       : score >= 70       ? new Scalar(0, 200, 0)
-                       : score >= 40       ? new Scalar(0, 200, 200)
-                       :                     new Scalar(0, 0, 200);
+            Scalar col = score >= 70 ? new Scalar(0, 200, 0)
+                       : score >= 40 ? new Scalar(0, 200, 200)
+                       :               new Scalar(0, 0, 200);
             Imgproc.rectangle(annotated,
                     new Point(bestBbox.x, bestBbox.y),
                     new Point(bestBbox.x + bestBbox.width, bestBbox.y + bestBbox.height),
@@ -1299,29 +1215,6 @@ class VectorMatchingTest {
         return inter / (aArea + bArea - inter);
     }
 
-    /**
-     * Computes the bounding rect of all non-black pixels in a white-on-black mat.
-     * Use this on the original shapeMat (before compositing) to get the ground-truth rect.
-     */
-    /**
-     * Applies STRICT (0.02 × perimeter) approxPolyDP to each contour, returning a
-     * new list of reduced contours.  Mirrors what {@code buildFromContour} now does
-     * before rendering the filled crop — so "Scene Approx" shows exactly what
-     * the SegmentDescriptor receives as input.
-     */
-    private static List<MatOfPoint> approxReduceContours(List<MatOfPoint> raw) {
-        List<MatOfPoint> result = new ArrayList<>();
-        for (MatOfPoint c : raw) {
-            double perim = Imgproc.arcLength(new MatOfPoint2f(c.toArray()), true);
-            double eps   = Math.max(0.02 * perim, 2.0);
-            MatOfPoint2f approx = new MatOfPoint2f();
-            Imgproc.approxPolyDP(new MatOfPoint2f(c.toArray()), approx, eps, true);
-            if (approx.total() >= 3)
-                result.add(new MatOfPoint(approx.toArray()));
-            approx.release();
-        }
-        return result;
-    }
 
     private static Rect groundTruthRect(Mat shapeMat) {
         Mat grey = new Mat(); Mat bin = new Mat();
@@ -1561,33 +1454,19 @@ class VectorMatchingTest {
           .append(" &nbsp;·&nbsp; <span style='color:#f85149'>").append(badIou).append(" bad-IoU matches</span>")
           .append("</p>")
           .append("<div class='legend-block'>")
-          .append("<div class='legend-title'>Pipeline rows (per test entry)</div>")
+          .append("<div class='legend-title'>Pipeline (per test entry)</div>")
           .append("<div class='legend-row'>")
-          .append("<span class='pl-label'>Standard:</span>")
           .append("<span class='pl-step'>Ref</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Ref Points (raw)</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Ref Points (approx)</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Scene</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Edges (ref)</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Colour Clusters</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Match</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Score %</span>")
-          .append("</div>")
-          .append("<div class='legend-row' style='margin-top:4px'>")
-          .append("<span class='pl-label'>+ CF:</span>")
-          .append("<span class='pl-step'>Ref</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Ref Points (raw)</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Ref Points (approx)</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Scene</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step cf-step'>Colour Filter</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Edges (ref)</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Colour Clusters</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Match</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Score %</span>")
           .append("</div>")
           .append("<p style='font-size:.70rem;color:#8b949e;margin-top:5px'>")
-          .append("Scene = reference drawn in its actual colour onto the scene background. ")
-          .append("Both strips use the same scene image.")
+          .append("Colour Clusters = scene decomposed into per-colour layers; contours extracted per layer.")
           .append("</p>")
           .append("</div>")
           .append("<div class='legend-block'>")
@@ -1644,7 +1523,6 @@ class VectorMatchingTest {
 
                 // ── Standard pipeline sub-row ────────────────────────────
                 sb.append("<div class='pipeline-row'>")
-                  .append("<div class='pipeline-label'>Standard</div>")
                   .append("<div class='pipeline'>");
                 pipelineStep(sb, r.refOrig(),          "Ref");
                 pipelineStep(sb, r.refPoints(),        "Ref Points (raw)");
@@ -1658,26 +1536,6 @@ class VectorMatchingTest {
                   .append("<span class='score-val ").append(scoreClass(r.score())).append("'>")
                   .append(String.format("%.1f%%", r.score())).append("</span>")
                   .append(scoreBar(r.score()))
-                  .append("</div>")
-                  .append("</div>");
-
-                // ── CF pipeline sub-row ──────────────────────────────────
-                sb.append("<div class='pipeline-row cf-row'>")
-                  .append("<div class='pipeline-label cf-label'>+ Colour Filter</div>")
-                  .append("<div class='pipeline'>");
-                pipelineStep(sb, r.refOrig(),          "Ref");
-                pipelineStep(sb, r.refPoints(),        "Ref Points (raw)");
-                pipelineStep(sb, r.refPointsApprox(),  "Ref Points (approx)");
-                pipelineStep(sb, r.sceneOrig(),        "Scene");
-                pipelineStep(sb, r.cfFiltered(),       "Colour Filter");
-                pipelineStep(sb, r.cfEdges(),          "Edges (ref)");
-                pipelineStep(sb, r.cfAllPoints(),      "Colour Clusters");
-                pipelineStep(sb, r.cfAnnot(),          "Match");
-                sb.append("</div>")
-                  .append("<div class='pipeline-score'>")
-                  .append("<span class='score-val ").append(scoreClass(r.cfScore())).append("'>")
-                  .append(String.format("%.1f%%", r.cfScore())).append("</span>")
-                  .append(scoreBar(r.cfScore()))
                   .append("</div>")
                   .append("</div>");
 

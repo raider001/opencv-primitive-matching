@@ -21,16 +21,18 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Step 4d — End-to-end matching with CF (colour-filter) variants.
+ * Step 4d — End-to-end matching with all 3 variants.
  *
- * <p><b>Part A</b>: verifies that CF variants produce valid results on scenes
- * that contain the correct shape in the correct colour.
+ * <p>CF variants have been removed — colour isolation is now handled automatically
+ * inside the matcher via SceneColourClusters.
  *
- * <p><b>Part B</b>: verifies that CF variants behave correctly on negative
- * (wrong colour or no shape) scenes and that all 9 variants produce consistent
- * structural results.
+ * <p><b>Part A</b>: verifies that all variants produce valid results on scenes
+ * that contain the correct shape.
+ *
+ * <p><b>Part B</b>: verifies that variants behave correctly on negative scenes
+ * and that all 3 variants produce consistent structural results.
  */
-@DisplayName("Vector Step 4d — End-to-end with CF variants")
+@DisplayName("Vector Step 4d — End-to-end with all variants")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class VectorStep4dCfVariantsTest {
 
@@ -40,25 +42,25 @@ class VectorStep4dCfVariantsTest {
     static void load() { OpenCvLoader.load(); }
 
     // ========================================================
-    // PART A — Shape present, colour matches (positive)
+    // PART A — Shape present (positive)
     // ========================================================
 
     @Nested
-    @DisplayName("Part A — Correct shape and colour present")
+    @DisplayName("Part A — Correct shape present")
     @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
     class PartA {
 
         @Test @Order(1)
-        @DisplayName("A1 — All 9 variants return without error on a circle scene")
+        @DisplayName("A1 — All 3 variants return without error on a circle scene")
         void allVariantsNoError() {
             Mat ref   = ReferenceImageFactory.build(ReferenceId.CIRCLE_FILLED);
-            Mat scene = buildColourCircleScene(ref);  // matches reference colour
+            Mat scene = buildColourCircleScene(ref);
             List<AnalysisResult> results = VectorMatcher.match(
                     ReferenceId.CIRCLE_FILLED, ref,
                     wrapScene(scene, ReferenceId.CIRCLE_FILLED),
                     Collections.emptySet(), OUTPUT);
             ref.release(); scene.release();
-            assertEquals(9, results.size());
+            assertEquals(3, results.size());
             for (AnalysisResult r : results) {
                 assertFalse(r.isError(),
                         "Variant " + r.methodName() + " returned an error: " + r.errorMessage());
@@ -66,7 +68,7 @@ class VectorStep4dCfVariantsTest {
         }
 
         @Test @Order(2)
-        @DisplayName("A2 — All 9 variant names are distinct in results")
+        @DisplayName("A2 — All 3 variant names are distinct in results")
         void allVariantNamesDistinct() {
             Mat ref   = ReferenceImageFactory.build(ReferenceId.RECT_FILLED);
             Mat scene = buildColourRectScene(ref);
@@ -76,7 +78,7 @@ class VectorStep4dCfVariantsTest {
                     Collections.emptySet(), OUTPUT);
             ref.release(); scene.release();
             long distinct = results.stream().map(AnalysisResult::methodName).distinct().count();
-            assertEquals(9, distinct, "All 9 results must have distinct variant names");
+            assertEquals(3, distinct, "All 3 results must have distinct variant names");
         }
 
         @Test @Order(3)
@@ -97,8 +99,8 @@ class VectorStep4dCfVariantsTest {
         }
 
         @Test @Order(4)
-        @DisplayName("A4 — CF_LOOSE variant score is non-zero on colour-matched scene")
-        void cfLooseNonZeroOnMatch() {
+        @DisplayName("A4 — NORMAL variant score is non-zero on colour-matched scene")
+        void normalNonZeroOnMatch() {
             Mat ref   = ReferenceImageFactory.build(ReferenceId.RECT_FILLED);
             Mat scene = buildColourRectScene(ref);
             List<AnalysisResult> results = VectorMatcher.match(
@@ -106,9 +108,9 @@ class VectorStep4dCfVariantsTest {
                     wrapScene(scene, ReferenceId.RECT_FILLED),
                     Collections.emptySet(), OUTPUT);
             ref.release(); scene.release();
-            double cfLoose = scoreOf(results, VectorVariant.VECTOR_NORMAL_CF_LOOSE);
-            System.out.printf("[4d-A4] NORMAL_CF_LOOSE=%.1f%n", cfLoose);
-            assertTrue(cfLoose > 0, "CF_LOOSE should not be zero on colour-matched scene");
+            double normal = scoreOf(results, VectorVariant.VECTOR_NORMAL);
+            System.out.printf("[4d-A4] VECTOR_NORMAL=%.1f%n", normal);
+            assertTrue(normal > 0, "NORMAL should not be zero on colour-matched scene");
         }
 
         @Test @Order(5)
@@ -139,8 +141,8 @@ class VectorStep4dCfVariantsTest {
     class PartB {
 
         @Test @Order(1)
-        @DisplayName("B1 — CF_TIGHT on wrong-colour scene: does not throw, score in [0,100]")
-        void cfTightWrongColourNoThrow() {
+        @DisplayName("B1 — Wrong-colour scene: does not throw, score in [0,100]")
+        void wrongColourNoThrow() {
             Mat ref = ReferenceImageFactory.build(ReferenceId.CIRCLE_FILLED);
             // Build scene with deliberately wrong colour (blue circle, reference is typically white)
             Mat scene = Mat.zeros(480, 640, CvType.CV_8UC3);
@@ -159,7 +161,7 @@ class VectorStep4dCfVariantsTest {
         }
 
         @Test @Order(2)
-        @DisplayName("B2 — All variants return results on blank (negative) scene")
+        @DisplayName("B2 — All 3 variants return results on blank (negative) scene")
         void allVariantsReturnOnBlankScene() {
             Mat ref   = ReferenceImageFactory.build(ReferenceId.CIRCLE_FILLED);
             Mat scene = Mat.zeros(480, 640, CvType.CV_8UC3);
@@ -169,7 +171,7 @@ class VectorStep4dCfVariantsTest {
                             BackgroundId.BG_SOLID_BLACK, Collections.emptyList(), scene),
                     Collections.emptySet(), OUTPUT);
             ref.release(); scene.release();
-            assertEquals(9, results.size(), "Must return 9 results even on blank negative scene");
+            assertEquals(3, results.size(), "Must return 3 results even on blank negative scene");
             for (AnalysisResult r : results) {
                 assertFalse(r.isError(), r.methodName() + " errored on blank scene");
             }
@@ -215,7 +217,7 @@ class VectorStep4dCfVariantsTest {
                         new SceneEntry(null, SceneCategory.D_NEGATIVE, "noisy",
                                 BackgroundId.BG_COLOURED_NOISE, Collections.emptyList(), noise),
                         Collections.emptySet(), OUTPUT);
-                assertEquals(9, results.size());
+                assertEquals(3, results.size());
             });
             ref.release(); noise.release();
         }
@@ -225,10 +227,6 @@ class VectorStep4dCfVariantsTest {
     // Helpers
     // -------------------------------------------------------------------------
 
-    /**
-     * Build a 640x480 scene containing a circle drawn in the same colour as
-     * the reference foreground (extracted from the centre of the ref image).
-     */
     private static Mat buildColourCircleScene(Mat ref) {
         double[] px  = ref.get(64, 64);
         Scalar colour = px != null ? new Scalar(px[0], px[1], px[2])
@@ -260,5 +258,4 @@ class VectorStep4dCfVariantsTest {
                 .orElse(0.0);
     }
 }
-
 

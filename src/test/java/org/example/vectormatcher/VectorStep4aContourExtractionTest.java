@@ -4,7 +4,6 @@ import org.example.OpenCvLoader;
 import org.example.factories.ReferenceId;
 import org.example.factories.ReferenceImageFactory;
 import org.example.matchers.VectorMatcher;
-import org.example.matchers.VectorVariant;
 import org.junit.jupiter.api.*;
 import org.opencv.core.*;
 import org.opencv.imgproc.Imgproc;
@@ -15,6 +14,10 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Step 4a — Contour Extraction.
+ *
+ * <p>Tests use {@link VectorMatcher#extractContoursFromBinary} — the primary
+ * extraction path used by the matcher. Scenes are single-colour shapes on black,
+ * so threshold-only binarisation produces clean filled shapes with exact corners.
  *
  * <p><b>Part A</b> (positive scenes only): verifies that contours are correctly found
  * on scenes that definitely contain shapes.
@@ -41,8 +44,8 @@ class VectorStep4aContourExtractionTest {
         @Test @Order(1)
         @DisplayName("A1 — Single circle on black background: at least 1 contour found")
         void singleCircleContourFound() {
-            Mat scene = makeSolidCircleScene(255, 255, 255);
-            List<MatOfPoint> c = VectorMatcher.extractContours(scene);
+            Mat scene = makeSolidCircleScene();
+            List<MatOfPoint> c = VectorMatcher.extractContoursFromBinary(scene);
             scene.release();
             System.out.printf("[4a-A1] Circle scene contours: %d%n", c.size());
             assertFalse(c.isEmpty(), "Should find at least one contour on circle scene");
@@ -51,8 +54,8 @@ class VectorStep4aContourExtractionTest {
         @Test @Order(2)
         @DisplayName("A2 — Rectangle on black background: at least 1 contour found")
         void rectangleContourFound() {
-            Mat scene = makeRectScene(255, 255, 255);
-            List<MatOfPoint> c = VectorMatcher.extractContours(scene);
+            Mat scene = makeRectScene();
+            List<MatOfPoint> c = VectorMatcher.extractContoursFromBinary(scene);
             scene.release();
             System.out.printf("[4a-A2] Rect scene contours: %d%n", c.size());
             assertFalse(c.isEmpty(), "Should find at least one contour on rect scene");
@@ -61,8 +64,8 @@ class VectorStep4aContourExtractionTest {
         @Test @Order(3)
         @DisplayName("A3 — All contours have area >= 64 px² (noise filtered)")
         void contoursAboveAreaThreshold() {
-            Mat scene = makeSolidCircleScene(255, 255, 255);
-            List<MatOfPoint> c = VectorMatcher.extractContours(scene);
+            Mat scene = makeSolidCircleScene();
+            List<MatOfPoint> c = VectorMatcher.extractContoursFromBinary(scene);
             scene.release();
             for (MatOfPoint contour : c) {
                 double area = Imgproc.contourArea(contour);
@@ -75,7 +78,7 @@ class VectorStep4aContourExtractionTest {
         @DisplayName("A4 — Triangle scene produces at least one contour")
         void triangleContourFound() {
             Mat scene = makeTriangleScene();
-            List<MatOfPoint> c = VectorMatcher.extractContours(scene);
+            List<MatOfPoint> c = VectorMatcher.extractContoursFromBinary(scene);
             scene.release();
             System.out.printf("[4a-A4] Triangle scene contours: %d%n", c.size());
             assertFalse(c.isEmpty());
@@ -85,7 +88,7 @@ class VectorStep4aContourExtractionTest {
         @DisplayName("A5 — Real reference image (CIRCLE_OUTLINE) produces contours after binarise")
         void refImageProducesContours() {
             Mat ref = ReferenceImageFactory.build(ReferenceId.CIRCLE_OUTLINE);
-            List<MatOfPoint> c = VectorMatcher.extractContours(ref);
+            List<MatOfPoint> c = VectorMatcher.extractContoursFromBinary(ref);
             ref.release();
             System.out.printf("[4a-A5] CIRCLE_OUTLINE ref contours: %d%n", c.size());
             assertFalse(c.isEmpty(), "Reference image should yield contours");
@@ -105,7 +108,7 @@ class VectorStep4aContourExtractionTest {
         @DisplayName("B1 — Blank black scene returns zero contours (nothing to detect)")
         void blankSceneZeroContours() {
             Mat scene = Mat.zeros(480, 640, CvType.CV_8UC3);
-            List<MatOfPoint> c = VectorMatcher.extractContours(scene);
+            List<MatOfPoint> c = VectorMatcher.extractContoursFromBinary(scene);
             scene.release();
             System.out.printf("[4a-B1] Blank scene contours: %d%n", c.size());
             assertEquals(0, c.size(), "Blank scene should produce 0 significant contours");
@@ -114,10 +117,10 @@ class VectorStep4aContourExtractionTest {
         @Test @Order(2)
         @DisplayName("B2 — Circle scene produces more contours than blank scene")
         void circleMoreThanBlank() {
-            Mat circle = makeSolidCircleScene(255, 255, 255);
+            Mat circle = makeSolidCircleScene();
             Mat blank  = Mat.zeros(480, 640, CvType.CV_8UC3);
-            int circCount = VectorMatcher.extractContours(circle).size();
-            int blankCount = VectorMatcher.extractContours(blank).size();
+            int circCount  = VectorMatcher.extractContoursFromBinary(circle).size();
+            int blankCount = VectorMatcher.extractContoursFromBinary(blank).size();
             circle.release(); blank.release();
             System.out.printf("[4a-B2] circle=%d  blank=%d%n", circCount, blankCount);
             assertTrue(circCount > blankCount,
@@ -130,7 +133,7 @@ class VectorStep4aContourExtractionTest {
             Mat noise = new Mat(480, 640, CvType.CV_8UC3);
             Core.randu(noise, 0.0, 30.0);
             assertDoesNotThrow(() -> {
-                List<MatOfPoint> c = VectorMatcher.extractContours(noise);
+                List<MatOfPoint> c = VectorMatcher.extractContoursFromBinary(noise);
                 System.out.printf("[4a-B3] Noise scene contours: %d%n", c.size());
             });
             noise.release();
@@ -141,9 +144,8 @@ class VectorStep4aContourExtractionTest {
         void singlePixelFiltered() {
             Mat scene = Mat.zeros(480, 640, CvType.CV_8UC3);
             scene.put(240, 320, new byte[]{(byte)255, (byte)255, (byte)255});
-            List<MatOfPoint> c = VectorMatcher.extractContours(scene);
+            List<MatOfPoint> c = VectorMatcher.extractContoursFromBinary(scene);
             scene.release();
-            // Single pixel area = 1 px² which is below the 64 px² threshold
             for (MatOfPoint contour : c) {
                 assertTrue(Imgproc.contourArea(contour) >= 64,
                         "Single-pixel contours must be filtered out");
@@ -155,16 +157,16 @@ class VectorStep4aContourExtractionTest {
     // Helpers
     // -------------------------------------------------------------------------
 
-    private static Mat makeSolidCircleScene(int r, int g, int b) {
+    private static Mat makeSolidCircleScene() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        Imgproc.circle(m, new Point(320, 240), 60, new Scalar(b, g, r), -1);
+        Imgproc.circle(m, new Point(320, 240), 60, new Scalar(255, 255, 255), -1);
         return m;
     }
 
-    private static Mat makeRectScene(int r, int g, int b) {
+    private static Mat makeRectScene() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Imgproc.rectangle(m, new Point(230, 160), new Point(410, 320),
-                new Scalar(b, g, r), -1);
+                new Scalar(255, 255, 255), -1);
         return m;
     }
 
@@ -176,5 +178,3 @@ class VectorStep4aContourExtractionTest {
         return m;
     }
 }
-
-

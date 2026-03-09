@@ -194,30 +194,6 @@ public final class VectorSignature {
     }
 
     /**
-     * Cheap scalar pre-filter: returns true if this signature is close enough to
-     * {@code ref} in vertex count, circularity and aspect ratio to be worth running
-     * the full (expensive) {@link #similarity} computation on.
-     *
-     * <p>This is called before {@link ContourTopology#similarity} to skip candidates
-     * that cannot possibly match, keeping the matcher fast on complex scenes.
-     */
-    public boolean quickReject(VectorSignature ref) {
-        if (ref == null) return true;
-        // Vertex count far too different (topology cannot match)
-        if (this.topology != null && ref.topology != null
-                && !this.topology.isCircular && !ref.topology.isCircular) {
-            if (Math.abs(this.vertexCount - ref.vertexCount) > 4) return true;
-        }
-        // Circularity wildly different (circle vs polygon)
-        if (Math.abs(this.circularity - ref.circularity) > 0.45) return true;
-        // Aspect ratio wildly different (long bar vs compact shape)
-        double arA = Math.max(this.aspectRatio, 1.0);
-        double arB = Math.max(ref.aspectRatio,  1.0);
-        if (Math.abs(arA - arB) / Math.max(arA, arB) > 0.60) return true;
-        return false;
-    }
-
-    /**
      * Builds a {@code VectorSignature} from a binary (CV_8UC1) mask.
      *
      * @param binaryMask     single-channel binary image (255 = foreground)
@@ -603,26 +579,10 @@ public final class VectorSignature {
     // Helpers
     // -------------------------------------------------------------------------
 
-    /**
-     * Histogram intersection similarity in [0, 1].
-     * Returns the sum of min(a[i], b[i]) — measures shared "mass".
-     * Both histograms must be normalised (sum ≈ 1).
-     */
     static double histogramIntersection(double[] a, double[] b) {
         double sum = 0.0;
         for (int i = 0; i < a.length; i++) sum += Math.min(a[i], b[i]);
         return sum;  // already in [0,1] if both histograms sum to 1
-    }
-
-    private static double cosineSimilarity(double[] a, double[] b) {
-        double dot = 0, magA = 0, magB = 0;
-        for (int i = 0; i < a.length; i++) {
-            dot  += a[i] * b[i];
-            magA += a[i] * a[i];
-            magB += b[i] * b[i];
-        }
-        double denom = Math.sqrt(magA) * Math.sqrt(magB);
-        return denom < 1e-12 ? 0.0 : dot / denom;
     }
 
     private static VectorSignature unknown() {
