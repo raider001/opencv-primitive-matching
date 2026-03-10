@@ -71,19 +71,40 @@ public final class SceneDescriptor {
     public static List<MatOfPoint> contoursFromMask(Mat mask) {
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
-        // Erode by 1px so any blob touching the image border is clipped away.
-        // This prevents findContours from tracing the image edge as a contour
-        // (e.g. the dark-achromatic background cluster on a black-canvas ref image).
         Mat eroded = new Mat();
         Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
         Imgproc.erode(mask, eroded, kernel);
         kernel.release();
+        // RETR_LIST finds ALL contours including inner ones (COMPOUND shapes).
         Imgproc.findContours(eroded, contours, hierarchy,
-                Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+                Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE);
         hierarchy.release();
         eroded.release();
         contours.removeIf(c -> Imgproc.contourArea(c) < MIN_AREA);
-        return contours;
+
+        // Deduplicate: RETR_LIST returns both inner and outer traces of the same
+        // stroked shape. Drop any contour whose centre and area are within
+        // tolerance of an already-kept contour.
+        List<MatOfPoint> deduped = new ArrayList<>();
+        for (MatOfPoint c : contours) {
+            Rect   bb    = Imgproc.boundingRect(c);
+            double cx    = bb.x + bb.width  / 2.0;
+            double cy    = bb.y + bb.height / 2.0;
+            double area  = Imgproc.contourArea(c);
+            boolean dup  = false;
+            for (MatOfPoint kept : deduped) {
+                Rect   kb    = Imgproc.boundingRect(kept);
+                double kcx   = kb.x + kb.width  / 2.0;
+                double kcy   = kb.y + kb.height / 2.0;
+                double kArea = Imgproc.contourArea(kept);
+                double distFrac = Math.hypot(cx - kcx, cy - kcy)
+                        / Math.max(1, Math.max(kb.width, kb.height));
+                double areaFrac = Math.abs(area - kArea) / Math.max(1, kArea);
+                if (distFrac < 0.05 && areaFrac < 0.10) { dup = true; break; }
+            }
+            if (!dup) deduped.add(c);
+        }
+        return deduped;
     }
     /** Legacy helper kept for visualisation callers that pass a masked BGR image. */
     static List<MatOfPoint> extractContours(Mat maskedBgr) {
