@@ -1,6 +1,8 @@
 package org.example.utilities;
 
 import org.example.analytics.AnalysisResult;
+import org.example.analytics.AnalysisResult;
+import org.example.colour.SceneColourClusters;
 import org.example.factories.BackgroundFactory;
 import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
@@ -51,7 +53,9 @@ public class MatchDiagnosticLibrary {
         String refSig, String detSig,
         double circScore, double solidScore, double totalSim,
         int refVertices, int detVertices,
-        String refType, String detType
+        String refType, String detType,
+        /** All other contour hits above 1% similarity: each entry [x, y, w, h, scorePct]. */
+        List<double[]> otherHits
     ) {}
 
     private final List<DiagRow> rows = new ArrayList<>();
@@ -135,6 +139,15 @@ public class MatchDiagnosticLibrary {
             solidScore = 1.0 - Math.abs(refSig.solidity     - bestSceneSig.solidity);
         }
 
+        // ── Collect all other hits above 1% ───────────────────────────────
+        List<double[]> otherHits = allScoredBboxes(scene, refSig).stream()
+                .filter(e -> e[1] > 0.01)
+                .filter(e -> bestBbox == null || !(e[0] == bestBbox.x && e[2] == bestBbox.y
+                             && e[3] == bestBbox.width && e[4] == bestBbox.height))
+                .map(e -> new double[]{e[0], e[2], e[3], e[4], e[1] * 100.0}) // x,y,w,h,scorePct
+                .sorted(Comparator.comparingDouble(e -> -e[4]))
+                .collect(Collectors.toList());
+
         DiagRow row = new DiagRow(
             bgLabel, refId.name(),
             scorePercent, iou,
@@ -150,7 +163,8 @@ public class MatchDiagnosticLibrary {
             refSig       != null ? refSig.vertexCount       : -1,
             bestSceneSig != null ? bestSceneSig.vertexCount : -1,
             refSig       != null ? refSig.type.name()       : "null",
-            bestSceneSig != null ? bestSceneSig.type.name() : "null"
+            bestSceneSig != null ? bestSceneSig.type.name() : "null",
+            otherHits
         );
 
         rows.add(row);
@@ -212,7 +226,17 @@ public class MatchDiagnosticLibrary {
               .append(",\"det\":{\"x\":").append(r.detX()).append(",\"y\":").append(r.detY())
               .append(",\"w\":").append(r.detW()).append(",\"h\":").append(r.detH()).append("}")
               .append(",\"refSig\":\"").append(j(r.refSig()))
-              .append("\",\"detSig\":\"").append(j(r.detSig())).append("\"}")
+              .append("\",\"detSig\":\"").append(j(r.detSig())).append("\"")
+              .append(",\"otherHits\":[");
+            List<double[]> hits = r.otherHits();
+            for (int h = 0; h < hits.size(); h++) {
+                double[] e = hits.get(h);
+                sb.append("{\"x\":").append((int)e[0]).append(",\"y\":").append((int)e[1])
+                  .append(",\"w\":").append((int)e[2]).append(",\"h\":").append((int)e[3])
+                  .append(",\"score\":").append(fmt(e[4])).append("}");
+                if (h < hits.size() - 1) sb.append(",");
+            }
+            sb.append("]}")
               .append(i < rows.size() - 1 ? "," : "").append("\n");
         }
         sb.append("]\n");
@@ -436,5 +460,40 @@ public class MatchDiagnosticLibrary {
         rotM.release(); base.release();
         return dst;
     }
+
+    /**
+     * Scans every colour-cluster contour and returns all hits with their
+     * penalised similarity score.
+     * Each entry: {@code [x, scoreFraction, y, w, h]} (0-indexed for sort by [1]).
+     */
+    public static List<double[]> allScoredBboxes(Mat scene, VectorSignature refSig) {
+        List<double[]> hits = new ArrayList<>();
+        if (refSig == null) return hits;
+        double area = (double) scene.rows() * scene.cols();
+        double eps  = VectorVariant.VECTOR_NORMAL.epsilonFactor();
+        List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(scene);
+        for (SceneColourClusters.Cluster c : clusters) {
+            List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(c.mask);
+            // cluster penalty — mirrors VectorMatcher
+            double maxA = contours.stream()
+                    .mapToDouble(cnt -> { Rect r = Imgproc.boundingRect(cnt); return (double)r.width*r.height; })
+                    .max().orElse(1);
+            long sig = contours.stream()
+                    .filter(cnt -> { Rect r = Imgproc.boundingRect(cnt); return (double)r.width*r.height >= maxA*0.20; })
+                    .count();
+            double penalty = sig > 1 ? 1.0 / (Math.log(sig + 1) / Math.log(2)) : 1.0;
+            for (MatOfPoint cnt : contours) {
+                VectorSignature vs = VectorSignature.buildFromContour(cnt, eps, area);
+                double penalised = refSig.similarity(vs) * penalty;
+                if (penalised > 0.01) {
+                    Rect bb = Imgproc.boundingRect(cnt);
+                    hits.add(new double[]{bb.x, penalised, bb.y, bb.width, bb.height});
+                }
+            }
+            c.release();
+        }
+        return hits;
+    }
 }
+
 

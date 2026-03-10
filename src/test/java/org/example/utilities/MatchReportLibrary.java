@@ -141,7 +141,16 @@ public class MatchReportLibrary {
         }
         long elapsedMs = normalResult != null ? normalResult.elapsedMs() : 0L;
 
-        String sceneAnnotPng = buildAnnotated(sceneWithRef, bestBbox, groundTruth, score);
+        // ── Collect ALL scored hits for secondary outlines ────────────────
+        VectorSignature refSigForHits = rid != null
+                ? VectorMatcher.buildRefSignature(ReferenceImageFactory.build(rid),
+                                                   VectorVariant.VECTOR_NORMAL.epsilonFactor())
+                : null;
+        List<double[]> allHits = refSigForHits != null
+                ? allScoredBboxes(sceneWithRef, refSigForHits)
+                : List.of();
+
+        String sceneAnnotPng = buildAnnotated(sceneWithRef, bestBbox, groundTruth, score, allHits);
 
         // ── IoU / false-positive flag ─────────────────────────────────────
         double iou = Double.NaN;
@@ -198,37 +207,78 @@ public class MatchReportLibrary {
 
     private static Rect findBestBbox(Mat scene, VectorSignature refSig) {
         if (refSig == null) return null;
-        Rect best = null; double bestSim = 0;
-        double area = (double) scene.rows() * scene.cols();
-        for (SceneColourClusters.Cluster c : SceneColourClusters.extract(scene)) {
-            for (MatOfPoint cnt : SceneDescriptor.contoursFromMask(c.mask)) {
-                VectorSignature sig = VectorSignature.buildFromContour(
-                        cnt, VectorVariant.VECTOR_NORMAL.epsilonFactor(), area);
-                double sim = refSig.similarity(sig);
-                if (sim > bestSim) { bestSim = sim; best = Imgproc.boundingRect(cnt); }
-            }
-            c.release();
-        }
-        return best;
+        return MatchDiagnosticLibrary.allScoredBboxes(scene, refSig).stream()
+                .max(Comparator.comparingDouble(e -> e[1]))
+                .map(e -> new Rect((int)e[0], (int)e[2], (int)e[3], (int)e[4]))
+                .orElse(null);
     }
 
-    private static String buildAnnotated(Mat scene, Rect bbox, Rect gt, double score) {
+    /**
+     * Returns all contour bboxes with their penalised similarity scores.
+     * Each entry: [x, scoreFraction, y, w, h] — delegates to MatchDiagnosticLibrary.
+     */
+    private static List<double[]> allScoredBboxes(Mat scene, VectorSignature refSig) {
+        return MatchDiagnosticLibrary.allScoredBboxes(scene, refSig);
+    }
+
+    private static String buildAnnotated(Mat scene, Rect winnerBbox, Rect gt, double winnerScore) {
+        return buildAnnotated(scene, winnerBbox, gt, winnerScore, List.of());
+    }
+
+    private static String buildAnnotated(Mat scene, Rect winnerBbox, Rect gt,
+                                          double winnerScore, List<double[]> allHits) {
         Mat annotated = scene.clone();
+
+        // ── Secondary hits (thin outline + small label) ───────────────────
+        // Draw all non-winner hits that scored > 15%, from lowest to highest
+        // so the winner is drawn last (on top).
+        allHits.stream()
+                .filter(e -> e[1] > 0.15)
+                .filter(e -> {
+                    // Skip if this IS the winner bbox
+                    if (winnerBbox == null) return true;
+                    return !(e[0] == winnerBbox.x && e[2] == winnerBbox.y
+                          && e[3] == winnerBbox.width && e[4] == winnerBbox.height);
+                })
+                .sorted(Comparator.comparingDouble(e -> e[1]))
+                .forEach(e -> {
+                    Rect bb = new Rect((int)e[0], (int)(e[2]), (int)e[3], (int)e[4]);
+                    double pct = e[1] * 100.0;
+                    // colour by score: dim versions of the same scheme
+                    Scalar col = pct >= 70 ? new Scalar(0, 120, 0)
+                               : pct >= 40 ? new Scalar(0, 120, 120)
+                               :             new Scalar(80, 80, 80);
+                    Imgproc.rectangle(annotated,
+                            new Point(bb.x, bb.y),
+                            new Point(bb.x + bb.width, bb.y + bb.height), col, 1);
+                    // small label above top-left corner
+                    int lx = Math.max(1, bb.x);
+                    int ly = Math.max(9, bb.y - 2);
+                    Imgproc.putText(annotated, String.format("%.0f%%", pct),
+                            new Point(lx, ly),
+                            Imgproc.FONT_HERSHEY_SIMPLEX, 0.30, col, 1);
+                });
+
+        // ── Ground-truth box (cyan) ───────────────────────────────────────
         if (gt != null)
             Imgproc.rectangle(annotated,
                     new Point(gt.x, gt.y), new Point(gt.x+gt.width, gt.y+gt.height),
                     new Scalar(220,220,0), 2);
-        if (bbox != null && bbox.width > 1 && bbox.height > 1) {
-            Scalar col = score >= 70 ? new Scalar(0,200,0)
-                       : score >= 40 ? new Scalar(0,200,200)
-                       :               new Scalar(0,0,200);
+
+        // ── Winner box (thick, bright) ────────────────────────────────────
+        if (winnerBbox != null && winnerBbox.width > 1 && winnerBbox.height > 1) {
+            Scalar col = winnerScore >= 70 ? new Scalar(0,200,0)
+                       : winnerScore >= 40 ? new Scalar(0,200,200)
+                       :                    new Scalar(0,0,200);
             Imgproc.rectangle(annotated,
-                    new Point(bbox.x, bbox.y),
-                    new Point(bbox.x+bbox.width, bbox.y+bbox.height), col, 3);
+                    new Point(winnerBbox.x, winnerBbox.y),
+                    new Point(winnerBbox.x+winnerBbox.width, winnerBbox.y+winnerBbox.height), col, 3);
         }
-        Scalar lc = score >= 50 ? new Scalar(0,220,0) : new Scalar(0,0,220);
-        Imgproc.putText(annotated, String.format("%.1f%%", score),
+        // Winner score label (top-left corner)
+        Scalar lc = winnerScore >= 50 ? new Scalar(0,220,0) : new Scalar(0,0,220);
+        Imgproc.putText(annotated, String.format("%.1f%%", winnerScore),
                 new Point(6, 28), Imgproc.FONT_HERSHEY_SIMPLEX, 0.55, lc, 2);
+
         String png = matToBase64Png(annotated);
         annotated.release();
         return png;

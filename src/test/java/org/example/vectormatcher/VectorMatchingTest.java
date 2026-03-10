@@ -902,6 +902,178 @@ class VectorMatchingTest {
     }
 
     // =========================================================================
+    // STAGE 12 — Multi-colour & compound shapes
+    //
+    // Multi-colour references (BICOLOUR_*, TRICOLOUR_*) contain two or three
+    // distinct hue regions. The matcher must identify the correct shape using
+    // colour cluster decomposition.  Each scene is built by scaling the 128×128
+    // reference up and centring it on a black 640×480 canvas.
+    //
+    // Compound shapes (COMPOUND_*) contain multiple nested/overlapping contours
+    // of a single colour.  They stress the cluster penalty logic.
+    // =========================================================================
+    @Nested @DisplayName("Stage 12 — Multi-colour & compound shapes")
+    @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+    class Stage12 {
+
+        // ── Self-match: each shape should score > 50% against its own scene ──
+
+        @Test @Order(1) @DisplayName("S12a — BICOLOUR_CIRCLE_RING matches own scene > 50%")
+        void bicolourCircleRingSelf() {
+            Mat ref   = ReferenceImageFactory.build(ReferenceId.BICOLOUR_CIRCLE_RING);
+            Mat scene = multiColourScene(ReferenceId.BICOLOUR_CIRCLE_RING);
+            double score = record("Stage 12", "S12a", "BICOLOUR_CIRCLE_RING",
+                    "bicolour circle ring (own)", scene,
+                    runMatcher(ReferenceId.BICOLOUR_CIRCLE_RING, ref, scene));
+            ref.release(); scene.release();
+            assertTrue(score > MATCH_THRESHOLD, "got " + score);
+        }
+
+        @Test @Order(2) @DisplayName("S12b — BICOLOUR_RECT_HALVES matches own scene > 50%")
+        void bicolourRectHalvesSelf() {
+            Mat ref   = ReferenceImageFactory.build(ReferenceId.BICOLOUR_RECT_HALVES);
+            Mat scene = multiColourScene(ReferenceId.BICOLOUR_RECT_HALVES);
+            double score = record("Stage 12", "S12b", "BICOLOUR_RECT_HALVES",
+                    "bicolour rect halves (own)", scene,
+                    runMatcher(ReferenceId.BICOLOUR_RECT_HALVES, ref, scene));
+            ref.release(); scene.release();
+            assertTrue(score > MATCH_THRESHOLD, "got " + score);
+        }
+
+        @Test @Order(3) @DisplayName("S12c — TRICOLOUR_TRIANGLE matches own scene > 50%")
+        void tricolourTriangleSelf() {
+            Mat ref   = ReferenceImageFactory.build(ReferenceId.TRICOLOUR_TRIANGLE);
+            Mat scene = multiColourScene(ReferenceId.TRICOLOUR_TRIANGLE);
+            double score = record("Stage 12", "S12c", "TRICOLOUR_TRIANGLE",
+                    "tricolour triangle (own)", scene,
+                    runMatcher(ReferenceId.TRICOLOUR_TRIANGLE, ref, scene));
+            ref.release(); scene.release();
+            assertTrue(score > MATCH_THRESHOLD, "got " + score);
+        }
+
+        @Test @Order(4) @DisplayName("S12d — BICOLOUR_CROSSHAIR_RING matches own scene > 50%")
+        void bicolourCrosshairRingSelf() {
+            Mat ref   = ReferenceImageFactory.build(ReferenceId.BICOLOUR_CROSSHAIR_RING);
+            Mat scene = multiColourScene(ReferenceId.BICOLOUR_CROSSHAIR_RING);
+            double score = record("Stage 12", "S12d", "BICOLOUR_CROSSHAIR_RING",
+                    "bicolour crosshair+ring (own)", scene,
+                    runMatcher(ReferenceId.BICOLOUR_CROSSHAIR_RING, ref, scene));
+            ref.release(); scene.release();
+            assertTrue(score > MATCH_THRESHOLD, "got " + score);
+        }
+
+        @Test @Order(5) @DisplayName("S12e — BICOLOUR_CHEVRON_FILLED matches own scene > 50%")
+        void bicolourChevronFilledSelf() {
+            Mat ref   = ReferenceImageFactory.build(ReferenceId.BICOLOUR_CHEVRON_FILLED);
+            Mat scene = multiColourScene(ReferenceId.BICOLOUR_CHEVRON_FILLED);
+            double score = record("Stage 12", "S12e", "BICOLOUR_CHEVRON_FILLED",
+                    "bicolour chevron filled (own)", scene,
+                    runMatcher(ReferenceId.BICOLOUR_CHEVRON_FILLED, ref, scene));
+            ref.release(); scene.release();
+            assertTrue(score > MATCH_THRESHOLD, "got " + score);
+        }
+
+        // ── Discrimination: each multi-colour shape beats a single-colour wrong shape ──
+
+        @Test @Order(6) @DisplayName("S12f — BICOLOUR_CIRCLE_RING scores higher on own scene than on plain circle")
+        void bicolourCircleBeatsPlainCircle() {
+            Mat ref       = ReferenceImageFactory.build(ReferenceId.BICOLOUR_CIRCLE_RING);
+            Mat ownScene  = multiColourScene(ReferenceId.BICOLOUR_CIRCLE_RING);
+            Mat wrongScene = whiteCircleOnBlack(320, 240, 90);
+            double own   = record("Stage 12", "S12f", "BICOLOUR_CIRCLE_RING",
+                    "bicolour circle (own)",  ownScene,  runMatcher(ReferenceId.BICOLOUR_CIRCLE_RING, ref, ownScene));
+            double wrong = record("Stage 12", "S12f", "BICOLOUR_CIRCLE_RING",
+                    "plain circle (wrong)",   wrongScene, runMatcher(ReferenceId.BICOLOUR_CIRCLE_RING, ref, wrongScene));
+            ref.release(); ownScene.release(); wrongScene.release();
+            assertTrue(own > wrong, "own=" + own + " wrong=" + wrong);
+        }
+
+        @Test @Order(7) @DisplayName("S12g — BICOLOUR_RECT_HALVES scores higher on own scene than plain rect")
+        void bicolourRectBeatsPlainRect() {
+            Mat ref        = ReferenceImageFactory.build(ReferenceId.BICOLOUR_RECT_HALVES);
+            Mat ownScene   = multiColourScene(ReferenceId.BICOLOUR_RECT_HALVES);
+            Mat wrongScene = whiteRectOnBlack(230, 160, 410, 320);
+            double own   = record("Stage 12", "S12g", "BICOLOUR_RECT_HALVES",
+                    "bicolour rect (own)",  ownScene,  runMatcher(ReferenceId.BICOLOUR_RECT_HALVES, ref, ownScene));
+            double wrong = record("Stage 12", "S12g", "BICOLOUR_RECT_HALVES",
+                    "plain rect (wrong)",   wrongScene, runMatcher(ReferenceId.BICOLOUR_RECT_HALVES, ref, wrongScene));
+            ref.release(); ownScene.release(); wrongScene.release();
+            assertTrue(own > wrong, "own=" + own + " wrong=" + wrong);
+        }
+
+        @Test @Order(8) @DisplayName("S12h — TRICOLOUR_TRIANGLE scores higher on own scene than plain triangle")
+        void tricolourTriangleBeatsPlainTriangle() {
+            Mat ref        = ReferenceImageFactory.build(ReferenceId.TRICOLOUR_TRIANGLE);
+            Mat ownScene   = multiColourScene(ReferenceId.TRICOLOUR_TRIANGLE);
+            Mat wrongScene = whiteTriangleOnBlack();
+            double own   = record("Stage 12", "S12h", "TRICOLOUR_TRIANGLE",
+                    "tricolour triangle (own)",  ownScene,  runMatcher(ReferenceId.TRICOLOUR_TRIANGLE, ref, ownScene));
+            double wrong = record("Stage 12", "S12h", "TRICOLOUR_TRIANGLE",
+                    "plain triangle (wrong)",    wrongScene, runMatcher(ReferenceId.TRICOLOUR_TRIANGLE, ref, wrongScene));
+            ref.release(); ownScene.release(); wrongScene.release();
+            assertTrue(own > wrong, "own=" + own + " wrong=" + wrong);
+        }
+
+        // ── Compound shapes ───────────────────────────────────────────────
+
+        @Test @Order(9) @DisplayName("S12i — COMPOUND_CIRCLE_IN_RECT matches own scene > 50%")
+        void compoundCircleInRectSelf() {
+            Mat ref   = ReferenceImageFactory.build(ReferenceId.COMPOUND_CIRCLE_IN_RECT);
+            Mat scene = multiColourScene(ReferenceId.COMPOUND_CIRCLE_IN_RECT);
+            double score = record("Stage 12", "S12i", "COMPOUND_CIRCLE_IN_RECT",
+                    "circle-in-rect (own)", scene,
+                    runMatcher(ReferenceId.COMPOUND_CIRCLE_IN_RECT, ref, scene));
+            ref.release(); scene.release();
+            assertTrue(score > MATCH_THRESHOLD, "got " + score);
+        }
+
+        @Test @Order(10) @DisplayName("S12j — COMPOUND_BULLSEYE matches own scene > 50%")
+        void compoundBullseyeSelf() {
+            Mat ref   = ReferenceImageFactory.build(ReferenceId.COMPOUND_BULLSEYE);
+            Mat scene = multiColourScene(ReferenceId.COMPOUND_BULLSEYE);
+            double score = record("Stage 12", "S12j", "COMPOUND_BULLSEYE",
+                    "bullseye (own)", scene,
+                    runMatcher(ReferenceId.COMPOUND_BULLSEYE, ref, scene));
+            ref.release(); scene.release();
+            assertTrue(score > MATCH_THRESHOLD, "got " + score);
+        }
+
+        @Test @Order(11) @DisplayName("S12k — COMPOUND_CROSS_IN_CIRCLE matches own scene > 50%")
+        void compoundCrossInCircleSelf() {
+            Mat ref   = ReferenceImageFactory.build(ReferenceId.COMPOUND_CROSS_IN_CIRCLE);
+            Mat scene = multiColourScene(ReferenceId.COMPOUND_CROSS_IN_CIRCLE);
+            double score = record("Stage 12", "S12k", "COMPOUND_CROSS_IN_CIRCLE",
+                    "cross-in-circle (own)", scene,
+                    runMatcher(ReferenceId.COMPOUND_CROSS_IN_CIRCLE, ref, scene));
+            ref.release(); scene.release();
+            assertTrue(score > MATCH_THRESHOLD, "got " + score);
+        }
+
+        @Test @Order(12) @DisplayName("S12l — All multi-colour shapes score > 20% on own scene")
+        void allMultiColourBeatBlank() {
+            ReferenceId[] multiColour = {
+                ReferenceId.BICOLOUR_CIRCLE_RING,
+                ReferenceId.BICOLOUR_RECT_HALVES,
+                ReferenceId.TRICOLOUR_TRIANGLE,
+                ReferenceId.BICOLOUR_CROSSHAIR_RING,
+                ReferenceId.BICOLOUR_CHEVRON_FILLED,
+            };
+            List<org.junit.jupiter.api.function.Executable> assertions = new ArrayList<>();
+            for (ReferenceId id : multiColour) {
+                Mat ref   = ReferenceImageFactory.build(id);
+                Mat scene = multiColourScene(id);
+                double own = normalScore(runMatcher(id, ref, scene));
+                ref.release(); scene.release();
+                final double o = own;
+                final String n = id.name();
+                assertions.add(() -> assertTrue(o > 20.0,
+                        n + " own=" + String.format("%.1f", o) + "% (need >20%)"));
+            }
+            assertAll("Multi-colour shapes score on own scene", assertions);
+        }
+    }
+
+    // =========================================================================
     // Helpers — matcher invocation + result recording
     // =========================================================================
 
@@ -1056,6 +1228,30 @@ class VectorMatchingTest {
     }
     private static Mat compositeOnBackground(Mat shapeMat, BackgroundId bgId) {
         return MatchDiagnosticLibrary.compositeOnBackground(shapeMat, bgId);
+    }
+
+    /**
+     * Builds a 640×480 scene for a multi-colour (or compound) reference shape.
+     * The 128×128 reference is scaled up 3× and centred, preserving its existing
+     * colours exactly (no white-on-black inversion — these refs already carry colour).
+     */
+    private static Mat multiColourScene(ReferenceId id) {
+        Mat ref = ReferenceImageFactory.build(id);
+        // Scale up 3× so contours are large enough for the matcher
+        int scale = 3;
+        Mat scaled = new Mat();
+        Imgproc.resize(ref, scaled, new Size(ref.cols() * scale, ref.rows() * scale),
+                0, 0, Imgproc.INTER_NEAREST);
+        ref.release();
+
+        // Centre on a 640×480 black canvas
+        Mat canvas = Mat.zeros(480, 640, CvType.CV_8UC3);
+        int x = (canvas.cols() - scaled.cols()) / 2;
+        int y = (canvas.rows() - scaled.rows()) / 2;
+        Mat roi = canvas.submat(new Rect(x, y, scaled.cols(), scaled.rows()));
+        scaled.copyTo(roi);
+        scaled.release();
+        return canvas;
     }
     private static Mat rotate(Mat src, double angleDeg) {
         Point centre = new Point(src.cols()/2.0, src.rows()/2.0);
