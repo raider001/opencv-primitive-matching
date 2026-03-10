@@ -453,7 +453,9 @@ public final class VectorMatcher {
                 Scalar mean = Core.mean(grey, cluster.mask);
                 grey.release();
                 if (mean.val[0] < 60) { cluster.release(); continue; } // dark bg
-                // Bright achromatic — only include if compound (2+ contours)
+                // Bright achromatic — count contours on undilated mask first
+                // to detect compound shapes (dilation merges separate contours)
+                List<MatOfPoint> rawContours = SceneDescriptor.contoursFromMask(cluster.mask);
                 Mat dilated = new Mat();
                 Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(5, 5));
                 Imgproc.dilate(cluster.mask, dilated, kernel);
@@ -461,7 +463,7 @@ public final class VectorMatcher {
                 List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(dilated);
                 dilated.release();
                 cluster.release();
-                if (contours.size() < 2) continue; // single silhouette — skip
+                if (rawContours.size() < 2) continue; // single silhouette — skip
                 for (MatOfPoint c : contours)
                     sigs.add(VectorSignature.buildFromContour(c, epsilonFactor, Double.NaN));
                 continue;
