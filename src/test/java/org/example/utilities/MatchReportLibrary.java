@@ -94,9 +94,34 @@ public class MatchReportLibrary {
         if (rid != null) {
             Mat refOrig = ReferenceImageFactory.build(rid);
             refOrigPng = matToBase64Png(refOrig);
-            Mat refBin  = VectorMatcher.extractBinaryRaw(refOrig);
-            List<MatOfPoint> refContours = VectorMatcher.extractContoursFromBinary(refOrig);
-            Mat graph = VectorMatcher.drawContourGraph(refOrig.size(), refBin, refContours, 0);
+
+            // Use colour-cluster contours so multi-colour refs show each region.
+            // Skip the dark achromatic cluster (black canvas background) — its
+            // contour would just be a border around the whole image.
+            List<MatOfPoint> refContours = new ArrayList<>();
+            List<SceneColourClusters.Cluster> refClusters = SceneColourClusters.extract(refOrig);
+            int refArea = refOrig.rows() * refOrig.cols();
+            for (SceneColourClusters.Cluster c : refClusters) {
+                // Skip dark achromatic — that is the black background
+                if (c.achromatic && Core.mean(refOrig, c.mask).val[0] < 30
+                        && Core.mean(refOrig, c.mask).val[1] < 30
+                        && Core.mean(refOrig, c.mask).val[2] < 30) {
+                    c.release();
+                    continue;
+                }
+                for (MatOfPoint cnt : SceneDescriptor.contoursFromMask(c.mask)) {
+                    // Drop contours whose bbox covers > 90% of the image — image-border artefact
+                    Rect bb = Imgproc.boundingRect(cnt);
+                    if ((double) bb.width * bb.height > refArea * 0.90) continue;
+                    refContours.add(cnt);
+                }
+                c.release();
+            }
+            if (refContours.isEmpty()) {
+                refContours = VectorMatcher.extractContoursFromBinary(refOrig);
+            }
+            Mat refBin = VectorMatcher.extractBinaryRaw(refOrig);
+            Mat graph  = VectorMatcher.drawContourGraph(refOrig.size(), refBin, refContours, 0);
             refPointsPng = matToBase64Png(graph);
             graph.release(); refBin.release(); refOrig.release();
         }
@@ -142,13 +167,13 @@ public class MatchReportLibrary {
         long elapsedMs = normalResult != null ? normalResult.elapsedMs() : 0L;
 
         // ── Collect ALL scored hits for secondary outlines ────────────────
-        VectorSignature refSigForHits = rid != null
-                ? VectorMatcher.buildRefSignature(ReferenceImageFactory.build(rid),
-                                                   VectorVariant.VECTOR_NORMAL.epsilonFactor())
-                : null;
-        List<double[]> allHits = refSigForHits != null
-                ? allScoredBboxes(sceneWithRef, refSigForHits)
+        List<VectorSignature> refSigsForHits = rid != null
+                ? VectorMatcher.buildRefSignatures(ReferenceImageFactory.build(rid),
+                                                    VectorVariant.VECTOR_NORMAL.epsilonFactor())
                 : List.of();
+        List<double[]> allHits = refSigsForHits.isEmpty()
+                ? List.of()
+                : MatchDiagnosticLibrary.allScoredBboxes(sceneWithRef, refSigsForHits);
 
         String sceneAnnotPng = buildAnnotated(sceneWithRef, bestBbox, groundTruth, score, allHits);
 
@@ -207,18 +232,17 @@ public class MatchReportLibrary {
 
     private static Rect findBestBbox(Mat scene, VectorSignature refSig) {
         if (refSig == null) return null;
-        return MatchDiagnosticLibrary.allScoredBboxes(scene, refSig).stream()
+        return MatchDiagnosticLibrary.allScoredBboxes(scene, List.of(refSig)).stream()
                 .max(Comparator.comparingDouble(e -> e[1]))
                 .map(e -> new Rect((int)e[0], (int)e[2], (int)e[3], (int)e[4]))
                 .orElse(null);
     }
 
     /**
-     * Returns all contour bboxes with their penalised similarity scores.
-     * Each entry: [x, scoreFraction, y, w, h] — delegates to MatchDiagnosticLibrary.
+     * Delegates to MatchDiagnosticLibrary — single sig convenience wrapper.
      */
     private static List<double[]> allScoredBboxes(Mat scene, VectorSignature refSig) {
-        return MatchDiagnosticLibrary.allScoredBboxes(scene, refSig);
+        return MatchDiagnosticLibrary.allScoredBboxes(scene, List.of(refSig));
     }
 
     private static String buildAnnotated(Mat scene, Rect winnerBbox, Rect gt, double winnerScore) {

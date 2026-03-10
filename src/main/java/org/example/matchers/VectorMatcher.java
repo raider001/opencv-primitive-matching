@@ -2,6 +2,7 @@ package org.example.matchers;
 
 import org.example.analytics.AnalysisResult;
 import org.example.colour.SceneColourClusters;
+import org.example.matchers.SceneDescriptor;
 import org.example.factories.ReferenceId;
 import org.example.scene.SceneEntry;
 import org.opencv.core.*;
@@ -91,9 +92,9 @@ public final class VectorMatcher {
                                                              SceneDescriptor descriptor,
                                                              Set<String> saveVariants,
                                                              Path outputDir) {
-        VectorSignature refStrict = buildRefSignature(refMat, VectorVariant.VECTOR_STRICT.epsilonFactor());
-        VectorSignature refNormal = buildRefSignature(refMat, VectorVariant.VECTOR_NORMAL.epsilonFactor());
-        VectorSignature refLoose  = buildRefSignature(refMat, VectorVariant.VECTOR_LOOSE.epsilonFactor());
+        List<VectorSignature> refStrict = buildRefSignatures(refMat, VectorVariant.VECTOR_STRICT.epsilonFactor());
+        List<VectorSignature> refNormal = buildRefSignatures(refMat, VectorVariant.VECTOR_NORMAL.epsilonFactor());
+        List<VectorSignature> refLoose  = buildRefSignatures(refMat, VectorVariant.VECTOR_LOOSE.epsilonFactor());
 
         List<AnalysisResult> out = new ArrayList<>(3);
         out.add(runVariant(VectorVariant.VECTOR_STRICT, refStrict, descriptor,
@@ -110,7 +111,7 @@ public final class VectorMatcher {
     // -------------------------------------------------------------------------
 
     static AnalysisResult runVariant(VectorVariant variant,
-                                      VectorSignature refSig,
+                                      List<VectorSignature> refSigs,
                                       SceneDescriptor descriptor,
                                       Mat sceneForAnnotation,
                                       ReferenceId referenceId,
@@ -126,8 +127,6 @@ public final class VectorMatcher {
             List<SceneDescriptor.ClusterContours> clusters = descriptor.clusters();
             for (int ci = 0; ci < clusters.size(); ci++) {
                 SceneDescriptor.ClusterContours cc = clusters.get(ci);
-                // Pre-compute significant competitor count for this cluster
-                // (contours whose bbox area >= 20% of the largest contour in the cluster)
                 double maxArea = 0;
                 for (MatOfPoint cx : cc.contours) {
                     Rect rx = Imgproc.boundingRect(cx);
@@ -144,7 +143,13 @@ public final class VectorMatcher {
                 for (MatOfPoint c : cc.contours) {
                     VectorSignature sceneSig = VectorSignature.buildFromContour(
                             c, variant.epsilonFactor(), descriptor.sceneArea);
-                    double sim = refSig.similarity(sceneSig) * clusterPenalty;
+                    // Score against every ref signature — take the best
+                    double bestRefSim = 0.0;
+                    for (VectorSignature refSig : refSigs) {
+                        double sim = refSig.similarity(sceneSig);
+                        if (sim > bestRefSim) bestRefSim = sim;
+                    }
+                    double sim = bestRefSim * clusterPenalty;
                     if (sim > bestScore) {
                         bestScore      = sim;
                         bestBbox       = Imgproc.boundingRect(c);
@@ -154,10 +159,11 @@ public final class VectorMatcher {
             }
 
             // ── Multi-cluster penalty ─────────────────────────────────────
-            // If the best bbox region is significantly covered by pixels from
-            // other clusters, the "shape" spans multiple colours — it is likely
-            // background noise, not a real single-colour shape.
-            if (bestBbox != null && bestClusterIdx >= 0 && clusters.size() > 1) {
+            // For multi-colour refs (multiple ref sigs) the multi-cluster
+            // penalty is intentionally skipped — having multiple colours in
+            // the bbox region is expected and correct.
+            if (bestBbox != null && bestClusterIdx >= 0 && clusters.size() > 1
+                    && refSigs.size() == 1) {
                 bestScore = applyMultiClusterPenalty(
                         bestScore, bestBbox, bestClusterIdx, clusters, sceneForAnnotation);
             }
@@ -357,16 +363,61 @@ public final class VectorMatcher {
     // Reference signature builder
     // -------------------------------------------------------------------------
 
+    /**
+     * Builds one {@link VectorSignature} per distinct colour cluster in the reference
+     * image.  For single-colour refs this returns a one-element list (identical
+     * behaviour to the old greyscale path).  For multi-colour refs (BICOLOUR_*,
+     * TRICOLOUR_*) it returns one signature per hue region so each colour's
+     * geometry is described independently.
+     *
+     * <p>Falls back to the greyscale threshold path if no colour clusters are found.
+     */
+    public static List<VectorSignature> buildRefSignatures(Mat refBgr, double epsilonFactor) {
+        List<VectorSignature> sigs = new ArrayList<>();
+        double refArea = (double) refBgr.rows() * refBgr.cols();
+
+        List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(refBgr);
+        for (SceneColourClusters.Cluster cluster : clusters) {
+            // Skip the dark achromatic cluster — that is the black canvas background.
+            // Its contour is just the image border and carries no shape information.
+            if (cluster.achromatic) {
+                double meanVal = Core.mean(refBgr, cluster.mask).val[0]
+                               + Core.mean(refBgr, cluster.mask).val[1]
+                               + Core.mean(refBgr, cluster.mask).val[2];
+                if (meanVal < 90) { // near-black average → background
+                    cluster.release();
+                    continue;
+                }
+            }
+            List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(cluster.mask);
+            cluster.release();
+            for (MatOfPoint c : contours) {
+                // Drop image-border contours (bbox covers > 90% of image area)
+                Rect bb = Imgproc.boundingRect(c);
+                if ((double) bb.width * bb.height > refArea * 0.90) continue;
+                VectorSignature sig = VectorSignature.buildFromContour(c, epsilonFactor, Double.NaN);
+                sigs.add(sig);
+            }
+        }
+
+        // Fallback: if colour extraction found nothing useful, use greyscale
+        if (sigs.isEmpty()) {
+            sigs.add(buildRefSignature(refBgr, epsilonFactor));
+        }
+        return sigs;
+    }
+
+    /**
+     * Builds a single {@link VectorSignature} from the greyscale threshold of the
+     * reference image.  Used as a fallback and by callers that need a single
+     * canonical signature (e.g. report visualisation, {@code allScoredBboxes}).
+     */
     public static VectorSignature buildRefSignature(Mat refBgr, double epsilonFactor) {
         Mat grey = new Mat();
         Mat bin  = new Mat();
         Imgproc.cvtColor(refBgr, grey, Imgproc.COLOR_BGR2GRAY);
         Imgproc.threshold(grey, bin, 20, 255, Imgproc.THRESH_BINARY);
         grey.release();
-        // Pass NaN for imageArea so normalisedArea = NaN on the reference.
-        // The area-ratio gate in VectorSignature.similarity() only fires when
-        // BOTH sides have a finite normalisedArea — this prevents false-gating
-        // when the reference is drawn at a different scale than the scene.
         VectorSignature sig = VectorSignature.build(bin, epsilonFactor, Double.NaN);
         bin.release();
         return sig;

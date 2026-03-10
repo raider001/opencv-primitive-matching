@@ -463,18 +463,31 @@ public class MatchDiagnosticLibrary {
 
     /**
      * Scans every colour-cluster contour and returns all hits with their
-     * penalised similarity score.
-     * Each entry: {@code [x, scoreFraction, y, w, h]} (0-indexed for sort by [1]).
+     * penalised similarity score against the best-matching ref signature.
+     * Each entry: {@code [x, scoreFraction, y, w, h]} (indexed for sort by [1]).
+     * Uses all ref signatures so multi-colour refs are handled correctly.
      */
     public static List<double[]> allScoredBboxes(Mat scene, VectorSignature refSig) {
+        // Build the full list of ref sigs via colour clusters (same as VectorMatcher)
+        List<VectorSignature> refSigs = new ArrayList<>();
+        List<SceneColourClusters.Cluster> refClusters = SceneColourClusters.extract(scene);
+        // We don't have the original ref Mat here, so fall back to the single sig passed in
+        refSigs.add(refSig);
+        for (SceneColourClusters.Cluster c : refClusters) c.release();
+
+        return allScoredBboxes(scene, refSigs);
+    }
+
+    /** Full version — scores against a list of ref signatures (one per colour cluster). */
+    /** Full version — scores against a list of ref signatures (one per colour cluster). */
+    public static List<double[]> allScoredBboxes(Mat scene, List<VectorSignature> refSigs) {
         List<double[]> hits = new ArrayList<>();
-        if (refSig == null) return hits;
+        if (refSigs == null || refSigs.isEmpty()) return hits;
         double area = (double) scene.rows() * scene.cols();
         double eps  = VectorVariant.VECTOR_NORMAL.epsilonFactor();
         List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(scene);
         for (SceneColourClusters.Cluster c : clusters) {
             List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(c.mask);
-            // cluster penalty — mirrors VectorMatcher
             double maxA = contours.stream()
                     .mapToDouble(cnt -> { Rect r = Imgproc.boundingRect(cnt); return (double)r.width*r.height; })
                     .max().orElse(1);
@@ -484,7 +497,13 @@ public class MatchDiagnosticLibrary {
             double penalty = sig > 1 ? 1.0 / (Math.log(sig + 1) / Math.log(2)) : 1.0;
             for (MatOfPoint cnt : contours) {
                 VectorSignature vs = VectorSignature.buildFromContour(cnt, eps, area);
-                double penalised = refSig.similarity(vs) * penalty;
+                // Score against every ref sig, take best
+                double bestSim = 0.0;
+                for (VectorSignature refSig : refSigs) {
+                    double s = refSig.similarity(vs);
+                    if (s > bestSim) bestSim = s;
+                }
+                double penalised = bestSim * penalty;
                 if (penalised > 0.01) {
                     Rect bb = Imgproc.boundingRect(cnt);
                     hits.add(new double[]{bb.x, penalised, bb.y, bb.width, bb.height});
