@@ -27,10 +27,16 @@ public final class SceneDescriptor {
         /** Centre hue (OpenCV half-degrees 0-179). NaN = achromatic cluster. */
         public final double hue;
         public final boolean achromatic;
+        /** True if this entry is the combined outer envelope of all chromatic clusters. */
+        public final boolean envelope;
         ClusterContours(List<MatOfPoint> contours, double hue, boolean achromatic) {
+            this(contours, hue, achromatic, false);
+        }
+        ClusterContours(List<MatOfPoint> contours, double hue, boolean achromatic, boolean envelope) {
             this.contours   = contours;
             this.hue        = hue;
             this.achromatic = achromatic;
+            this.envelope   = envelope;
         }
     }
     private final List<ClusterContours> clusters;
@@ -62,6 +68,7 @@ public final class SceneDescriptor {
         }
         return new SceneDescriptor(result, area, System.currentTimeMillis() - t0);
     }
+
     /**
      * Finds the outlines of all connected colour regions in a binary cluster mask.
      * The mask is 255 where the pixel belongs to this cluster, 0 elsewhere.
@@ -85,6 +92,18 @@ public final class SceneDescriptor {
         hierarchy.release();
         bordered.release();
         contours.removeIf(c -> Imgproc.contourArea(c) < MIN_AREA);
+
+        // Remove frame-spanning border contours: these are background-cluster
+        // artefacts where the colour cluster fills the whole image and findContours
+        // traces a rectangle just inside the zeroed 1px border.  A real shape will
+        // never touch all four edges simultaneously.
+        int W = mask.cols(), H = mask.rows();
+        contours.removeIf(c -> {
+            Rect bb = Imgproc.boundingRect(c);
+            return bb.x <= 2 && bb.y <= 2
+                    && (bb.x + bb.width)  >= W - 2
+                    && (bb.y + bb.height) >= H - 2;
+        });
 
         // Deduplicate: RETR_LIST returns both inner and outer traces of the same
         // stroked shape. Drop any contour whose centre and area are within
@@ -133,6 +152,28 @@ public final class SceneDescriptor {
         List<List<MatOfPoint>> out = new ArrayList<>(clusters.size());
         for (ClusterContours cc : clusters) out.add(cc.contours);
         return out;
+    }
+
+    /**
+     * Counts ALL significant colour clusters in a BGR image — both chromatic
+     * (coloured regions) and achromatic (black background, white foreground, grey).
+     * This gives the total structural cluster count for penalty comparison.
+     *
+     * Examples:
+     *   CIRCLE_FILLED (white on black)      → 2  (white shape + black background)
+     *   BICOLOUR_RECT_HALVES (red+blue)     → 3  (red + blue + black background)
+     *   TRICOLOUR_TRIANGLE (3 colours)      → 4  (3 colours + black background)
+     *   COMPOUND_BULLSEYE (rings)           → 3+ (multiple achromatic rings + bg)
+     */
+    public static int countAllClusters(Mat bgrImage) {
+        List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(bgrImage);
+        int count = 0;
+        for (SceneColourClusters.Cluster c : clusters) {
+            if (org.opencv.core.Core.countNonZero(c.mask) >= SceneColourClusters.MIN_CONTOUR_AREA)
+                count++;
+            c.release();
+        }
+        return count;
     }
     public void release() {
         for (ClusterContours cc : clusters)

@@ -96,12 +96,16 @@ public final class VectorMatcher {
         List<VectorSignature> refNormal = buildRefSignatures(refMat, VectorVariant.VECTOR_NORMAL.epsilonFactor());
         List<VectorSignature> refLoose  = buildRefSignatures(refMat, VectorVariant.VECTOR_LOOSE.epsilonFactor());
 
+        // Count ALL clusters (chromatic + achromatic) in the ref image.
+        // e.g. CIRCLE_FILLED (white on black) → 2, BICOLOUR_RECT_HALVES → 3
+        int refContourCount = SceneDescriptor.countAllClusters(refMat);
+
         List<AnalysisResult> out = new ArrayList<>(3);
-        out.add(runVariant(VectorVariant.VECTOR_STRICT, refStrict, descriptor,
+        out.add(runVariant(VectorVariant.VECTOR_STRICT, refStrict, refContourCount, descriptor,
                 scene.sceneMat(), referenceId, scene, saveVariants, outputDir));
-        out.add(runVariant(VectorVariant.VECTOR_NORMAL, refNormal, descriptor,
+        out.add(runVariant(VectorVariant.VECTOR_NORMAL, refNormal, refContourCount, descriptor,
                 scene.sceneMat(), referenceId, scene, saveVariants, outputDir));
-        out.add(runVariant(VectorVariant.VECTOR_LOOSE,  refLoose,  descriptor,
+        out.add(runVariant(VectorVariant.VECTOR_LOOSE,  refLoose,  refContourCount, descriptor,
                 scene.sceneMat(), referenceId, scene, saveVariants, outputDir));
         return out;
     }
@@ -112,6 +116,7 @@ public final class VectorMatcher {
 
     static AnalysisResult runVariant(VectorVariant variant,
                                       List<VectorSignature> refSigs,
+                                      int refContourCount,
                                       SceneDescriptor descriptor,
                                       Mat sceneForAnnotation,
                                       ReferenceId referenceId,
@@ -124,12 +129,12 @@ public final class VectorMatcher {
             List<SceneDescriptor.ClusterContours> clusters = descriptor.clusters();
             double eps = variant.epsilonFactor();
 
-            // ── Flatten all non-achromatic scene contours with pre-built sigs ──
-            // Each entry carries: contour, its cluster index, and its pre-built sig.
+            // ── Flatten all scene contours (excluding envelope entries) ──
             record CEntry(MatOfPoint c, int clusterIdx, VectorSignature sig) {}
             List<CEntry> candidates = new ArrayList<>();
             for (int ci = 0; ci < clusters.size(); ci++) {
                 SceneDescriptor.ClusterContours cc = clusters.get(ci);
+                if (cc.envelope) continue; // envelope used only for penalty, not matching
                 for (MatOfPoint c : cc.contours) {
                     VectorSignature sig = VectorSignature.buildFromContour(c, eps, descriptor.sceneArea);
                     candidates.add(new CEntry(c, ci, sig));
@@ -241,12 +246,12 @@ public final class VectorMatcher {
                 }
             }
 
-            // ── Cluster-count penalty on the winning bbox ─────────────────
-            // Only for multi-colour refs: compare chromatic clusters in the
-            // bbox against the ref's expected count.
-            if (bestBbox != null && refClusterCount > 1) {
+            // ── Contour-count penalty on the winning bbox ─────────────────
+            // Compare total structural contours in the winning region against
+            // the ref's expected count (from its union-of-clusters mask).
+            if (bestBbox != null) {
                 bestScore = applyClusterCountPenalty(
-                        bestScore, bestBbox, refClusterCount, clusters, sceneForAnnotation);
+                        bestScore, bestBbox, refContourCount, sceneForAnnotation);
             }
 
             double scorePercent = bestScore * 100.0;
@@ -284,21 +289,36 @@ public final class VectorMatcher {
 
 
     /**
-     * Penalises a match score based on how well the number of distinct colour
-     * clusters inside the winning bbox matches the number the reference has.
+     * Penalises a match score when the total cluster count inside the winning
+     * bbox does not match the reference's expected cluster count.
      *
+     * <p>Both ref and scene are counted the same way: ALL significant clusters
+     * (chromatic + achromatic) from {@link SceneColourClusters#extract}.
+     * This includes the background, so a plain white-on-black shape = 2 clusters.
+     *
+     * <p>The penalty is <b>exponential</b> based on the absolute difference:
+     * <pre>
+     *   multiplier = exp(-k * |sceneClusters - refClusters|)
+     * </pre>
+     * where k controls how steeply the score degrades per unit of mismatch.
+     * This means:
      * <ul>
-     *   <li>Scene bbox has the same cluster count as ref → no penalty.</li>
-     *   <li>Scene bbox has more clusters than ref → excess-colour penalty
-     *       (likely background noise bleeding in).</li>
-     *   <li>Scene bbox has fewer clusters than ref → missing-colour penalty
-     *       (e.g. a plain white circle matched against a bicolour ref).</li>
+     *   <li>mismatch=0 → multiplier=1.0  (no penalty)</li>
+     *   <li>mismatch=1 → multiplier≈0.74 (k=0.3)</li>
+     *   <li>mismatch=2 → multiplier≈0.55</li>
+     *   <li>mismatch=4 → multiplier≈0.30</li>
      * </ul>
+     *
+     * <p>Works for any N clusters from 1 to 100 without hard-coding.
      */
     private static double applyClusterCountPenalty(
-            double score, Rect bbox, int refClusterCount,
-            List<SceneDescriptor.ClusterContours> clusters,
-            Mat scene) {
+            double score, Rect bbox, int refClusterCount, Mat scene) {
+
+        // Single-colour refs (≤2 clusters: shape + background) — no penalty.
+        // A tight bbox may only capture the foreground, so scene count of 1
+        // vs ref count of 2 is a false alarm, not a structural mismatch.
+        // Only penalise genuine multi-colour refs (3+ clusters).
+        if (refClusterCount <= 2) return score;
 
         int x1 = Math.max(0, bbox.x);
         int y1 = Math.max(0, bbox.y);
@@ -307,26 +327,21 @@ public final class VectorMatcher {
         if (x2 <= x1 || y2 <= y1) return score;
 
         Mat roi = scene.submat(y1, y2, x1, x2);
-        List<SceneColourClusters.Cluster> roiClusters = SceneColourClusters.extract(roi);
-
-        // Count only CHROMATIC clusters — achromatic clusters (both dark background
-        // and bright outline/border pixels) are excluded. Multi-colour refs are
-        // defined purely by hue, so achromatic content in the bbox is not a mismatch.
-        int sceneBboxClusters = 0;
-        for (SceneColourClusters.Cluster rc : roiClusters) {
-            if (!rc.achromatic && Core.countNonZero(rc.mask) >= SceneColourClusters.MIN_CONTOUR_AREA) {
-                sceneBboxClusters++;
-            }
-            rc.release();
-        }
+        int sceneClusterCount = SceneDescriptor.countAllClusters(roi);
         roi.release();
 
-        if (sceneBboxClusters == 0 || sceneBboxClusters == refClusterCount) return score;
+        if (sceneClusterCount == 0 || sceneClusterCount >= refClusterCount) return score;
 
-        // Penalty proportional to the mismatch
-        int mismatch = Math.abs(sceneBboxClusters - refClusterCount);
-        double penalty = 1.0 - (mismatch / (double)(mismatch + refClusterCount));
-        return score * penalty;
+        // Scene has FEWER clusters than ref → missing colour regions / structure.
+        // Extra clusters (noisy background) are NOT penalised — the shape is
+        // still present even in a busy scene.
+        // Exponential degradation per missing cluster, works for any N:
+        //   missing=1 of ref=2 → exp(-0.3*1) ≈ 0.74
+        //   missing=2 of ref=3 → exp(-0.3*2) ≈ 0.55
+        //   missing=3 of ref=4 → exp(-0.3*3) ≈ 0.41
+        int missing = refClusterCount - sceneClusterCount;
+        double multiplier = Math.exp(-0.3 * missing);
+        return score * multiplier;
     }
 
 
@@ -446,28 +461,28 @@ public final class VectorMatcher {
         List<VectorSignature> sigs = new ArrayList<>();
 
         List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(refBgr);
+        List<Mat> chromaticMasks = new ArrayList<>();
+
         for (SceneColourClusters.Cluster cluster : clusters) {
-            // Skip ALL achromatic clusters — dark = canvas background,
-            // bright = outline/border artefacts. Only chromatic regions
-            // carry the actual shape geometry for multi-colour refs.
-            if (cluster.achromatic) {
-                cluster.release();
-                continue;
-            }
-            List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(cluster.mask);
+            if (cluster.achromatic) { cluster.release(); continue; }
+            Mat dilated = new Mat();
+            Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(5, 5));
+            Imgproc.dilate(cluster.mask, dilated, kernel);
+            kernel.release();
+            chromaticMasks.add(cluster.mask.clone());
+            List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(dilated);
+            dilated.release();
             cluster.release();
-            for (MatOfPoint c : contours) {
-                VectorSignature sig = VectorSignature.buildFromContour(c, epsilonFactor, Double.NaN);
-                sigs.add(sig);
-            }
+            for (MatOfPoint c : contours)
+                sigs.add(VectorSignature.buildFromContour(c, epsilonFactor, Double.NaN));
         }
+        for (Mat m : chromaticMasks) m.release();
 
         // Fallback: if colour extraction found nothing useful, use greyscale
-        if (sigs.isEmpty()) {
-            sigs.add(buildRefSignature(refBgr, epsilonFactor));
-        }
+        if (sigs.isEmpty()) sigs.add(buildRefSignature(refBgr, epsilonFactor));
         return sigs;
     }
+
 
     /**
      * Builds a single {@link VectorSignature} from the greyscale threshold of the

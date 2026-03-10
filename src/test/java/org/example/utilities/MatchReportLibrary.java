@@ -95,40 +95,27 @@ public class MatchReportLibrary {
             Mat refOrig = ReferenceImageFactory.build(rid);
             refOrigPng = matToBase64Png(refOrig);
 
-            // Build ref contours from chromatic clusters only — matches exactly
-            // what buildRefSignatures() uses, so Ref Points and matching are consistent.
-            // Achromatic clusters (dark background + bright outlines) are excluded.
+            // Build ref contours from ALL clusters (chromatic + achromatic) so that
+            // every colour region and edge boundary is visible — exactly mirrors how
+            // SceneColourClusters works on the scene side.
             List<MatOfPoint> refContours = new ArrayList<>();
             List<SceneColourClusters.Cluster> refClusters = SceneColourClusters.extract(refOrig);
             for (SceneColourClusters.Cluster c : refClusters) {
-                if (!c.achromatic) {
-                    refContours.addAll(SceneDescriptor.contoursFromMask(c.mask));
-                }
+                refContours.addAll(SceneDescriptor.contoursFromMask(c.mask));
                 c.release();
-            }
-            if (refContours.isEmpty()) {
-                // Fallback for single-colour refs where shape IS in the achromatic cluster
-                // (e.g. white circle — the bright-achromatic cluster holds the shape)
-                refClusters = SceneColourClusters.extract(refOrig);
-
-                for (SceneColourClusters.Cluster c : refClusters) {
-                    if (c.achromatic) {
-                        Scalar mean = Core.mean(refOrig, c.mask);
-                        // Include bright-achromatic (the shape) but not dark (background)
-                        if (mean.val[0] > 30 || mean.val[1] > 30 || mean.val[2] > 30) {
-                            refContours.addAll(SceneDescriptor.contoursFromMask(c.mask));
-                        }
-                    }
-                    c.release();
-                }
             }
             if (refContours.isEmpty()) {
                 refContours = VectorMatcher.extractContoursFromBinary(refOrig);
             }
             Mat refBin = VectorMatcher.extractBinaryRaw(refOrig);
-            Mat graph  = VectorMatcher.drawContourGraph(refOrig.size(), refBin, refContours, 0);
+            // Dim the ref original and add as underlay so contour lines are
+            // clearly visible against the actual shape colours.
+            Mat refDimmed = new Mat();
+            refOrig.convertTo(refDimmed, -1, 0.35, 0);
+            Mat graph = VectorMatcher.drawContourGraph(refOrig.size(), null, refContours, 0);
+            Core.add(graph, refDimmed, graph);
             refPointsPng = matToBase64Png(graph);
-            graph.release(); refBin.release(); refOrig.release();
+            graph.release(); refDimmed.release(); refBin.release(); refOrig.release();
         }
 
         String sceneOrigPng = matToBase64Png(sceneWithRef);
