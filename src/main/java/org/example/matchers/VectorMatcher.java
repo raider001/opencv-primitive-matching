@@ -120,11 +120,14 @@ public final class VectorMatcher {
                                       Path outputDir) {
         long t0 = System.currentTimeMillis();
         try {
+            int refClusterCount = refSigs.size();
+            List<SceneDescriptor.ClusterContours> clusters = descriptor.clusters();
+
+            // ── Step 1: single-contour sweep (all refs) ───────────────────
             double bestScore      = 0.0;
             Rect   bestBbox       = null;
             int    bestClusterIdx = -1;
 
-            List<SceneDescriptor.ClusterContours> clusters = descriptor.clusters();
             for (int ci = 0; ci < clusters.size(); ci++) {
                 SceneDescriptor.ClusterContours cc = clusters.get(ci);
                 double maxArea = 0;
@@ -137,13 +140,15 @@ public final class VectorMatcher {
                     Rect rx = Imgproc.boundingRect(cx);
                     if ((double) rx.width * rx.height >= maxArea * 0.20) significant++;
                 }
-                double clusterPenalty = significant > 1
-                        ? 1.0 / (Math.log(significant + 1) / Math.log(2)) : 1.0;
+                // For multi-colour refs each cluster legitimately contributes one
+                // contour — only penalise excess beyond the ref's cluster count.
+                int excessSignificant = Math.max(0, significant - refClusterCount);
+                double clusterPenalty = excessSignificant > 0
+                        ? 1.0 / (Math.log(excessSignificant + 2) / Math.log(2)) : 1.0;
 
                 for (MatOfPoint c : cc.contours) {
                     VectorSignature sceneSig = VectorSignature.buildFromContour(
                             c, variant.epsilonFactor(), descriptor.sceneArea);
-                    // Score against every ref signature — take the best
                     double bestRefSim = 0.0;
                     for (VectorSignature refSig : refSigs) {
                         double sim = refSig.similarity(sceneSig);
@@ -158,14 +163,94 @@ public final class VectorMatcher {
                 }
             }
 
-            // ── Multi-cluster penalty ─────────────────────────────────────
-            // For multi-colour refs (multiple ref sigs) the multi-cluster
-            // penalty is intentionally skipped — having multiple colours in
-            // the bbox region is expected and correct.
-            if (bestBbox != null && bestClusterIdx >= 0 && clusters.size() > 1
-                    && refSigs.size() == 1) {
-                bestScore = applyMultiClusterPenalty(
-                        bestScore, bestBbox, bestClusterIdx, clusters, sceneForAnnotation);
+            // ── Step 1 penalty: penalise single-contour result by cluster-count mismatch ──
+            if (bestBbox != null && refClusterCount > 1) {
+                bestScore = applyClusterCountPenalty(
+                        bestScore, bestBbox, refClusterCount, clusters, sceneForAnnotation);
+            }
+
+            // ── Step 2: multi-contour cross-cluster sweep (multi-colour refs only) ──
+            // Try combinations of contours from different clusters. Score = average
+            // similarity × coverage fraction so covering all N ref clusters always
+            // beats covering just 1, even with lower individual sims.
+            // Step 2 is evaluated independently — its best penalised result then
+            // competes against the penalised step 1 result.
+            if (refClusterCount > 1) {
+                record ContourEntry(MatOfPoint c, int clusterIdx) {}
+                List<ContourEntry> all = new ArrayList<>();
+                for (int ci = 0; ci < clusters.size(); ci++) {
+                    SceneDescriptor.ClusterContours cc = clusters.get(ci);
+                    if (cc.achromatic) continue;
+                    for (MatOfPoint c : cc.contours)
+                        all.add(new ContourEntry(c, ci));
+                }
+
+                int n = all.size();
+                List<VectorSignature> allSigs = new ArrayList<>(n);
+                for (ContourEntry e : all)
+                    allSigs.add(VectorSignature.buildFromContour(
+                            e.c(), variant.epsilonFactor(), descriptor.sceneArea));
+
+                double step2Best      = 0.0;
+                Rect   step2Bbox      = null;
+                int    step2ClusterIdx = -1;
+
+                // Try pairs
+                for (int i = 0; i < n; i++) {
+                    for (int j = i + 1; j < n; j++) {
+                        if (all.get(i).clusterIdx() == all.get(j).clusterIdx()) continue;
+                        final VectorSignature si = allSigs.get(i), sj = allSigs.get(j);
+                        double simI = refSigs.stream().mapToDouble(r -> r.similarity(si)).max().orElse(0);
+                        double simJ = refSigs.stream().mapToDouble(r -> r.similarity(sj)).max().orElse(0);
+                        double coverage = 2.0 / refClusterCount;
+                        double combined = ((simI + simJ) / 2.0) * coverage;
+                        if (combined > step2Best) {
+                            step2Best       = combined;
+                            step2Bbox       = unionRect(Imgproc.boundingRect(all.get(i).c()),
+                                                        Imgproc.boundingRect(all.get(j).c()));
+                            step2ClusterIdx = all.get(i).clusterIdx();
+                        }
+                    }
+                }
+
+                // Try triplets
+                if (refClusterCount >= 3) {
+                    for (int i = 0; i < n; i++) {
+                        for (int j = i + 1; j < n; j++) {
+                            if (all.get(i).clusterIdx() == all.get(j).clusterIdx()) continue;
+                            for (int k = j + 1; k < n; k++) {
+                                int ck = all.get(k).clusterIdx();
+                                if (ck == all.get(i).clusterIdx() || ck == all.get(j).clusterIdx()) continue;
+                                final VectorSignature si = allSigs.get(i), sj = allSigs.get(j), sk = allSigs.get(k);
+                                double simI = refSigs.stream().mapToDouble(r -> r.similarity(si)).max().orElse(0);
+                                double simJ = refSigs.stream().mapToDouble(r -> r.similarity(sj)).max().orElse(0);
+                                double simK = refSigs.stream().mapToDouble(r -> r.similarity(sk)).max().orElse(0);
+                                double coverage = Math.min(1.0, 3.0 / refClusterCount);
+                                double combined = ((simI + simJ + simK) / 3.0) * coverage;
+                                if (combined > step2Best) {
+                                    step2Best       = combined;
+                                    step2Bbox       = unionRect(
+                                            unionRect(Imgproc.boundingRect(all.get(i).c()),
+                                                      Imgproc.boundingRect(all.get(j).c())),
+                                            Imgproc.boundingRect(all.get(k).c()));
+                                    step2ClusterIdx = all.get(i).clusterIdx();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Apply cluster-count penalty to the step 2 candidate independently
+                if (step2Bbox != null) {
+                    step2Best = applyClusterCountPenalty(
+                            step2Best, step2Bbox, refClusterCount, clusters, sceneForAnnotation);
+                    // Take the better of step 1 and step 2 after both are penalised
+                    if (step2Best > bestScore) {
+                        bestScore      = step2Best;
+                        bestBbox       = step2Bbox;
+                        bestClusterIdx = step2ClusterIdx;
+                    }
+                }
             }
 
             double scorePercent = bestScore * 100.0;
@@ -192,29 +277,33 @@ public final class VectorMatcher {
         }
     }
 
+    /** Returns the union (enclosing) rectangle of two rects. */
+    private static Rect unionRect(Rect a, Rect b) {
+        int x = Math.min(a.x, b.x);
+        int y = Math.min(a.y, b.y);
+        int x2 = Math.max(a.x + a.width,  b.x + b.width);
+        int y2 = Math.max(a.y + a.height, b.y + b.height);
+        return new Rect(x, y, x2 - x, y2 - y);
+    }
+
+
     /**
-     * Penalises a match score when the candidate bbox region contains significant
-     * pixel coverage from clusters other than the one the match came from.
+     * Penalises a match score based on how well the number of distinct colour
+     * clusters inside the winning bbox matches the number the reference has.
      *
-     * <p>Logic:
-     * <ol>
-     *   <li>Count pixels in the bbox belonging to the winning cluster (own pixels).</li>
-     *   <li>Count pixels belonging to every other cluster in the same bbox (foreign pixels).</li>
-     *   <li>Compute {@code foreignRatio = foreignPx / (ownPx + foreignPx)}.</li>
-     *   <li>Apply penalty: {@code score *= (1 - foreignRatio * PENALTY_WEIGHT)}.</li>
-     * </ol>
-     *
-     * <p>A foreignRatio of 0 means the shape is cleanly one colour — no penalty.
-     * A foreignRatio of 0.5 means half the bbox is other colours — substantial penalty.
+     * <ul>
+     *   <li>Scene bbox has the same cluster count as ref → no penalty.</li>
+     *   <li>Scene bbox has more clusters than ref → excess-colour penalty
+     *       (likely background noise bleeding in).</li>
+     *   <li>Scene bbox has fewer clusters than ref → missing-colour penalty
+     *       (e.g. a plain white circle matched against a bicolour ref).</li>
+     * </ul>
      */
-    private static double applyMultiClusterPenalty(
-            double score, Rect bbox, int winnerIdx,
+    private static double applyClusterCountPenalty(
+            double score, Rect bbox, int refClusterCount,
             List<SceneDescriptor.ClusterContours> clusters,
             Mat scene) {
 
-        // Re-extract cluster masks just for the bbox ROI.
-        // This is the same SceneColourClusters.extract() that built the descriptor,
-        // but operating only on the small submat — lightweight.
         int x1 = Math.max(0, bbox.x);
         int y1 = Math.max(0, bbox.y);
         int x2 = Math.min(scene.cols(), bbox.x + bbox.width);
@@ -222,41 +311,26 @@ public final class VectorMatcher {
         if (x2 <= x1 || y2 <= y1) return score;
 
         Mat roi = scene.submat(y1, y2, x1, x2);
-        List<org.example.colour.SceneColourClusters.Cluster> roiClusters =
-                org.example.colour.SceneColourClusters.extract(roi);
-        roi.release();
+        List<SceneColourClusters.Cluster> roiClusters = SceneColourClusters.extract(roi);
 
-        // Match roi clusters back to descriptor clusters by hue proximity.
-        // The winning descriptor cluster index maps to the roi cluster whose
-        // hue is closest; its pixel count = ownPx. All others = foreignPx.
-        SceneDescriptor.ClusterContours winner = clusters.get(winnerIdx);
-
-        long ownPx = 0, foreignPx = 0;
-        for (org.example.colour.SceneColourClusters.Cluster rc : roiClusters) {
-            long px = Core.countNonZero(rc.mask);
-            boolean isOwn;
-            if (winner.achromatic) {
-                isOwn = rc.achromatic;
-            } else {
-                if (rc.achromatic) {
-                    isOwn = false;
-                } else {
-                    double d = Math.abs(winner.hue - rc.hue);
-                    d = Math.min(d, 180 - d);
-                    isOwn = d < SceneColourClusters.HUE_TOLERANCE * 2;
-                }
+        // Count only CHROMATIC clusters — achromatic clusters (both dark background
+        // and bright outline/border pixels) are excluded. Multi-colour refs are
+        // defined purely by hue, so achromatic content in the bbox is not a mismatch.
+        int sceneBboxClusters = 0;
+        for (SceneColourClusters.Cluster rc : roiClusters) {
+            if (!rc.achromatic && Core.countNonZero(rc.mask) >= SceneColourClusters.MIN_CONTOUR_AREA) {
+                sceneBboxClusters++;
             }
-            if (isOwn) ownPx += px;
-            else        foreignPx += px;
             rc.release();
         }
+        roi.release();
 
-        long total = ownPx + foreignPx;
-        if (total == 0) return score;
+        if (sceneBboxClusters == 0 || sceneBboxClusters == refClusterCount) return score;
 
-        double foreignRatio = (double) foreignPx / total;
-        double penalty = foreignRatio * 0.80;
-        return score * (1.0 - penalty);
+        // Penalty proportional to the mismatch
+        int mismatch = Math.abs(sceneBboxClusters - refClusterCount);
+        double penalty = 1.0 - (mismatch / (double)(mismatch + refClusterCount));
+        return score * penalty;
     }
 
 
@@ -377,15 +451,12 @@ public final class VectorMatcher {
 
         List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(refBgr);
         for (SceneColourClusters.Cluster cluster : clusters) {
-            // Skip the dark achromatic cluster — that is the black canvas background.
+            // Skip ALL achromatic clusters — dark = canvas background,
+            // bright = outline/border artefacts. Only chromatic regions
+            // carry the actual shape geometry for multi-colour refs.
             if (cluster.achromatic) {
-                double meanVal = Core.mean(refBgr, cluster.mask).val[0]
-                               + Core.mean(refBgr, cluster.mask).val[1]
-                               + Core.mean(refBgr, cluster.mask).val[2];
-                if (meanVal < 90) {
-                    cluster.release();
-                    continue;
-                }
+                cluster.release();
+                continue;
             }
             List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(cluster.mask);
             cluster.release();

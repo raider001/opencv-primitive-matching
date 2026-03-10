@@ -44,7 +44,7 @@ public class MatchReportLibrary {
             String stage, String label, String shapeName, String sceneDesc,
             double score, boolean passed,
             String refOrig, String refPoints,
-            String sceneOrig, String sceneBin,
+            String sceneOrig,
             String allPoints, String sceneAnnot,
             double iou, boolean falsePositive,
             long elapsedMs, long descriptorMs) {}
@@ -95,17 +95,32 @@ public class MatchReportLibrary {
             Mat refOrig = ReferenceImageFactory.build(rid);
             refOrigPng = matToBase64Png(refOrig);
 
-            // Use colour-cluster contours so multi-colour refs show each region.
-            // Dark achromatic = black canvas background; skip it — no shape info there.
+            // Build ref contours from chromatic clusters only — matches exactly
+            // what buildRefSignatures() uses, so Ref Points and matching are consistent.
+            // Achromatic clusters (dark background + bright outlines) are excluded.
             List<MatOfPoint> refContours = new ArrayList<>();
             List<SceneColourClusters.Cluster> refClusters = SceneColourClusters.extract(refOrig);
             for (SceneColourClusters.Cluster c : refClusters) {
-                if (!c.achromatic || Core.mean(refOrig, c.mask).val[0] > 30
-                        || Core.mean(refOrig, c.mask).val[1] > 30
-                        || Core.mean(refOrig, c.mask).val[2] > 30) {
+                if (!c.achromatic) {
                     refContours.addAll(SceneDescriptor.contoursFromMask(c.mask));
                 }
                 c.release();
+            }
+            if (refContours.isEmpty()) {
+                // Fallback for single-colour refs where shape IS in the achromatic cluster
+                // (e.g. white circle — the bright-achromatic cluster holds the shape)
+                refClusters = SceneColourClusters.extract(refOrig);
+
+                for (SceneColourClusters.Cluster c : refClusters) {
+                    if (c.achromatic) {
+                        Scalar mean = Core.mean(refOrig, c.mask);
+                        // Include bright-achromatic (the shape) but not dark (background)
+                        if (mean.val[0] > 30 || mean.val[1] > 30 || mean.val[2] > 30) {
+                            refContours.addAll(SceneDescriptor.contoursFromMask(c.mask));
+                        }
+                    }
+                    c.release();
+                }
             }
             if (refContours.isEmpty()) {
                 refContours = VectorMatcher.extractContoursFromBinary(refOrig);
@@ -118,15 +133,6 @@ public class MatchReportLibrary {
 
         String sceneOrigPng = matToBase64Png(sceneWithRef);
 
-        // ── Edges (binary + Canny) ────────────────────────────────────────
-        String sceneBinPng;
-        {
-            Mat bin = VectorMatcher.extractBinaryRaw(sceneWithRef);
-            Mat bgr = new Mat();
-            Imgproc.cvtColor(bin, bgr, Imgproc.COLOR_GRAY2BGR);
-            sceneBinPng = matToBase64Png(bgr);
-            bgr.release(); bin.release();
-        }
 
         // ── Colour clusters (what the matcher actually sees) ──────────────
         String allPointsPng;
@@ -178,7 +184,7 @@ public class MatchReportLibrary {
         rows.add(new ReportRow(stage, label, shapeName, sceneDesc,
                 score, passed,
                 refOrigPng, refPointsPng,
-                sceneOrigPng, sceneBinPng, allPointsPng, sceneAnnotPng,
+                sceneOrigPng, allPointsPng, sceneAnnotPng,
                 iou, fp, elapsedMs, descriptorMs));
 
         sceneWithRef.release();
@@ -356,7 +362,6 @@ public class MatchReportLibrary {
           .append("<span class='pl-step'>Ref</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Ref Points</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Scene</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Edges (ref)</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Colour Clusters</span><span class='pl-arrow'>→</span>")
           .append("<span class='pl-step'>Match</span>")
           .append("</div></div>")
@@ -393,7 +398,6 @@ public class MatchReportLibrary {
                 step(sb, r.refOrig(),    "Ref");
                 step(sb, r.refPoints(),  "Ref Points");
                 step(sb, r.sceneOrig(),  "Scene");
-                step(sb, r.sceneBin(),   "Edges");
                 step(sb, r.allPoints(),  "Colour Clusters");
                 step(sb, r.sceneAnnot(), "Match");
                 sb.append("</div>")

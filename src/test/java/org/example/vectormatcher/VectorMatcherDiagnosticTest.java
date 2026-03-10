@@ -1,6 +1,7 @@
 package org.example.vectormatcher;
 import org.example.OpenCvLoader;
 import org.example.analytics.AnalysisResult;
+import org.example.colour.SceneColourClusters;
 import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
 import org.example.factories.ReferenceImageFactory;
@@ -14,6 +15,7 @@ import org.example.utilities.MatchDiagnosticLibrary;
 import org.example.utilities.MatchReportLibrary;
 import org.junit.jupiter.api.*;
 import org.opencv.core.*;
+import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 import java.io.IOException;
 import java.nio.file.*;
@@ -139,4 +141,98 @@ class VectorMatcherDiagnosticTest {
                 scene, gt, results, 0L);
         se.release(); shapeMat.release(); ref.release(); scene.release();
     }
+    @Test
+    @DisplayName("Focused: BICOLOUR_RECT_HALVES on own scene")
+    void focusedBicolourRectHalves() {
+        runFocusedMultiColour(ReferenceId.BICOLOUR_RECT_HALVES);
+    }
+
+    @Test
+    @DisplayName("Focused: TRICOLOUR_TRIANGLE on own scene")
+    void focusedTricolourTriangle() {
+        runFocusedMultiColour(ReferenceId.TRICOLOUR_TRIANGLE);
+    }
+
+    @Test
+    @DisplayName("Focused: BICOLOUR_CIRCLE_RING on own scene")
+    void focusedBicolourCircleRing() {
+        runFocusedMultiColour(ReferenceId.BICOLOUR_CIRCLE_RING);
+    }
+
+    /** Builds a 640x480 scene with the ref scaled 3x centred on black. */
+    private static Mat buildMultiColourScene(ReferenceId id) {
+        Mat ref = ReferenceImageFactory.build(id);
+        Mat scaled = new Mat();
+        Imgproc.resize(ref, scaled, new Size(ref.cols() * 3, ref.rows() * 3), 0, 0, Imgproc.INTER_NEAREST);
+        ref.release();
+        Mat canvas = Mat.zeros(480, 640, CvType.CV_8UC3);
+        int x = (canvas.cols() - scaled.cols()) / 2;
+        int y = (canvas.rows() - scaled.rows()) / 2;
+        scaled.copyTo(canvas.submat(new Rect(x, y, scaled.cols(), scaled.rows())));
+        scaled.release();
+        return canvas;
+    }
+
+    private void runFocusedMultiColour(ReferenceId refId) {
+        Mat ref   = ReferenceImageFactory.build(refId);
+        Mat scene = buildMultiColourScene(refId);
+
+        // Dump scene to disk so we can inspect it
+        Path sceneOut = OUTPUT.resolve("debug_scene_" + refId.name() + ".png");
+        Imgcodecs.imwrite(sceneOut.toString(), scene);
+
+        // Show what clusters the ref image has
+        System.out.printf("%n=== REF CLUSTERS: %s ===%n", refId.name());
+        List<SceneColourClusters.Cluster> refClusters = SceneColourClusters.extract(ref);
+        for (int i = 0; i < refClusters.size(); i++) {
+            SceneColourClusters.Cluster c = refClusters.get(i);
+            List<MatOfPoint> cnts = SceneDescriptor.contoursFromMask(c.mask);
+            System.out.printf("  ref cluster %d: hue=%.0f achromatic=%b px=%d contours=%d%n",
+                i, c.hue, c.achromatic, Core.countNonZero(c.mask), cnts.size());
+            for (MatOfPoint cnt : cnts) {
+                Rect bb = Imgproc.boundingRect(cnt);
+                System.out.printf("    contour (%d,%d %dx%d) area=%.0f%n",
+                    bb.x, bb.y, bb.width, bb.height, Imgproc.contourArea(cnt));
+            }
+            c.release();
+        }
+
+        // Show what clusters the scene has
+        System.out.printf("%n=== SCENE CLUSTERS: %s ===%n", refId.name());
+        SceneEntry se = new SceneEntry(refId, SceneCategory.A_CLEAN,
+                "own-scene", null, Collections.emptyList(), scene);
+        List<SceneDescriptor.ClusterContours> clusters = se.descriptor().clusters();
+        double eps = VectorVariant.VECTOR_NORMAL.epsilonFactor();
+        double sa  = (double) scene.rows() * scene.cols();
+        List<VectorSignature> refSigs = VectorMatcher.buildRefSignatures(ref, eps);
+        System.out.printf("  refSigs count: %d%n", refSigs.size());
+        for (int ci = 0; ci < clusters.size(); ci++) {
+            SceneDescriptor.ClusterContours cc = clusters.get(ci);
+            System.out.printf("  scene cluster %d: hue=%.0f achromatic=%b contours=%d%n",
+                ci, cc.hue, cc.achromatic, cc.contours.size());
+            for (MatOfPoint cnt : cc.contours) {
+                Rect bb = Imgproc.boundingRect(cnt);
+                VectorSignature vs = VectorSignature.buildFromContour(cnt, eps, sa);
+                double bestSim = refSigs.stream().mapToDouble(r -> r.similarity(vs)).max().orElse(0);
+                System.out.printf("    contour (%d,%d %dx%d) bestSim=%.3f type=%s v=%d%n",
+                    bb.x, bb.y, bb.width, bb.height, bestSim, vs.type.name(), vs.vertexCount);
+            }
+        }
+
+        // Run matcher and show result
+        List<AnalysisResult> results = VectorMatcher.match(refId, ref, se, Collections.emptySet(), OUTPUT);
+        AnalysisResult nr = results.stream()
+                .filter(r -> r.methodName().equals(VectorVariant.VECTOR_NORMAL.variantName()))
+                .findFirst().orElse(null);
+        double score = nr != null ? nr.matchScorePercent() : 0;
+        Rect   bbox  = nr != null ? nr.boundingRect() : null;
+        System.out.printf("%n  RESULT: score=%.1f%%  bbox=%s%n", score,
+            bbox != null ? String.format("(%d,%d %dx%d)", bbox.x, bbox.y, bbox.width, bbox.height) : "null");
+
+        report.record("Multi-Colour Debug", refId.name(), refId.name(), "own-scene",
+                scene, null, results, 0L);
+
+        se.release(); ref.release(); scene.release();
+    }
 }
+
