@@ -96,24 +96,14 @@ public class MatchReportLibrary {
             refOrigPng = matToBase64Png(refOrig);
 
             // Use colour-cluster contours so multi-colour refs show each region.
-            // Skip the dark achromatic cluster (black canvas background) — its
-            // contour would just be a border around the whole image.
+            // Dark achromatic = black canvas background; skip it — no shape info there.
             List<MatOfPoint> refContours = new ArrayList<>();
             List<SceneColourClusters.Cluster> refClusters = SceneColourClusters.extract(refOrig);
-            int refArea = refOrig.rows() * refOrig.cols();
             for (SceneColourClusters.Cluster c : refClusters) {
-                // Skip dark achromatic — that is the black background
-                if (c.achromatic && Core.mean(refOrig, c.mask).val[0] < 30
-                        && Core.mean(refOrig, c.mask).val[1] < 30
-                        && Core.mean(refOrig, c.mask).val[2] < 30) {
-                    c.release();
-                    continue;
-                }
-                for (MatOfPoint cnt : SceneDescriptor.contoursFromMask(c.mask)) {
-                    // Drop contours whose bbox covers > 90% of the image — image-border artefact
-                    Rect bb = Imgproc.boundingRect(cnt);
-                    if ((double) bb.width * bb.height > refArea * 0.90) continue;
-                    refContours.add(cnt);
+                if (!c.achromatic || Core.mean(refOrig, c.mask).val[0] > 30
+                        || Core.mean(refOrig, c.mask).val[1] > 30
+                        || Core.mean(refOrig, c.mask).val[2] > 30) {
+                    refContours.addAll(SceneDescriptor.contoursFromMask(c.mask));
                 }
                 c.release();
             }

@@ -71,10 +71,17 @@ public final class SceneDescriptor {
     public static List<MatOfPoint> contoursFromMask(Mat mask) {
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
-        // Clone: findContours modifies the source image
-        Imgproc.findContours(mask.clone(), contours, hierarchy,
+        // Erode by 1px so any blob touching the image border is clipped away.
+        // This prevents findContours from tracing the image edge as a contour
+        // (e.g. the dark-achromatic background cluster on a black-canvas ref image).
+        Mat eroded = new Mat();
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+        Imgproc.erode(mask, eroded, kernel);
+        kernel.release();
+        Imgproc.findContours(eroded, contours, hierarchy,
                 Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
         hierarchy.release();
+        eroded.release();
         contours.removeIf(c -> Imgproc.contourArea(c) < MIN_AREA);
         return contours;
     }

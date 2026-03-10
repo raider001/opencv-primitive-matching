@@ -374,17 +374,15 @@ public final class VectorMatcher {
      */
     public static List<VectorSignature> buildRefSignatures(Mat refBgr, double epsilonFactor) {
         List<VectorSignature> sigs = new ArrayList<>();
-        double refArea = (double) refBgr.rows() * refBgr.cols();
 
         List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(refBgr);
         for (SceneColourClusters.Cluster cluster : clusters) {
             // Skip the dark achromatic cluster — that is the black canvas background.
-            // Its contour is just the image border and carries no shape information.
             if (cluster.achromatic) {
                 double meanVal = Core.mean(refBgr, cluster.mask).val[0]
                                + Core.mean(refBgr, cluster.mask).val[1]
                                + Core.mean(refBgr, cluster.mask).val[2];
-                if (meanVal < 90) { // near-black average → background
+                if (meanVal < 90) {
                     cluster.release();
                     continue;
                 }
@@ -392,9 +390,6 @@ public final class VectorMatcher {
             List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(cluster.mask);
             cluster.release();
             for (MatOfPoint c : contours) {
-                // Drop image-border contours (bbox covers > 90% of image area)
-                Rect bb = Imgproc.boundingRect(c);
-                if ((double) bb.width * bb.height > refArea * 0.90) continue;
                 VectorSignature sig = VectorSignature.buildFromContour(c, epsilonFactor, Double.NaN);
                 sigs.add(sig);
             }
