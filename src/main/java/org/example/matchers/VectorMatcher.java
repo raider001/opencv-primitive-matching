@@ -159,9 +159,8 @@ public final class VectorMatcher {
             //
             // This is fully algorithmic — works for any N without hard-coded loops.
 
-            double bestScore      = 0.0;
-            Rect   bestBbox       = null;
-            int    bestClusterIdx = -1;
+            double bestScore = 0.0;
+            Rect   bestBbox  = null;
 
             // Build sim matrix: candidates × refSigs
             int nc = candidates.size();
@@ -196,21 +195,17 @@ public final class VectorMatcher {
                 matched.add(anchor);
                 combinedBbox = Imgproc.boundingRect(candidates.get(anchor).c());
 
-                // Greedy fill remaining ref sigs from different clusters
+                // Greedy fill remaining ref sigs — any unused candidate contour
+                // can match any unmatched ref sig. Multiple contours from the
+                // same cluster are allowed (compound shapes need this).
                 for (int[] triple : triples) {
                     int ci = triple[0], rj = triple[1];
                     if (usedCandidate[ci] || usedRefSig[rj]) continue;
-                    // Must come from a cluster not already represented in the match set
-                    int clusterOfCi = candidates.get(ci).clusterIdx();
-                    boolean clusterAlreadyUsed = false;
-                    for (int m : matched)
-                        if (candidates.get(m).clusterIdx() == clusterOfCi) { clusterAlreadyUsed = true; break; }
-                    if (clusterAlreadyUsed) continue;
                     usedCandidate[ci] = true;
                     usedRefSig[rj]    = true;
                     matched.add(ci);
                     combinedBbox = unionRect(combinedBbox, Imgproc.boundingRect(candidates.get(ci).c()));
-                    if (matched.size() == nr) break; // all ref sigs covered
+                    if (matched.size() == nr) break;
                 }
 
                 // Score: average sim of matched pairs × coverage fraction
@@ -225,24 +220,9 @@ public final class VectorMatcher {
                 double coverage = (double) matched.size() / nr;
                 double rawScore = (sumSim / nr) * coverage;
 
-                // Intra-cluster noise penalty: if a single cluster has many
-                // significant contours beyond what the ref expects, penalise
-                int clusterOfAnchor = candidates.get(anchor).clusterIdx();
-                SceneDescriptor.ClusterContours anchorCluster = clusters.get(clusterOfAnchor);
-                double maxA = anchorCluster.contours.stream()
-                        .mapToDouble(c -> { Rect r = Imgproc.boundingRect(c); return (double)r.width*r.height; })
-                        .max().orElse(1);
-                long sig = anchorCluster.contours.stream()
-                        .filter(c -> { Rect r = Imgproc.boundingRect(c); return (double)r.width*r.height >= maxA*0.20; })
-                        .count();
-                int excess = Math.max(0, (int)sig - refClusterCount);
-                double noisePenalty = excess > 0 ? 1.0 / (Math.log(excess + 2) / Math.log(2)) : 1.0;
-                rawScore *= noisePenalty;
-
                 if (rawScore > bestScore) {
-                    bestScore      = rawScore;
-                    bestBbox       = combinedBbox;
-                    bestClusterIdx = clusterOfAnchor;
+                    bestScore  = rawScore;
+                    bestBbox   = combinedBbox;
                 }
             }
 
@@ -461,24 +441,44 @@ public final class VectorMatcher {
         List<VectorSignature> sigs = new ArrayList<>();
 
         List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(refBgr);
-        List<Mat> chromaticMasks = new ArrayList<>();
-
         for (SceneColourClusters.Cluster cluster : clusters) {
-            if (cluster.achromatic) { cluster.release(); continue; }
+            if (cluster.achromatic) {
+                // Skip dark (background) clusters entirely.
+                // Include bright-achromatic ONLY when it has multiple contours —
+                // that means it's a compound shape (bullseye, cross-in-circle, etc.).
+                // Single-contour bright clusters are just the shape silhouette,
+                // already covered by the greyscale fallback.
+                Mat grey = new Mat();
+                Imgproc.cvtColor(refBgr, grey, Imgproc.COLOR_BGR2GRAY);
+                Scalar mean = Core.mean(grey, cluster.mask);
+                grey.release();
+                if (mean.val[0] < 60) { cluster.release(); continue; } // dark bg
+                // Bright achromatic — only include if compound (2+ contours)
+                Mat dilated = new Mat();
+                Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(5, 5));
+                Imgproc.dilate(cluster.mask, dilated, kernel);
+                kernel.release();
+                List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(dilated);
+                dilated.release();
+                cluster.release();
+                if (contours.size() < 2) continue; // single silhouette — skip
+                for (MatOfPoint c : contours)
+                    sigs.add(VectorSignature.buildFromContour(c, epsilonFactor, Double.NaN));
+                continue;
+            }
+            // Chromatic cluster — always include
             Mat dilated = new Mat();
             Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(5, 5));
             Imgproc.dilate(cluster.mask, dilated, kernel);
             kernel.release();
-            chromaticMasks.add(cluster.mask.clone());
             List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(dilated);
             dilated.release();
             cluster.release();
             for (MatOfPoint c : contours)
                 sigs.add(VectorSignature.buildFromContour(c, epsilonFactor, Double.NaN));
         }
-        for (Mat m : chromaticMasks) m.release();
 
-        // Fallback: if colour extraction found nothing useful, use greyscale
+        // Fallback: nothing found — use greyscale
         if (sigs.isEmpty()) sigs.add(buildRefSignature(refBgr, epsilonFactor));
         return sigs;
     }
