@@ -161,11 +161,17 @@ public final class VectorSignature {
         Rect bb = Imgproc.boundingRect(contour);
         if (bb.width < 4 || bb.height < 4) return unknown();
 
-        // Pre-reduce with STRICT approxPolyDP before rendering into the crop.
-        // This collapses the 7-8 pixel-stepping points per corner down to the
-        // true geometric corners (e.g. 4 for a rect, 3 for a triangle).
-        double perim     = Imgproc.arcLength(new MatOfPoint2f(contour.toArray()), true);
-        double strictEps = Math.max(0.02 * perim, 2.0);
+        // ── Step 1: Build SegmentDescriptor from the RAW contour BEFORE
+        // approxPolyDP.  This preserves curved segments for ellipses and circles,
+        // which approxPolyDP collapses to straight-segment polygons — causing an
+        // isClosedCurve mismatch against the reference (built from a smooth mask
+        // contour) and a segScore of 0.0.
+        double rawPerim = Imgproc.arcLength(new MatOfPoint2f(contour.toArray()), true);
+        SegmentDescriptor rawSegDesc = SegmentDescriptor.build(contour, rawPerim);
+
+        // ── Step 2: ApproxPolyDP reduction for polygon-based metrics (vertex
+        // count, circularity, solidity, type classification, topology).
+        double strictEps = Math.max(0.02 * rawPerim, 2.0);
         MatOfPoint2f approxF = new MatOfPoint2f();
         Imgproc.approxPolyDP(new MatOfPoint2f(contour.toArray()), approxF, strictEps, true);
         Point[] approxPts = approxF.toArray();
@@ -174,23 +180,27 @@ public final class VectorSignature {
         // Fall back to raw if approx collapsed to < 3 points
         Point[] renderPts = (approxPts.length >= 3) ? approxPts : contour.toArray();
 
-        // Shift to crop-local coordinates
+        // ── Step 3: Render approxPolyDP polygon into crop for polygon metrics
         int pad = 2;
         Mat crop = Mat.zeros(bb.height + pad * 2, bb.width + pad * 2, CvType.CV_8UC1);
         Point[] shifted = new Point[renderPts.length];
         for (int i = 0; i < renderPts.length; i++) {
             shifted[i] = new Point(renderPts[i].x - bb.x + pad, renderPts[i].y - bb.y + pad);
         }
-
-        // Use fillPoly — handles non-simple polygons that approxPolyDP can produce,
-        // unlike drawContours which throws a convexityDefects self-intersection error.
         MatOfPoint shiftedMat = new MatOfPoint(shifted);
         Imgproc.fillPoly(crop, List.of(shiftedMat), new Scalar(255));
         shiftedMat.release();
 
+        // ── Step 4: Build signature from the polygon crop, then override the
+        // segmentDescriptor with the raw-contour version so curved shapes
+        // (ellipses, circles) match their reference correctly.
         VectorSignature sig = build(crop, epsilon, imageArea);
         crop.release();
-        return sig;
+
+        return new VectorSignature(
+                sig.type, sig.vertexCount, sig.circularity, sig.concavityRatio,
+                sig.angleHistogram, sig.componentCount, sig.aspectRatio,
+                sig.solidity, sig.topology, rawSegDesc, sig.normalisedArea);
     }
 
     /**
@@ -472,7 +482,6 @@ public final class VectorSignature {
         if (!Double.isNaN(ref.normalisedArea)) {
             // Rule (a): near-full-image reject
             if (ref.normalisedArea > 0.80) {
-                System.err.println("[GATE-A] normArea=" + ref.normalisedArea + " type=" + ref.type + " raw=" + computeRawSimilarity(ref));
                 return Math.min(0.25, computeRawSimilarity(ref));
             }
             // Rule (b): minimum-size reject
@@ -565,15 +574,17 @@ public final class VectorSignature {
             // Scene produced no vertices but reference expects some — full penalty
             vertexScore = 0.0;
         } else {
-            // Both have vertices.
-            // Penalise missing vertices linearly but tolerate extra vertices from
-            // background noise (up to 50% over reference count is not penalised).
-            // e.g. vRef=4, vDet=6 → ratio = 4/4 = 1.0 (within tolerance)
-            //      vRef=4, vDet=2 → ratio = 2/4 = 0.50
-            //      vRef=5, vDet=2 → ratio = 2/5 = 0.40
-            int effective = Math.min(this.vertexCount, (int)(ref.vertexCount * 1.5));
-            double ratio  = (double) Math.min(effective, ref.vertexCount) / ref.vertexCount;
-            vertexScore = Math.min(1.0, ratio);
+            // Vertex scoring: penalise MISSING vertices (scene fewer than reference)
+            // but do NOT penalise extra vertices from noise (scene has more).
+            // ref.vertexCount = vDet (scene), this.vertexCount = vRef (reference).
+            // Score = min(vDet, vRef) / vRef
+            //   e.g. vRef=4, vDet=6 → min(6,4)/4 = 1.0  (no penalty for extra)
+            //        vRef=4, vDet=2 → min(2,4)/4 = 0.5  (missing half the vertices)
+            //        vRef=5, vDet=2 → min(2,5)/5 = 0.4
+            double found    = Math.min(this.vertexCount, ref.vertexCount);
+            double expected = this.vertexCount;
+            vertexScore = (expected > 0) ? found / expected : 1.0;
+            vertexScore = Math.min(1.0, vertexScore);
         }
 
         // ── 5. Segment descriptor — geometric traversal (primary structural signal) ──
@@ -605,6 +616,22 @@ public final class VectorSignature {
         if (this.componentCount != ref.componentCount) {
             int maxC = Math.max(this.componentCount, ref.componentCount);
             componentPenalty = 0.15 * ((double) Math.abs(this.componentCount - ref.componentCount) / maxC);
+        }
+
+        // ── Segment-score coherence boost ────────────────────────────────
+        // When all OTHER geometric features (type, circularity, solidity, vertices,
+        // aspect ratio) agree strongly (each > 0.80), the SegmentDescriptor should
+        // not drag the total score below what the geometry implies.  This primarily
+        // helps ellipses and circles whose SegmentDescriptor varies across different
+        // contour densities but whose shape metrics are highly consistent.
+        // The boost floors segScore at 0.60 only when the coherence is very high
+        // (all metrics ≥ 0.80 and type = exact match), preventing over-penalisation.
+        if (typeScore >= 1.0
+                && circScore     >= 0.80
+                && solidityScore >= 0.80
+                && vertexScore   >= 0.80
+                && aspectScore   >= 0.80) {
+            segScore = Math.max(segScore, 0.60);
         }
 
         // Weights — segmentDescriptor is the primary structural discriminator.

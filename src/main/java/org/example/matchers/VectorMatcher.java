@@ -125,10 +125,26 @@ public final class VectorMatcher {
 
             List<SceneDescriptor.ClusterContours> clusters = descriptor.clusters();
             for (int ci = 0; ci < clusters.size(); ci++) {
-                for (MatOfPoint c : clusters.get(ci).contours) {
+                SceneDescriptor.ClusterContours cc = clusters.get(ci);
+                // Pre-compute significant competitor count for this cluster
+                // (contours whose bbox area >= 20% of the largest contour in the cluster)
+                double maxArea = 0;
+                for (MatOfPoint cx : cc.contours) {
+                    Rect rx = Imgproc.boundingRect(cx);
+                    maxArea = Math.max(maxArea, (double) rx.width * rx.height);
+                }
+                int significant = 0;
+                for (MatOfPoint cx : cc.contours) {
+                    Rect rx = Imgproc.boundingRect(cx);
+                    if ((double) rx.width * rx.height >= maxArea * 0.20) significant++;
+                }
+                double clusterPenalty = significant > 1
+                        ? 1.0 / (Math.log(significant + 1) / Math.log(2)) : 1.0;
+
+                for (MatOfPoint c : cc.contours) {
                     VectorSignature sceneSig = VectorSignature.buildFromContour(
                             c, variant.epsilonFactor(), descriptor.sceneArea);
-                    double sim = refSig.similarity(sceneSig);
+                    double sim = refSig.similarity(sceneSig) * clusterPenalty;
                     if (sim > bestScore) {
                         bestScore      = sim;
                         bestBbox       = Imgproc.boundingRect(c);
@@ -190,88 +206,76 @@ public final class VectorMatcher {
             List<SceneDescriptor.ClusterContours> clusters,
             Mat scene) {
 
-        // We need the cluster masks — re-extract them from the scene for the bbox only.
-        // This is lightweight: small sub-mat + countNonZero only.
-        Mat hsv = new Mat();
-        Imgproc.cvtColor(scene, hsv, Imgproc.COLOR_BGR2HSV);
-
-        // Clamp bbox to scene bounds
+        // Re-extract cluster masks just for the bbox ROI.
+        // This is the same SceneColourClusters.extract() that built the descriptor,
+        // but operating only on the small submat — lightweight.
         int x1 = Math.max(0, bbox.x);
         int y1 = Math.max(0, bbox.y);
         int x2 = Math.min(scene.cols(), bbox.x + bbox.width);
         int y2 = Math.min(scene.rows(), bbox.y + bbox.height);
-        if (x2 <= x1 || y2 <= y1) { hsv.release(); return score; }
+        if (x2 <= x1 || y2 <= y1) return score;
 
-        Mat hsvRoi = hsv.submat(y1, y2, x1, x2);
+        Mat roi = scene.submat(y1, y2, x1, x2);
+        List<org.example.colour.SceneColourClusters.Cluster> roiClusters =
+                org.example.colour.SceneColourClusters.extract(roi);
+        roi.release();
 
-        // Count own-cluster pixels vs foreign-cluster pixels in bbox
-        long ownPx     = 0;
-        long foreignPx = 0;
+        // Match roi clusters back to descriptor clusters by hue proximity.
+        // The winning descriptor cluster index maps to the roi cluster whose
+        // hue is closest; its pixel count = ownPx. All others = foreignPx.
+        SceneDescriptor.ClusterContours winner = clusters.get(winnerIdx);
 
-        for (int ci = 0; ci < clusters.size(); ci++) {
-            SceneDescriptor.ClusterContours cc = clusters.get(ci);
-            Mat mask = buildHueMask(hsvRoi, cc);
-            long px  = Core.countNonZero(mask);
-            mask.release();
-            if (ci == winnerIdx) ownPx     += px;
-            else                  foreignPx += px;
+        long ownPx = 0, foreignPx = 0;
+        for (org.example.colour.SceneColourClusters.Cluster rc : roiClusters) {
+            long px = Core.countNonZero(rc.mask);
+            boolean isOwn;
+            if (winner.achromatic) {
+                isOwn = rc.achromatic;
+            } else {
+                if (rc.achromatic) {
+                    isOwn = false;
+                } else {
+                    double d = Math.abs(winner.hue - rc.hue);
+                    d = Math.min(d, 180 - d);
+                    isOwn = d < SceneColourClusters.HUE_TOLERANCE * 2;
+                }
+            }
+            if (isOwn) ownPx += px;
+            else        foreignPx += px;
+            rc.release();
         }
-
-        hsvRoi.release();
-        hsv.release();
 
         long total = ownPx + foreignPx;
         if (total == 0) return score;
 
         double foreignRatio = (double) foreignPx / total;
-
-        // Scale penalty: foreignRatio=0 → no penalty, foreignRatio=1 → 80% reduction
         double penalty = foreignRatio * 0.80;
         return score * (1.0 - penalty);
     }
 
-    /** Rebuilds a binary mask for a cluster's hue range over a (small) HSV ROI. */
-    private static Mat buildHueMask(Mat hsvRoi, SceneDescriptor.ClusterContours cc) {
-        Mat mask = new Mat();
-        if (cc.achromatic) {
-            // Achromatic: low saturation
-            Core.inRange(hsvRoi,
-                    new Scalar(0,   0,  25),
-                    new Scalar(179, 35, 255),
-                    mask);
-        } else {
-            double lo = cc.hue - SceneColourClusters.HUE_TOLERANCE;
-            double hi = cc.hue + SceneColourClusters.HUE_TOLERANCE;
-            if (lo < 0) {
-                Mat m1 = new Mat(), m2 = new Mat();
-                Core.inRange(hsvRoi, new Scalar(0, 35, 25), new Scalar(hi, 255, 255), m1);
-                Core.inRange(hsvRoi, new Scalar(180 + lo, 35, 25), new Scalar(179, 255, 255), m2);
-                Core.bitwise_or(m1, m2, mask);
-                m1.release(); m2.release();
-            } else if (hi > 179) {
-                Mat m1 = new Mat(), m2 = new Mat();
-                Core.inRange(hsvRoi, new Scalar(lo, 35, 25), new Scalar(179, 255, 255), m1);
-                Core.inRange(hsvRoi, new Scalar(0, 35, 25), new Scalar(hi - 180, 255, 255), m2);
-                Core.bitwise_or(m1, m2, mask);
-                m1.release(); m2.release();
-            } else {
-                Core.inRange(hsvRoi, new Scalar(lo, 35, 25), new Scalar(hi, 255, 255), mask);
-            }
-        }
-        return mask;
-    }
 
     // -------------------------------------------------------------------------
     // Contour extraction
     // -------------------------------------------------------------------------
 
     /**
-     * Extracts contours from a colour-isolated masked BGR image using
-     * threshold-only binarisation.  {@code CHAIN_APPROX_SIMPLE} on a filled
-     * shape gives exact corner points with no aliased stepping.
+     * Extracts contours from a greyscale/binary or BGR image using
+     * threshold-only binarisation.  Used for visualisation and legacy callers.
      */
     public static List<MatOfPoint> extractContoursFromBinary(Mat maskedBgr) {
-        return SceneDescriptor.extractContours(maskedBgr);
+        Mat grey = new Mat();
+        Mat bin  = new Mat();
+        Imgproc.cvtColor(maskedBgr, grey, Imgproc.COLOR_BGR2GRAY);
+        Imgproc.threshold(grey, bin, 20, 255, Imgproc.THRESH_BINARY);
+        grey.release();
+        List<MatOfPoint> contours = new ArrayList<>();
+        Mat hierarchy = new Mat();
+        Imgproc.findContours(bin, contours, hierarchy,
+                Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE);
+        hierarchy.release();
+        bin.release();
+        contours.removeIf(c -> Imgproc.contourArea(c) < SceneColourClusters.MIN_CONTOUR_AREA);
+        return contours;
     }
 
     /**

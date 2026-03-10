@@ -7,11 +7,14 @@ import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
 import org.example.factories.ReferenceImageFactory;
 import org.example.colour.SceneColourClusters;
+import org.example.matchers.SceneDescriptor;
 import org.example.matchers.VectorMatcher;
 import org.example.matchers.VectorSignature;
 import org.example.matchers.VectorVariant;
 import org.example.scene.SceneCategory;
 import org.example.scene.SceneEntry;
+import org.example.utilities.MatchDiagnosticLibrary;
+import org.example.utilities.MatchReportLibrary;
 import org.junit.jupiter.api.*;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
@@ -27,26 +30,6 @@ import java.util.ArrayList;
 import java.util.concurrent.CopyOnWriteArrayList;
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Step 5 — Vector Matcher incremental integration test.
- *
- * <p>Every test records its result into {@link #REPORT_ROWS} so that
- * {@link #writeHtmlReport()} can render a full visual HTML report at
- * {@code test_output/vector_matching/step5_report.html} after all stages run.
- *
- * <h2>Stages</h2>
- * <ol>
- *   <li>Stage 1 — Clean scenes: circle and rectangle</li>
- *   <li>Stage 2 — Polygon shapes: triangle and hexagon</li>
- *   <li>Stage 3 — Scale invariance</li>
- *   <li>Stage 4 — Basic rotation checks</li>
- *   <li>Stage 5 — Negative scene discrimination</li>
- *   <li>Stage 6 — Pentagon, star, diamond, arrow, ellipse</li>
- *   <li>Stage 7 — Full rotation invariance (multiple angles)</li>
- *   <li>Stage 8 — Octagon, plus-shape, concave arrowhead, cross-lines, 45°-rotated rect</li>
- *   <li>Stage 9 — Rotation tests for Stage 8 shapes</li>
- * </ol>
- */
 @DisplayName("Step 5 — Vector Matching (incremental)")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -55,40 +38,25 @@ class VectorMatchingTest {
     private static final Path OUTPUT = Paths.get("test_output", "vector_matching");
     private static final double MATCH_THRESHOLD = 50.0;
 
-    // ── Shared result accumulator ──────────────────────────────────────────
-    /**
-     * One row per matcher call.
-     * Pipeline images (all base-64 PNG thumbnails):
-     *   refOrig   — the coloured 128×128 reference from ReferenceImageFactory
-     *   refBinary — reference after greyscale + threshold (what the matcher sees)
-     *   sceneOrig — the raw scene Mat
-     *   sceneBin  — scene after greyscale threshold OR'd with Canny edges
-     *   sceneAnnot — scene with both expected bbox (cyan) and best-match bbox drawn
-     * iou — Intersection-over-Union of detected vs expected bbox (NaN if no GT)
-     * falsePositive — score passed threshold but IoU < 0.3 (matched wrong location)
-     */
-    record ReportRow(String stage, String label, String shapeName, String sceneDesc,
-                     double score, boolean passed,
-                     String refOrig, String refPoints,
-                     String sceneOrig, String sceneBin,
-                     String allPoints,
-                     String sceneAnnot,
-                     double iou, boolean falsePositive,
-                     long elapsedMs, long descriptorMs) {}
-
-    private final List<ReportRow> REPORT_ROWS = new CopyOnWriteArrayList<>();
+    // ── Delegate all reporting to the shared library ───────────────────────
+    private final MatchReportLibrary     report = new MatchReportLibrary();
+    private final MatchDiagnosticLibrary diag   = new MatchDiagnosticLibrary();
 
     @BeforeAll
-    void load() {
+    void load() throws IOException {
         OpenCvLoader.load();
-        try { Files.createDirectories(OUTPUT); } catch (IOException ignored) {}
+        Files.createDirectories(OUTPUT);
+        // Clear stale results from any previous partial run
+        report.clear();
+        diag.clear();
+        Files.deleteIfExists(OUTPUT.resolve("report.html"));
+        Files.deleteIfExists(OUTPUT.resolve("diagnostics.json"));
     }
 
     @AfterAll
-    void writeHtmlReport() throws IOException {
-        Path out = OUTPUT.resolve("step5_report.html");
-        Files.writeString(out, buildHtml(REPORT_ROWS), StandardCharsets.UTF_8);
-        System.out.println("[VectorMatchingTest] Report written: " + out.toAbsolutePath());
+    void writeReports() throws IOException {
+        report.writeReport(OUTPUT, "VectorMatchingTest — Step 5 Visual Report");
+        diag.writeReport(OUTPUT);
     }
 
     // =========================================================================
@@ -937,6 +905,7 @@ class VectorMatchingTest {
     // Helpers — matcher invocation + result recording
     // =========================================================================
 
+    /** Simple carrier: results + descriptor build time. */
     private record MatchRun(List<AnalysisResult> results, long descriptorMs) {}
 
     private MatchRun runMatcher(ReferenceId refId, Mat ref, Mat sceneMat) {
@@ -944,717 +913,162 @@ class VectorMatchingTest {
                 refId, SceneCategory.A_CLEAN, "step5_synthetic",
                 BackgroundId.BG_SOLID_BLACK, Collections.emptyList(), sceneMat);
         long descriptorMs = scene.descriptorBuildMs();
-        List<AnalysisResult> results = VectorMatcher.match(refId, ref, scene, Collections.emptySet(), OUTPUT);
+        List<AnalysisResult> results = VectorMatcher.match(
+                refId, ref, scene, Collections.emptySet(), OUTPUT);
         return new MatchRun(results, descriptorMs);
     }
 
-    /**
-     * Like {@link #runMatcher} but recolours the scene foreground to the reference
-     * colour first, so CF variants actually find something to filter on.
-     * Used by {@link #record} so both the standard and CF scores are meaningful.
-     */
-    private static double normalScore(MatchRun run) { return normalScore(run.results()); }
+    private static double normalScore(MatchRun run) {
+        return MatchReportLibrary.normalScore(run.results());
+    }
 
     private static double normalScore(List<AnalysisResult> results) {
-        return results.stream()
-                .filter(r -> r.methodName().equals(VectorVariant.VECTOR_NORMAL.variantName()))
-                .findFirst()
-                .map(AnalysisResult::matchScorePercent)
-                .orElse(0.0);
+        return MatchReportLibrary.normalScore(results);
     }
 
-    /** Overload with no ground-truth rect — auto-derives GT from the scene mat's white pixels. */
+    /** Records result into the shared report and diagnostic libraries; returns score. */
     private double record(String stage, String testId, String shapeName,
-                          String sceneDesc, Mat sceneMat,
-                          MatchRun run) {
-        Rect gt = groundTruthRect(sceneMat);
-        return record(stage, testId, shapeName, sceneDesc, sceneMat, gt, run);
-    }
-
-    /**
-     * Records one matcher result into {@link #REPORT_ROWS}, capturing the full
-     * pipeline as thumbnail images.
-     * @param groundTruth bounding rect of the target shape in the scene (null = unknown)
-     */
-    private double record(String stage, String testId, String shapeName,
-                          String sceneDesc, Mat sceneMat,
-                          Rect groundTruth,
-                          MatchRun run) {
-        return record(stage, testId, shapeName, sceneDesc, sceneMat, groundTruth, run.results(), run.descriptorMs());
-    }
-
-    /**
-     * Records one matcher result into {@link #REPORT_ROWS}, capturing the full
-     * pipeline as thumbnail images.
-     *   1. Reference original (coloured, from ReferenceImageFactory)
-     *   2. Reference binary  (greyscale + threshold — what the matcher uses)
-     *   3. Scene original
-     *   4. Scene binary + Canny edges  (what contour extraction sees)
-     *   5. Scene annotated — cyan box = expected location, coloured box = detected
-     *
-     * @param groundTruth bounding rect of the target shape in the scene (null = unknown)
-     */
-    private double record(String stage, String testId, String shapeName,
-                          String sceneDesc, Mat sceneMat,
-                          Rect groundTruth,
-                          List<AnalysisResult> results, long descriptorMs) {
-        double score = normalScore(results);
-
-        ReferenceId rid = results.isEmpty() ? null : results.get(0).referenceId();
-
-        // ── Scene with ref colour applied (used as "Scene" step in both strips) ──
-        // Synthetic scenes are white-on-black; recolour the foreground to the
-        // actual reference colour so CF variants see the right colour.
-        Mat sceneWithRef = rid != null ? recolourToRef(sceneMat, rid) : sceneMat.clone();
-
-        // ── Ref original + Ref Points (raw) + Ref Points (approx) ───────────
-        String refOrigPng   = "";
-        String refPointsPng = "";
-        if (rid != null) {
-            Mat refOrig = ReferenceImageFactory.build(rid);
-            refOrigPng = matToBase64Png(refOrig);
-
-            Mat refBin = VectorMatcher.extractBinaryRaw(refOrig);
-            List<MatOfPoint> refContours = VectorMatcher.extractContoursFromBinary(refOrig);
-
-            Mat refGraphRaw = VectorMatcher.drawContourGraph(refOrig.size(), refBin, refContours, 0);
-            refPointsPng = matToBase64Png(refGraphRaw);
-            refGraphRaw.release();
-
-
-            refBin.release();
-            refOrig.release();
-        }
-
-        String sceneWithRefPng = matToBase64Png(sceneWithRef);
-
-        double eps = VectorVariant.VECTOR_NORMAL.epsilonFactor();
-
-        // ── Standard pipeline ─────────────────────────────────────────────
-        // Edges (kept for reference — shows what the raw binary looks like)
-        String sceneBinPng;
-        Mat stdBin = VectorMatcher.extractBinaryRaw(sceneWithRef);
-        {
-            Mat bgr = new Mat();
-            Imgproc.cvtColor(stdBin, bgr, Imgproc.COLOR_GRAY2BGR);
-            sceneBinPng = matToBase64Png(bgr);
-            bgr.release();
-        }
-        stdBin.release();
-
-        // All Points — colour-isolated contours (one cluster per colour),
-        // showing exactly what the matcher now extracts per colour layer.
-        String allPointsPng;
-        {
-            List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(sceneWithRef);
-            List<MatOfPoint> allContours = new ArrayList<>();
-            for (SceneColourClusters.Cluster cluster : clusters) {
-                Mat masked = SceneColourClusters.applyMask(sceneWithRef, cluster);
-                allContours.addAll(VectorMatcher.extractContoursFromBinary(masked));
-                masked.release();
-                cluster.release();
-            }
-            Mat graph = VectorMatcher.drawContourGraph(sceneWithRef.size(), null, allContours, 0);
-            allPointsPng = matToBase64Png(graph);
-            graph.release();
-        }
-
-        // ── Match annotations ─────────────────────────────────────────────
-        String sceneAnnotPng = "";
-        double iou           = Double.NaN;
-        boolean falsePositive = false;
-        {
-            VectorSignature refSig = rid != null
-                    ? VectorMatcher.buildRefSignature(ReferenceImageFactory.build(rid), eps)
-                    : null;
-
-            sceneAnnotPng = buildAnnotated(sceneWithRef, refSig, groundTruth, score);
-
-            Rect bestBbox = findBestBbox(sceneWithRef, refSig);
-            if (bestBbox != null && groundTruth != null) {
-                iou = iou(bestBbox, groundTruth);
-                falsePositive = (score > 40.0) && (iou < 0.3);
-            }
-        }
-
-        sceneWithRef.release();
-
-        // Timing — sum elapsed across all 3 variants; descriptor time from scene entry
-        long elapsedMs    = results.stream().mapToLong(AnalysisResult::elapsedMs).sum();
-
-        REPORT_ROWS.add(new ReportRow(stage, testId, shapeName, sceneDesc,
-                score, true,
-                refOrigPng, refPointsPng,
-                sceneWithRefPng, sceneBinPng,
-                allPointsPng,
-                sceneAnnotPng,
-                iou, falsePositive,
-                elapsedMs, descriptorMs));
+                          String sceneDesc, Mat sceneMat, MatchRun run) {
+        double score = report.record(stage, testId, shapeName, sceneDesc, sceneMat,
+                                     new MatchReportLibrary.MatchRun(run.results(), run.descriptorMs()));
+        diag.evaluate(
+                BackgroundId.BG_SOLID_BLACK, sceneDesc,
+                run.results().isEmpty() ? null : run.results().get(0).referenceId(),
+                40.0, 75.0, 0.5, OUTPUT);
         return score;
     }
 
-    /** Build an annotated scene image showing best-match bbox. Returns base64 PNG. */
-    private static String buildAnnotated(Mat scene, VectorSignature refSig,
-                                          Rect groundTruth, double score) {
-        Rect bestBbox = findBestBbox(scene, refSig);
-        Mat annotated = scene.clone();
-        if (groundTruth != null) {
-            Imgproc.rectangle(annotated,
-                    new Point(groundTruth.x, groundTruth.y),
-                    new Point(groundTruth.x + groundTruth.width, groundTruth.y + groundTruth.height),
-                    new Scalar(220, 220, 0), 2);
-        }
-        if (bestBbox != null && bestBbox.width > 1 && bestBbox.height > 1) {
-            Scalar col = score >= 70 ? new Scalar(0, 200, 0)
-                       : score >= 40 ? new Scalar(0, 200, 200)
-                       :               new Scalar(0, 0, 200);
-            Imgproc.rectangle(annotated,
-                    new Point(bestBbox.x, bestBbox.y),
-                    new Point(bestBbox.x + bestBbox.width, bestBbox.y + bestBbox.height),
-                    col, 3);
-        }
-        Scalar labelCol = score >= 50 ? new Scalar(0, 220, 0) : new Scalar(0, 0, 220);
-        Imgproc.putText(annotated, String.format("%.1f%%", score),
-                new Point(6, 28), Imgproc.FONT_HERSHEY_SIMPLEX, 0.55, labelCol, 2);
-        String png = matToBase64Png(annotated);
-        annotated.release();
-        return png;
-    }
-
-    /** Find the best-match bounding box for refSig in the given scene using colour-isolated extraction. */
-    private static Rect findBestBbox(Mat scene, VectorSignature refSig) {
-        if (refSig == null) return null;
-        Rect bestBbox = null;
-        double bestSim = 0;
-        double sceneArea = (double) scene.rows() * scene.cols();
-
-        List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(scene);
-        for (SceneColourClusters.Cluster cluster : clusters) {
-            Mat masked = SceneColourClusters.applyMask(scene, cluster);
-            List<MatOfPoint> contours = VectorMatcher.extractContoursFromBinary(masked);
-            masked.release();
-            cluster.release();
-            for (MatOfPoint c : contours) {
-                VectorSignature sig = VectorSignature.buildFromContour(
-                        c, VectorVariant.VECTOR_NORMAL.epsilonFactor(), sceneArea);
-                double sim = refSig.similarity(sig);
-                if (sim > bestSim) { bestSim = sim; bestBbox = Imgproc.boundingRect(c); }
-            }
-        }
-        return bestBbox;
-    }
-
-    /**
-     * Returns a copy of {@code whiteOnBlack} where every white (≥240,≥240,≥240)
-     * foreground pixel is replaced with the dominant foreground colour of the
-     * reference image for {@code rid}.
-     *
-     * <p>Used in the HTML report so the colour-filter pipeline step shows something
-     * meaningful — synthetic scenes are drawn in white but the CF filter looks for
-     * the reference colour.
-     */
-    private static Mat recolourToRef(Mat whiteOnBlack, ReferenceId rid) {
-        Mat ref  = ReferenceImageFactory.build(rid);
-        // Sample foreground colour: mean of non-black pixels in the reference
-        Mat refGrey = new Mat();
-        Mat refMask = new Mat();
-        Imgproc.cvtColor(ref, refGrey, Imgproc.COLOR_BGR2GRAY);
-        Imgproc.threshold(refGrey, refMask, 20, 255, Imgproc.THRESH_BINARY);
-        Scalar meanColour = Core.mean(ref, refMask);
-        ref.release(); refGrey.release(); refMask.release();
-
-        // Build mask of white pixels in the scene (foreground)
-        Mat sceneGrey = new Mat();
-        Mat fgMask    = new Mat();
-        Imgproc.cvtColor(whiteOnBlack, sceneGrey, Imgproc.COLOR_BGR2GRAY);
-        Imgproc.threshold(sceneGrey, fgMask, 240, 255, Imgproc.THRESH_BINARY);
-        sceneGrey.release();
-
-        // Fill a solid-colour mat with the reference colour, then copy into scene clone
-        Mat result    = whiteOnBlack.clone();
-        Mat colourFg  = new Mat(result.size(), result.type(), meanColour);
-        colourFg.copyTo(result, fgMask);
-        colourFg.release(); fgMask.release();
-        return result;
-    }
-
-    /** Intersection-over-Union of two OpenCV Rects. Returns 0 if no overlap. */
-    private static double iou(Rect a, Rect b) {
-        int ix1 = Math.max(a.x, b.x);
-        int iy1 = Math.max(a.y, b.y);
-        int ix2 = Math.min(a.x + a.width,  b.x + b.width);
-        int iy2 = Math.min(a.y + a.height, b.y + b.height);
-        if (ix2 <= ix1 || iy2 <= iy1) return 0.0;
-        double inter = (double)(ix2 - ix1) * (iy2 - iy1);
-        double aArea = (double) a.width * a.height;
-        double bArea = (double) b.width * b.height;
-        return inter / (aArea + bArea - inter);
-    }
-
-
-    private static Rect groundTruthRect(Mat shapeMat) {
-        Mat grey = new Mat(); Mat bin = new Mat();
-        Imgproc.cvtColor(shapeMat, grey, Imgproc.COLOR_BGR2GRAY);
-        Imgproc.threshold(grey, bin, 5, 255, Imgproc.THRESH_BINARY);
-        grey.release();
-        List<MatOfPoint> contours = new ArrayList<>();
-        Mat hier = new Mat();
-        Imgproc.findContours(bin, contours, hier, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
-        bin.release(); hier.release();
-        if (contours.isEmpty()) return null;
-        Rect r = Imgproc.boundingRect(contours.get(0));
-        for (int i = 1; i < contours.size(); i++) {
-            Rect b = Imgproc.boundingRect(contours.get(i));
-            int x1 = Math.min(r.x, b.x), y1 = Math.min(r.y, b.y);
-            int x2 = Math.max(r.x + r.width, b.x + b.width);
-            int y2 = Math.max(r.y + r.height, b.y + b.height);
-            r = new Rect(x1, y1, x2 - x1, y2 - y1);
-        }
-        return r;
+    private double record(String stage, String testId, String shapeName,
+                          String sceneDesc, Mat sceneMat, Rect groundTruth, MatchRun run) {
+        double score = report.record(stage, testId, shapeName, sceneDesc, sceneMat, groundTruth,
+                                     new MatchReportLibrary.MatchRun(run.results(), run.descriptorMs()));
+        return score;
     }
 
     // =========================================================================
-    // Scene builders
+    // Scene builders (kept here for test readability)
     // =========================================================================
 
     private static Mat whiteCircleOnBlack(int cx, int cy, int radius) {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        Imgproc.circle(m, new Point(cx, cy), radius, new Scalar(255, 255, 255), -1);
+        Imgproc.circle(m, new Point(cx, cy), radius, new Scalar(255,255,255), -1);
         return m;
     }
-
     private static Mat whiteRectOnBlack(int x1, int y1, int x2, int y2) {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        Imgproc.rectangle(m, new Point(x1, y1), new Point(x2, y2), new Scalar(255, 255, 255), -1);
+        Imgproc.rectangle(m, new Point(x1,y1), new Point(x2,y2), new Scalar(255,255,255), -1);
         return m;
     }
-
     private static Mat whiteTriangleOnBlack() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Imgproc.fillPoly(m, List.of(new MatOfPoint(
-                new Point(320, 130), new Point(180, 350), new Point(460, 350))),
-                new Scalar(255, 255, 255));
+                new Point(320,130), new Point(180,350), new Point(460,350))),
+                new Scalar(255,255,255));
         return m;
     }
-
     private static Mat whiteHexagonOnBlack(boolean outline) {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Point[] pts = new Point[6];
         for (int i = 0; i < 6; i++) {
-            double a = Math.toRadians(60 * i - 30);
-            pts[i] = new Point(320 + 80 * Math.cos(a), 240 + 80 * Math.sin(a));
+            double a = Math.toRadians(60*i-30);
+            pts[i] = new Point(320+80*Math.cos(a), 240+80*Math.sin(a));
         }
         MatOfPoint poly = new MatOfPoint(pts);
-        if (outline) Imgproc.polylines(m, List.of(poly), true, new Scalar(255, 255, 255), 3);
-        else         Imgproc.fillPoly(m, List.of(poly), new Scalar(255, 255, 255));
+        if (outline) Imgproc.polylines(m, List.of(poly), true, new Scalar(255,255,255), 3);
+        else         Imgproc.fillPoly(m, List.of(poly), new Scalar(255,255,255));
         return m;
     }
-
     private static Mat whitePentagonOnBlack() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Point[] pts = new Point[5];
         for (int i = 0; i < 5; i++) {
-            double a = Math.toRadians(72 * i - 90);
-            pts[i] = new Point(320 + 90 * Math.cos(a), 240 + 90 * Math.sin(a));
+            double a = Math.toRadians(72*i-90);
+            pts[i] = new Point(320+90*Math.cos(a), 240+90*Math.sin(a));
         }
-        Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255, 255, 255));
+        Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255,255,255));
         return m;
     }
-
     private static Mat whiteStarOnBlack() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Point[] pts = new Point[10];
         for (int i = 0; i < 10; i++) {
-            double a = Math.toRadians(36 * i - 90);
-            int r = (i % 2 == 0) ? 100 : 40;
-            pts[i] = new Point(320 + r * Math.cos(a), 240 + r * Math.sin(a));
+            double a = Math.toRadians(36*i-90);
+            int r = (i%2==0)?100:40;
+            pts[i] = new Point(320+r*Math.cos(a), 240+r*Math.sin(a));
         }
-        Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255, 255, 255));
+        Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255,255,255));
         return m;
     }
-
     private static Mat whiteDiamondOnBlack() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Imgproc.fillPoly(m, List.of(new MatOfPoint(
                 new Point(320,110), new Point(470,240),
                 new Point(320,370), new Point(170,240))),
-                new Scalar(255, 255, 255));
+                new Scalar(255,255,255));
         return m;
     }
-
     private static Mat whiteArrowOnBlack() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Imgproc.fillPoly(m, List.of(new MatOfPoint(
                 new Point(160,200), new Point(340,200), new Point(340,155),
                 new Point(480,240), new Point(340,325), new Point(340,280),
                 new Point(160,280))),
-                new Scalar(255, 255, 255));
+                new Scalar(255,255,255));
         return m;
     }
-
     private static Mat whiteEllipseOnBlack() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Imgproc.ellipse(m, new Point(320,240), new Size(140,70), 0, 0, 360, new Scalar(255,255,255), -1);
         return m;
     }
-
-    /** Regular octagon, r=85, centred. */
     private static Mat whiteOctagonOnBlack() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Point[] pts = new Point[8];
         for (int i = 0; i < 8; i++) {
-            double a = Math.toRadians(45 * i - 22.5);
-            pts[i] = new Point(320 + 85 * Math.cos(a), 240 + 85 * Math.sin(a));
+            double a = Math.toRadians(45*i-22.5);
+            pts[i] = new Point(320+85*Math.cos(a), 240+85*Math.sin(a));
         }
-        Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255, 255, 255));
+        Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255,255,255));
         return m;
     }
-
-    /** Thick plus/cross shape (two overlapping rectangles). */
     private static Mat whitePlusOnBlack() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        Imgproc.rectangle(m, new Point(270, 140), new Point(370, 340), new Scalar(255,255,255), -1);
-        Imgproc.rectangle(m, new Point(170, 200), new Point(470, 280), new Scalar(255,255,255), -1);
+        Imgproc.rectangle(m, new Point(270,140), new Point(370,340), new Scalar(255,255,255), -1);
+        Imgproc.rectangle(m, new Point(170,200), new Point(470,280), new Scalar(255,255,255), -1);
         return m;
     }
-
-    /** Concave arrowhead (triangle with notch cut from base). */
     private static Mat whiteConcaveArrowheadOnBlack() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        // Outer triangle tip pointing up, base notched inward
         Imgproc.fillPoly(m, List.of(new MatOfPoint(
-                new Point(320, 110),  // tip
-                new Point(460, 370),  // base-right
-                new Point(320, 290),  // notch (concave)
-                new Point(180, 370))),// base-left
-                new Scalar(255, 255, 255));
+                new Point(320,110), new Point(460,370),
+                new Point(320,290), new Point(180,370))),
+                new Scalar(255,255,255));
         return m;
     }
-
-    /** Thin cross drawn as two lines (LINE_CROSS analogue). */
     private static Mat whiteCrossOnBlack() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        Imgproc.line(m, new Point(320, 80),  new Point(320, 400), new Scalar(255,255,255), 8);
-        Imgproc.line(m, new Point(100, 240), new Point(540, 240), new Scalar(255,255,255), 8);
+        Imgproc.line(m, new Point(320,80),  new Point(320,400), new Scalar(255,255,255), 8);
+        Imgproc.line(m, new Point(100,240), new Point(540,240), new Scalar(255,255,255), 8);
         return m;
     }
-
-    /** Rectangle rotated 45° (diamond-ish aspect). */
     private static Mat whiteRot45RectOnBlack() {
-        return rotate(whiteRectOnBlack(230, 160, 410, 320), 45);
+        return rotate(whiteRectOnBlack(230,160,410,320), 45);
     }
-
-    /**
-     * Composites a white-on-black shape Mat onto a real background.
-     * On light backgrounds (average luminance > 128) the shape is darkened
-     * (bitwise-inverted) so it retains contrast against the background.
-     * Returns a new Mat; caller owns it and must release it.
-     */
     private static Mat compositeOnBackground(Mat shapeMat, BackgroundId bgId) {
-        Mat scene = BackgroundFactory.build(bgId, shapeMat.cols(), shapeMat.rows());
-
-        // Decide foreground colour: dark on light backgrounds, white on dark ones
-        Mat grey = new Mat();
-        Imgproc.cvtColor(scene, grey, Imgproc.COLOR_BGR2GRAY);
-        double bgLuma = Core.mean(grey).val[0];
-        grey.release();
-
-        Mat foreground = shapeMat.clone();
-        if (bgLuma > 100) {
-            // Invert so white shape becomes black → visible on light background
-            Core.bitwise_not(foreground, foreground);
-            // Re-zero the background portion (was 255 bg → 0 after invert, which is black = fine)
-        }
-
-        // Build mask from original shapeMat (white = foreground pixels)
-        Mat maskGrey = new Mat();
-        Mat mask     = new Mat();
-        Imgproc.cvtColor(shapeMat, maskGrey, Imgproc.COLOR_BGR2GRAY);
-        Imgproc.threshold(maskGrey, mask, 5, 255, Imgproc.THRESH_BINARY);
-        maskGrey.release();
-
-        foreground.copyTo(scene, mask);
-        foreground.release();
-        mask.release();
-        return scene;
+        return MatchDiagnosticLibrary.compositeOnBackground(shapeMat, bgId);
     }
-
     private static Mat rotate(Mat src, double angleDeg) {
-        Point centre = new Point(src.cols() / 2.0, src.rows() / 2.0);
+        Point centre = new Point(src.cols()/2.0, src.rows()/2.0);
         Mat rot = Imgproc.getRotationMatrix2D(centre, -angleDeg, 1.0);
         Mat dst = Mat.zeros(src.size(), src.type());
         Imgproc.warpAffine(src, dst, rot, src.size());
         rot.release();
         return dst;
     }
-
-    // =========================================================================
-    // HTML report builder
-    // =========================================================================
-
-    private static String matToBase64Png(Mat m) {
-        try {
-            MatOfByte buf = new MatOfByte();
-            Imgcodecs.imencode(".png", m, buf);
-            return Base64.getEncoder().encodeToString(buf.toArray());
-        } catch (Exception e) {
-            return "";
-        }
+    private static Rect groundTruthRect(Mat shapeMat) {
+        return MatchDiagnosticLibrary.groundTruthRect(shapeMat);
     }
-
-    private static String buildHtml(List<ReportRow> rows) {
-        Map<String, List<ReportRow>> byStage = new LinkedHashMap<>();
-        for (ReportRow r : rows)
-            byStage.computeIfAbsent(r.stage(), k -> new ArrayList<>()).add(r);
-
-        long total      = rows.size();
-        long passed     = rows.stream().filter(ReportRow::passed).count();
-        long falsePos   = rows.stream().filter(ReportRow::falsePositive).count();
-        long badIou     = rows.stream().filter(r -> !Double.isNaN(r.iou()) && r.iou() < 0.3 && r.score() > 40).count();
-
-        String timestamp = LocalDateTime.now()
-                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>")
-          .append("<title>Vector Matching — Step 5 Report</title><style>")
-          .append(reportCss())
-          .append("</style></head><body>")
-          .append("<div class='header'>")
-          .append("<h1>Vector Matching — Step 5 Visual Report</h1>")
-          .append("<div class='ts-line'>Generated: <span class='ts-val'>").append(timestamp).append("</span></div>")
-          .append("<p class='subtitle'>")
-          .append(total).append(" matcher calls &nbsp;·&nbsp; ")
-          .append(passed).append(" passed &nbsp;·&nbsp; ").append(total - passed).append(" failed")
-          .append(" &nbsp;·&nbsp; <span style='color:#bf55ec;font-weight:700'>").append(falsePos).append(" false positives</span>")
-          .append(" &nbsp;·&nbsp; <span style='color:#f85149'>").append(badIou).append(" bad-IoU matches</span>")
-          .append("</p>")
-          .append("<div class='legend-block'>")
-          .append("<div class='legend-title'>Pipeline (per test entry)</div>")
-          .append("<div class='legend-row'>")
-          .append("<span class='pl-step'>Ref</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Ref Points</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Scene</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Edges (ref)</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Colour Clusters</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Match</span><span class='pl-arrow'>→</span>")
-          .append("<span class='pl-step'>Score %</span>")
-          .append("</div>")
-          .append("<p style='font-size:.70rem;color:#8b949e;margin-top:5px'>")
-          .append("Colour Clusters = scene decomposed into per-colour layers; contours extracted per layer. ")
-          .append("Timing shows descriptor build ms + match ms.")
-          .append("</p>")
-          .append("</div>")
-          .append("<div class='legend-block'>")
-          .append("<div class='legend-title'>⑤ Bounding box colours</div>")
-          .append("<div class='legend-row'>")
-          .append("<span class='swatch' style='border:2px solid #00dcdc'></span><span class='swatch-label'>Cyan = expected location (ground truth)</span>")
-          .append("<span class='swatch' style='border:3px solid #00c800'></span><span class='swatch-label'>Green = detected &amp; good (≥70%)</span>")
-          .append("<span class='swatch' style='border:3px solid #00c8c8'></span><span class='swatch-label'>Amber = detected &amp; ok (≥40%)</span>")
-          .append("<span class='swatch' style='border:3px solid #c80000'></span><span class='swatch-label'>Red = detected &amp; poor (&lt;40%)</span>")
-          .append("<span class='swatch' style='border:3px solid #dc00dc'></span><span class='swatch-label'>Magenta = FALSE POSITIVE (score ok but wrong location)</span>")
-          .append("</div>")
-          .append("</div>")
-          .append("<div class='legend-block'>")
-          .append("<div class='legend-title'>Row status</div>")
-          .append("<div class='legend-row'>")
-          .append("<span class='legend-pill pass-pill'>green border = passed</span>")
-          .append("<span class='legend-pill warn-pill'>amber border = marginal</span>")
-          .append("<span class='legend-pill fail-pill'>red border = failed</span>")
-          .append("<span class='legend-pill fp-pill'>purple = false positive</span>")
-          .append("</div>")
-          .append("</div>")
-          .append("<div class='legend-block'>")
-          .append("<div class='legend-title'>IoU (Intersection over Union)</div>")
-          .append("<div class='legend-row'>")
-          .append("<span class='iou-val iou-good'>IoU ≥ 0.50 good</span>")
-          .append("<span class='iou-val iou-warn'>IoU 0.30–0.49 marginal</span>")
-          .append("<span class='iou-val iou-bad'>IoU &lt; 0.30 wrong location</span>")
-          .append("</div>")
-          .append("</div>")
-          .append("</div>");
-
-        for (Map.Entry<String, List<ReportRow>> entry : byStage.entrySet()) {
-            sb.append("<section><h2>").append(esc(entry.getKey())).append("</h2>");
-            for (ReportRow r : entry.getValue()) {
-                String passCls = r.falsePositive() ? "row fp"
-                               : r.score() >= 50   ? "row pass"
-                               : r.score() >= 40   ? "row warn"
-                               :                     "row fail";
-                sb.append("<div class='").append(passCls).append("'>");
-
-                // ── Row header ───────────────────────────────────────────
-                sb.append("<div class='row-meta'>")
-                  .append("<span class='row-id'>").append(esc(r.label())).append("</span>")
-                  .append("<span class='row-shape'>").append(esc(r.shapeName())).append("</span>")
-                  .append("<span class='row-desc'>").append(esc(r.sceneDesc())).append("</span>");
-                if (r.falsePositive())
-                    sb.append("<span class='badge fp-badge'>⚠ FALSE POSITIVE</span>");
-                if (!Double.isNaN(r.iou())) {
-                    String iouCls = r.iou() >= 0.5 ? "iou-good" : r.iou() >= 0.3 ? "iou-warn" : "iou-bad";
-                    sb.append("<span class='iou-val ").append(iouCls).append("'>")
-                      .append("IoU ").append(String.format("%.2f", r.iou())).append("</span>");
-                }
-                // Timing badge
-                sb.append("<span class='timing-badge'>")
-                  .append("desc: ").append(r.descriptorMs()).append("ms")
-                  .append(" &nbsp;·&nbsp; match: ").append(r.elapsedMs()).append("ms")
-                  .append(" &nbsp;·&nbsp; total: ").append(r.descriptorMs() + r.elapsedMs()).append("ms")
-                  .append("</span>");
-                sb.append("</div>");
-
-                // ── Pipeline row ─────────────────────────────────────────
-                sb.append("<div class='pipeline-row'>")
-                  .append("<div class='pipeline'>");
-                pipelineStep(sb, r.refOrig(),    "Ref");
-                pipelineStep(sb, r.refPoints(),  "Ref Points");
-                pipelineStep(sb, r.sceneOrig(),  "Scene");
-                pipelineStep(sb, r.sceneBin(),   "Edges (ref)");
-                pipelineStep(sb, r.allPoints(),  "Colour Clusters");
-                pipelineStep(sb, r.sceneAnnot(), "Match");
-                sb.append("</div>")
-                  .append("<div class='pipeline-score'>")
-                  .append("<span class='score-val ").append(scoreClass(r.score())).append("'>")
-                  .append(String.format("%.1f%%", r.score())).append("</span>")
-                  .append(scoreBar(r.score()))
-                  .append("</div>")
-                  .append("</div>");
-
-                sb.append("</div>"); // end row card
-            }
-            sb.append("</section>");
-        }
-        // Lightbox overlay
-        sb.append("<div id='lb' class='lb-overlay' onclick='closeLb()'>" )
-          .append("<div class='lb-box' onclick='event.stopPropagation()'>")
-          .append("<button class='lb-close' onclick='closeLb()'>✕</button>")
-          .append("<img id='lb-img' src='' alt='' class='lb-img'/>")
-          .append("<div id='lb-caption' class='lb-caption'></div>")
-          .append("</div></div>")
-          .append("<script>")
-          .append("function openLb(src,cap){")
-          .append("  document.getElementById('lb-img').src=src;")
-          .append("  document.getElementById('lb-caption').textContent=cap;")
-          .append("  document.getElementById('lb').classList.add('lb-visible');")
-          .append("}")
-          .append("function closeLb(){document.getElementById('lb').classList.remove('lb-visible');}")
-          .append("document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLb();});")
-          .append("</script>")
-          .append("</body></html>");
-        return sb.toString();
-    }
-
-    private static void pipelineStep(StringBuilder sb, String b64png, String label) {
-        sb.append("<div class='step'>");
-        if (b64png != null && !b64png.isEmpty()) {
-            String src = "data:image/png;base64," + b64png;
-            sb.append("<img src='").append(src).append("'")
-              .append(" class='step-img' alt='").append(esc(label)).append("'")
-              .append(" title='Click to enlarge'")
-              .append(" onclick=\"openLb('").append(src).append("','").append(esc(label)).append("')\"")
-              .append(" style='cursor:zoom-in'/>");
-        } else {
-            sb.append("<div class='step-img step-empty'></div>");
-        }
-        sb.append("<div class='step-label'>").append(esc(label)).append("</div></div>");
-    }
-
-    private static String scoreBar(double score) {
-        String col = score >= 70 ? "#56d364" : score >= 40 ? "#d29922" : "#f85149";
-        int w = (int) Math.max(1, Math.min(100, score));
-        return "<div class='bar-bg'><div class='bar-fill' style='width:" + w
-                + "%;background:" + col + "'></div></div>";
-    }
-
-    private static String scoreClass(double s) {
-        return s >= 70 ? "s-good" : s >= 40 ? "s-warn" : "s-bad";
-    }
-
-    private static String esc(String s) {
-        return s == null ? "" : s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;");
-    }
-
-    private static String reportCss() {
-        return """
-            *{box-sizing:border-box;margin:0;padding:0}
-            body{font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;padding:0 0 48px}
-            .header{background:#161b22;padding:20px 32px 16px;border-bottom:1px solid #30363d;margin-bottom:20px}
-            .header h1{color:#58a6ff;font-size:1.4rem;margin-bottom:4px}
-            .ts-line{font-size:.75rem;color:#8b949e;margin-bottom:6px}
-            .ts-val{color:#79c0ff;font-weight:600}
-            .subtitle{color:#8b949e;font-size:.88rem;margin-bottom:8px}
-            .pipeline-legend{display:flex;align-items:center;gap:6px;font-size:.78rem;color:#8b949e;flex-wrap:wrap}
-            .pl-step{background:#21262d;border:1px solid #30363d;border-radius:4px;padding:2px 7px}
-            .pl-step.cf-step{background:#1a2e1a;border-color:#238636;color:#56d364}
-            .pl-label{font-size:.72rem;font-weight:700;color:#8b949e;min-width:80px}
-            .pl-arrow{color:#484f58}
-            /* ── Pipeline sub-rows ── */
-            .pipeline-row{display:flex;align-items:center;gap:8px;padding:4px 0}
-            .pipeline-row + .pipeline-row{border-top:1px solid #21262d;padding-top:6px}
-            .cf-row{background:#0d1a0d;border-radius:0 0 6px 6px;margin:0 -12px -10px;padding:6px 12px}
-            .pipeline-label{font-size:.70rem;font-weight:700;color:#8b949e;
-                             white-space:nowrap;min-width:68px;flex-shrink:0}
-            .cf-label{color:#56d364}
-            .pipeline-score{display:flex;flex-direction:column;align-items:flex-end;
-                             gap:4px;flex-shrink:0;min-width:70px}
-            /* Legend block */
-            .legend-grid{display:flex;flex-direction:column;gap:10px;margin-top:10px}
-            .legend-block{background:#21262d;border:1px solid #30363d;border-radius:6px;padding:8px 12px}
-            .legend-title{font-size:.72rem;font-weight:700;color:#79c0ff;margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em}
-            .legend-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-            .swatch{display:inline-block;width:22px;height:14px;border-radius:3px;background:transparent;flex-shrink:0}
-            .swatch-label{font-size:.72rem;color:#c9d1d9;white-space:nowrap;margin-right:6px}
-            .legend-pill{font-size:.72rem;font-weight:600;border-radius:4px;padding:2px 8px;border-left:3px solid transparent}
-            .pass-pill{border-left-color:#238636;background:#0d2619;color:#56d364}
-            .warn-pill{border-left-color:#9e6a03;background:#271e0b;color:#d29922}
-            .fail-pill{border-left-color:#da3633;background:#2b0c0c;color:#f85149}
-            .fp-pill{border-left-color:#bf55ec;background:#1a0e2e;color:#d2a8ff}
-            section{padding:0 24px 16px}
-            h2{color:#79c0ff;font-size:1rem;margin:14px 0 10px;padding-bottom:4px;border-bottom:1px solid #21262d}
-            /* ── Row card ── */
-            .row{background:#161b22;border:1px solid #30363d;border-radius:8px;
-                 margin-bottom:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
-            .row.pass{border-left:3px solid #238636}
-            .row.warn{border-left:3px solid #9e6a03}
-            .row.fail{border-left:3px solid #da3633}
-            .row.fp{border-left:3px solid #bf55ec;background:#1a0e2e}
-            .fp-badge{background:#bf55ec;color:#fff;font-size:.68rem;font-weight:700;
-                      border-radius:3px;padding:1px 6px;white-space:nowrap}
-            .iou-val{font-size:.72rem;font-weight:600;white-space:nowrap}
-            .iou-good{color:#56d364}.iou-warn{color:#d29922}.iou-bad{color:#f85149}
-            .timing-badge{font-size:.68rem;color:#8b949e;background:#21262d;border:1px solid #30363d;
-                           border-radius:4px;padding:1px 8px;white-space:nowrap;margin-left:auto;flex-shrink:0}
-            .row-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-            .row-id{font-size:.72rem;font-weight:700;background:#21262d;border-radius:3px;
-                    padding:1px 6px;color:#79c0ff;white-space:nowrap}
-            .row-shape{font-size:.78rem;font-weight:600;color:#c9d1d9;white-space:nowrap}
-            .row-desc{font-size:.72rem;color:#8b949e;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-            /* ── Score ── */
-            .score-val{font-size:.82rem;font-weight:700;min-width:48px;text-align:right}
-            .s-good{color:#56d364}.s-warn{color:#d29922}.s-bad{color:#f85149}
-            .bar-bg{width:120px;height:7px;background:#21262d;border-radius:4px;overflow:hidden;flex-shrink:0}
-            .bar-fill{height:100%;border-radius:4px}
-            /* ── Pipeline strip ── */
-            .pipeline{display:flex;align-items:flex-start;gap:6px;overflow-x:auto;flex:1}
-            .step{display:flex;flex-direction:column;align-items:center;gap:3px;flex-shrink:0}
-            .step-img{width:128px;height:96px;object-fit:contain;border-radius:4px;
-                      border:1px solid #30363d;background:#0d1117;display:block;
-                      transition:border-color .15s;cursor:zoom-in}
-            .step-img:hover{border-color:#58a6ff}
-            .step-empty{width:128px;height:96px;border:1px dashed #30363d;border-radius:4px;background:#161b22}
-            .step-label{font-size:.65rem;color:#8b949e;text-align:center;max-width:128px}
-            /* ── Lightbox ── */
-            .lb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);
-                         z-index:9999;overflow:auto;padding:48px 24px 24px}
-            .lb-overlay.lb-visible{display:flex;align-items:center;justify-content:center}
-            .lb-box{position:relative;padding:8px;background:#161b22;border:1px solid #30363d;border-radius:8px}
-            .lb-img{display:block;max-width:90vw;max-height:80vh;image-rendering:pixelated;border-radius:4px}
-            .lb-caption{color:#c9d1d9;font-size:.85rem;text-align:center;margin-top:6px}
-            .lb-close{position:absolute;top:-14px;right:-14px;width:28px;height:28px;
-                      border-radius:50%;background:#21262d;border:1px solid #484f58;
-                      color:#c9d1d9;font-size:1rem;cursor:pointer;display:flex;
-                      align-items:center;justify-content:center;line-height:1;z-index:10000}
-            .lb-close:hover{background:#30363d;color:#fff}
-            """;
+    private static double iou(Rect a, Rect b) {
+        return MatchDiagnosticLibrary.iou(a, b);
     }
 }
