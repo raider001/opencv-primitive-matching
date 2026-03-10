@@ -122,135 +122,131 @@ public final class VectorMatcher {
         try {
             int refClusterCount = refSigs.size();
             List<SceneDescriptor.ClusterContours> clusters = descriptor.clusters();
+            double eps = variant.epsilonFactor();
 
-            // ── Step 1: single-contour sweep (all refs) ───────────────────
+            // ── Flatten all non-achromatic scene contours with pre-built sigs ──
+            // Each entry carries: contour, its cluster index, and its pre-built sig.
+            record CEntry(MatOfPoint c, int clusterIdx, VectorSignature sig) {}
+            List<CEntry> candidates = new ArrayList<>();
+            for (int ci = 0; ci < clusters.size(); ci++) {
+                SceneDescriptor.ClusterContours cc = clusters.get(ci);
+                for (MatOfPoint c : cc.contours) {
+                    VectorSignature sig = VectorSignature.buildFromContour(c, eps, descriptor.sceneArea);
+                    candidates.add(new CEntry(c, ci, sig));
+                }
+            }
+
+            // ── Score every possible assignment of scene contours to ref sigs ──
+            //
+            // Algorithm (greedy best-assignment):
+            //   For each scene contour c_i, compute sim(c_i, refSig_j) for all j.
+            //   Then greedily assign: pick the highest sim pair (c_i, refSig_j)
+            //   where c_i comes from a cluster not yet used and refSig_j not yet
+            //   matched. Repeat until no more matches.
+            //
+            // Score = (sum of matched sims / refClusterCount)
+            //       × (matched / refClusterCount)          ← coverage fraction
+            //
+            // The coverage fraction means:
+            //   - All N ref sigs matched          → multiplier = 1.0  (no degradation)
+            //   - Only k of N matched             → multiplier = k/N  (degrades linearly)
+            //   - 1 of N matched (single contour) → multiplier = 1/N
+            //
+            // This is fully algorithmic — works for any N without hard-coded loops.
+
             double bestScore      = 0.0;
             Rect   bestBbox       = null;
             int    bestClusterIdx = -1;
 
-            for (int ci = 0; ci < clusters.size(); ci++) {
-                SceneDescriptor.ClusterContours cc = clusters.get(ci);
-                double maxArea = 0;
-                for (MatOfPoint cx : cc.contours) {
-                    Rect rx = Imgproc.boundingRect(cx);
-                    maxArea = Math.max(maxArea, (double) rx.width * rx.height);
-                }
-                int significant = 0;
-                for (MatOfPoint cx : cc.contours) {
-                    Rect rx = Imgproc.boundingRect(cx);
-                    if ((double) rx.width * rx.height >= maxArea * 0.20) significant++;
-                }
-                // For multi-colour refs each cluster legitimately contributes one
-                // contour — only penalise excess beyond the ref's cluster count.
-                int excessSignificant = Math.max(0, significant - refClusterCount);
-                double clusterPenalty = excessSignificant > 0
-                        ? 1.0 / (Math.log(excessSignificant + 2) / Math.log(2)) : 1.0;
+            // Build sim matrix: candidates × refSigs
+            int nc = candidates.size();
+            int nr = refSigs.size();
+            double[][] simMatrix = new double[nc][nr];
+            for (int i = 0; i < nc; i++)
+                for (int j = 0; j < nr; j++)
+                    simMatrix[i][j] = refSigs.get(j).similarity(candidates.get(i).sig());
 
-                for (MatOfPoint c : cc.contours) {
-                    VectorSignature sceneSig = VectorSignature.buildFromContour(
-                            c, variant.epsilonFactor(), descriptor.sceneArea);
-                    double bestRefSim = 0.0;
-                    for (VectorSignature refSig : refSigs) {
-                        double sim = refSig.similarity(sceneSig);
-                        if (sim > bestRefSim) bestRefSim = sim;
-                    }
-                    double sim = bestRefSim * clusterPenalty;
-                    if (sim > bestScore) {
-                        bestScore      = sim;
-                        bestBbox       = Imgproc.boundingRect(c);
-                        bestClusterIdx = ci;
-                    }
+            // Try greedy assignment starting from every candidate as the "anchor"
+            // to avoid getting stuck in a single local optimum.
+            for (int anchor = 0; anchor < nc; anchor++) {
+                boolean[] usedCandidate = new boolean[nc];
+                boolean[] usedRefSig    = new boolean[nr];
+                List<Integer> matched   = new ArrayList<>();
+                Rect combinedBbox       = null;
+
+                // Build a flat list of all (sim, candidateIdx, refSigIdx) triples,
+                // sorted descending by sim — greedy picks highest available pair
+                List<int[]> triples = new ArrayList<>(nc * nr);
+                for (int i = 0; i < nc; i++)
+                    for (int j = 0; j < nr; j++)
+                        triples.add(new int[]{i, j, (int)(simMatrix[i][j] * 1_000_000)});
+                triples.sort((a, b) -> b[2] - a[2]);
+
+                // Force the anchor candidate in as the first assignment
+                int anchorBestJ = 0;
+                for (int j = 1; j < nr; j++)
+                    if (simMatrix[anchor][j] > simMatrix[anchor][anchorBestJ]) anchorBestJ = j;
+                usedCandidate[anchor] = true;
+                usedRefSig[anchorBestJ] = true;
+                matched.add(anchor);
+                combinedBbox = Imgproc.boundingRect(candidates.get(anchor).c());
+
+                // Greedy fill remaining ref sigs from different clusters
+                for (int[] triple : triples) {
+                    int ci = triple[0], rj = triple[1];
+                    if (usedCandidate[ci] || usedRefSig[rj]) continue;
+                    // Must come from a cluster not already represented in the match set
+                    int clusterOfCi = candidates.get(ci).clusterIdx();
+                    boolean clusterAlreadyUsed = false;
+                    for (int m : matched)
+                        if (candidates.get(m).clusterIdx() == clusterOfCi) { clusterAlreadyUsed = true; break; }
+                    if (clusterAlreadyUsed) continue;
+                    usedCandidate[ci] = true;
+                    usedRefSig[rj]    = true;
+                    matched.add(ci);
+                    combinedBbox = unionRect(combinedBbox, Imgproc.boundingRect(candidates.get(ci).c()));
+                    if (matched.size() == nr) break; // all ref sigs covered
+                }
+
+                // Score: average sim of matched pairs × coverage fraction
+                double sumSim = 0.0;
+                for (int m : matched) {
+                    // find which refSig this candidate was matched to
+                    double best = 0;
+                    for (int j = 0; j < nr; j++)
+                        if (simMatrix[m][j] > best) best = simMatrix[m][j];
+                    sumSim += best;
+                }
+                double coverage = (double) matched.size() / nr;
+                double rawScore = (sumSim / nr) * coverage;
+
+                // Intra-cluster noise penalty: if a single cluster has many
+                // significant contours beyond what the ref expects, penalise
+                int clusterOfAnchor = candidates.get(anchor).clusterIdx();
+                SceneDescriptor.ClusterContours anchorCluster = clusters.get(clusterOfAnchor);
+                double maxA = anchorCluster.contours.stream()
+                        .mapToDouble(c -> { Rect r = Imgproc.boundingRect(c); return (double)r.width*r.height; })
+                        .max().orElse(1);
+                long sig = anchorCluster.contours.stream()
+                        .filter(c -> { Rect r = Imgproc.boundingRect(c); return (double)r.width*r.height >= maxA*0.20; })
+                        .count();
+                int excess = Math.max(0, (int)sig - refClusterCount);
+                double noisePenalty = excess > 0 ? 1.0 / (Math.log(excess + 2) / Math.log(2)) : 1.0;
+                rawScore *= noisePenalty;
+
+                if (rawScore > bestScore) {
+                    bestScore      = rawScore;
+                    bestBbox       = combinedBbox;
+                    bestClusterIdx = clusterOfAnchor;
                 }
             }
 
-            // ── Step 1 penalty: penalise single-contour result by cluster-count mismatch ──
+            // ── Cluster-count penalty on the winning bbox ─────────────────
+            // Only for multi-colour refs: compare chromatic clusters in the
+            // bbox against the ref's expected count.
             if (bestBbox != null && refClusterCount > 1) {
                 bestScore = applyClusterCountPenalty(
                         bestScore, bestBbox, refClusterCount, clusters, sceneForAnnotation);
-            }
-
-            // ── Step 2: multi-contour cross-cluster sweep (multi-colour refs only) ──
-            // Try combinations of contours from different clusters. Score = average
-            // similarity × coverage fraction so covering all N ref clusters always
-            // beats covering just 1, even with lower individual sims.
-            // Step 2 is evaluated independently — its best penalised result then
-            // competes against the penalised step 1 result.
-            if (refClusterCount > 1) {
-                record ContourEntry(MatOfPoint c, int clusterIdx) {}
-                List<ContourEntry> all = new ArrayList<>();
-                for (int ci = 0; ci < clusters.size(); ci++) {
-                    SceneDescriptor.ClusterContours cc = clusters.get(ci);
-                    if (cc.achromatic) continue;
-                    for (MatOfPoint c : cc.contours)
-                        all.add(new ContourEntry(c, ci));
-                }
-
-                int n = all.size();
-                List<VectorSignature> allSigs = new ArrayList<>(n);
-                for (ContourEntry e : all)
-                    allSigs.add(VectorSignature.buildFromContour(
-                            e.c(), variant.epsilonFactor(), descriptor.sceneArea));
-
-                double step2Best      = 0.0;
-                Rect   step2Bbox      = null;
-                int    step2ClusterIdx = -1;
-
-                // Try pairs
-                for (int i = 0; i < n; i++) {
-                    for (int j = i + 1; j < n; j++) {
-                        if (all.get(i).clusterIdx() == all.get(j).clusterIdx()) continue;
-                        final VectorSignature si = allSigs.get(i), sj = allSigs.get(j);
-                        double simI = refSigs.stream().mapToDouble(r -> r.similarity(si)).max().orElse(0);
-                        double simJ = refSigs.stream().mapToDouble(r -> r.similarity(sj)).max().orElse(0);
-                        double coverage = 2.0 / refClusterCount;
-                        double combined = ((simI + simJ) / 2.0) * coverage;
-                        if (combined > step2Best) {
-                            step2Best       = combined;
-                            step2Bbox       = unionRect(Imgproc.boundingRect(all.get(i).c()),
-                                                        Imgproc.boundingRect(all.get(j).c()));
-                            step2ClusterIdx = all.get(i).clusterIdx();
-                        }
-                    }
-                }
-
-                // Try triplets
-                if (refClusterCount >= 3) {
-                    for (int i = 0; i < n; i++) {
-                        for (int j = i + 1; j < n; j++) {
-                            if (all.get(i).clusterIdx() == all.get(j).clusterIdx()) continue;
-                            for (int k = j + 1; k < n; k++) {
-                                int ck = all.get(k).clusterIdx();
-                                if (ck == all.get(i).clusterIdx() || ck == all.get(j).clusterIdx()) continue;
-                                final VectorSignature si = allSigs.get(i), sj = allSigs.get(j), sk = allSigs.get(k);
-                                double simI = refSigs.stream().mapToDouble(r -> r.similarity(si)).max().orElse(0);
-                                double simJ = refSigs.stream().mapToDouble(r -> r.similarity(sj)).max().orElse(0);
-                                double simK = refSigs.stream().mapToDouble(r -> r.similarity(sk)).max().orElse(0);
-                                double coverage = Math.min(1.0, 3.0 / refClusterCount);
-                                double combined = ((simI + simJ + simK) / 3.0) * coverage;
-                                if (combined > step2Best) {
-                                    step2Best       = combined;
-                                    step2Bbox       = unionRect(
-                                            unionRect(Imgproc.boundingRect(all.get(i).c()),
-                                                      Imgproc.boundingRect(all.get(j).c())),
-                                            Imgproc.boundingRect(all.get(k).c()));
-                                    step2ClusterIdx = all.get(i).clusterIdx();
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Apply cluster-count penalty to the step 2 candidate independently
-                if (step2Bbox != null) {
-                    step2Best = applyClusterCountPenalty(
-                            step2Best, step2Bbox, refClusterCount, clusters, sceneForAnnotation);
-                    // Take the better of step 1 and step 2 after both are penalised
-                    if (step2Best > bestScore) {
-                        bestScore      = step2Best;
-                        bestBbox       = step2Bbox;
-                        bestClusterIdx = step2ClusterIdx;
-                    }
-                }
             }
 
             double scorePercent = bestScore * 100.0;

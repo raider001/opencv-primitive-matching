@@ -159,6 +159,24 @@ class VectorMatcherDiagnosticTest {
         runFocusedMultiColour(ReferenceId.BICOLOUR_CIRCLE_RING);
     }
 
+    @Test
+    @DisplayName("Focused: BICOLOUR_CROSSHAIR_RING on own scene")
+    void focusedBicolourCrosshairRing() {
+        runFocusedMultiColour(ReferenceId.BICOLOUR_CROSSHAIR_RING);
+    }
+
+    @Test
+    @DisplayName("Focused: COMPOUND_CROSS_IN_CIRCLE on own scene")
+    void focusedCompoundCrossInCircle() {
+        runFocusedMultiColour(ReferenceId.COMPOUND_CROSS_IN_CIRCLE);
+    }
+
+    @Test
+    @DisplayName("Focused: BICOLOUR_CHEVRON_FILLED on own scene")
+    void focusedBicolourChevronFilled() {
+        runFocusedMultiColour(ReferenceId.BICOLOUR_CHEVRON_FILLED);
+    }
+
     /** Builds a 640x480 scene with the ref scaled 3x centred on black. */
     private static Mat buildMultiColourScene(ReferenceId id) {
         Mat ref = ReferenceImageFactory.build(id);

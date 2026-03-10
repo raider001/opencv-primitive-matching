@@ -71,15 +71,19 @@ public final class SceneDescriptor {
     public static List<MatOfPoint> contoursFromMask(Mat mask) {
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
-        Mat eroded = new Mat();
-        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
-        Imgproc.erode(mask, eroded, kernel);
-        kernel.release();
+        // Zero the 1px border on a clone so any contour that literally touches
+        // the image edge is disconnected — but thin interior strokes are untouched.
+        // (Morphological erosion would destroy 2px-thick lines such as crosshairs.)
+        Mat bordered = mask.clone();
+        bordered.row(0).setTo(Scalar.all(0));
+        bordered.row(bordered.rows() - 1).setTo(Scalar.all(0));
+        bordered.col(0).setTo(Scalar.all(0));
+        bordered.col(bordered.cols() - 1).setTo(Scalar.all(0));
         // RETR_LIST finds ALL contours including inner ones (COMPOUND shapes).
-        Imgproc.findContours(eroded, contours, hierarchy,
+        Imgproc.findContours(bordered, contours, hierarchy,
                 Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE);
         hierarchy.release();
-        eroded.release();
+        bordered.release();
         contours.removeIf(c -> Imgproc.contourArea(c) < MIN_AREA);
 
         // Deduplicate: RETR_LIST returns both inner and outer traces of the same
