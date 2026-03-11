@@ -37,6 +37,111 @@ public final class SceneColourClusters {
         public void release() { mask.release(); }
     }
     private SceneColourClusters() {}
+
+    // =========================================================================
+    // Border-pixel variant
+    // =========================================================================
+
+    /**
+     * Identical to {@link #extract(Mat)} but restricts the chromatic hue-histogram
+     * to <em>border pixels only</em> — i.e. the pixels that sit on the outline of
+     * each shape rather than its filled interior.
+     *
+     * <p>This is achieved by computing a morphological gradient (dilate − erode)
+     * on the full chromatic mask before building the hue histogram.  The resulting
+     * set of peaks therefore reflects what colours appear <em>at the edges</em> of
+     * shapes, which is more robust for:
+     * <ul>
+     *   <li>Filled shapes whose interior and outline share a colour (no change).</li>
+     *   <li>Ring / outline shapes where the fill is background — avoids counting the
+     *       background colour as a foreground cluster.</li>
+     *   <li>Complex scenes where a large background fill would dominate a full-image
+     *       histogram but is absent from the actual shape boundaries.</li>
+     * </ul>
+     *
+     * <p>Achromatic cluster detection (bright / dark split) is unchanged — it still
+     * operates on the full image because achromatic regions are identified by
+     * brightness, not hue, and the border vs fill distinction is less meaningful
+     * for greyscale shapes.
+     */
+    public static List<Cluster> extractFromBorderPixels(Mat bgrScene) {
+        Mat hsv = new Mat();
+        Imgproc.cvtColor(bgrScene, hsv, Imgproc.COLOR_BGR2HSV);
+
+        // Full chromatic mask (saturation + brightness thresholds)
+        Mat chromaticMask = new Mat();
+        Core.inRange(hsv,
+                new Scalar(0,   MIN_SAT, MIN_VAL),
+                new Scalar(179, 255,     255),
+                chromaticMask);
+
+        // Morphological gradient = dilation − erosion → border pixels only
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+        Mat borderMask = new Mat();
+        Imgproc.morphologyEx(chromaticMask, borderMask, Imgproc.MORPH_GRADIENT, kernel);
+        kernel.release();
+        chromaticMask.release();
+
+        // Zero the 1px image border so edge artefacts from the morphological
+        // gradient don't create spurious hue peaks or frame-spanning contours.
+        borderMask.row(0).setTo(Scalar.all(0));
+        borderMask.row(borderMask.rows() - 1).setTo(Scalar.all(0));
+        borderMask.col(0).setTo(Scalar.all(0));
+        borderMask.col(borderMask.cols() - 1).setTo(Scalar.all(0));
+
+        // Build hue histogram restricted to border pixels
+        float[] hueHist = buildHueHistogram(hsv, borderMask);
+        borderMask.release();
+
+        List<Integer> peaks = findPeaks(hueHist, MIN_PIXEL_COUNT);
+        List<Cluster> clusters = new ArrayList<>();
+
+        // Chromatic clusters (full mask per hue — border only for discovery)
+        for (int peakHue : peaks) {
+            if (clusters.size() >= MAX_CLUSTERS) break;
+            Mat clusterMask = hueRangeMask(hsv, peakHue, HUE_TOLERANCE);
+            if (Core.countNonZero(clusterMask) < MIN_PIXEL_COUNT) {
+                clusterMask.release();
+                continue;
+            }
+            zeroImageBorder(clusterMask);
+            clusters.add(new Cluster(clusterMask, peakHue, false));
+        }
+
+        // Achromatic clusters — unchanged (full-image brightness split)
+        Mat brightAchromatic = new Mat();
+        Core.inRange(hsv,
+                new Scalar(0,   0,       BRIGHT_VAL_THRESHOLD),
+                new Scalar(179, MIN_SAT, 255),
+                brightAchromatic);
+        Mat darkAchromatic = new Mat();
+        Core.inRange(hsv,
+                new Scalar(0,   0, 0),
+                new Scalar(179, 255, BRIGHT_VAL_THRESHOLD),
+                darkAchromatic);
+
+        if (Core.countNonZero(brightAchromatic) >= MIN_PIXEL_COUNT) {
+            zeroImageBorder(brightAchromatic);
+            clusters.add(new Cluster(brightAchromatic, Double.NaN, true));
+        } else { brightAchromatic.release(); }
+
+        if (Core.countNonZero(darkAchromatic) >= MIN_PIXEL_COUNT) {
+            zeroImageBorder(darkAchromatic);
+            clusters.add(new Cluster(darkAchromatic, Double.NaN, true));
+        } else { darkAchromatic.release(); }
+
+        hsv.release();
+        return clusters;
+    }
+
+    /** Zero the 1-pixel image border of a mask in-place to suppress edge artefacts. */
+    private static void zeroImageBorder(Mat mask) {
+        mask.row(0).setTo(Scalar.all(0));
+        mask.row(mask.rows() - 1).setTo(Scalar.all(0));
+        mask.col(0).setTo(Scalar.all(0));
+        mask.col(mask.cols() - 1).setTo(Scalar.all(0));
+    }
+
     // =========================================================================
     public static List<Cluster> extract(Mat bgrScene) {
         Mat hsv = new Mat();
@@ -71,16 +176,19 @@ public final class SceneColourClusters {
                 clusterMask.release();
                 continue;
             }
+            zeroImageBorder(clusterMask);
             clusters.add(new Cluster(clusterMask, peakHue, false));
         }
         // Bright achromatic cluster
         if (Core.countNonZero(brightAchromatic) >= MIN_PIXEL_COUNT) {
+            zeroImageBorder(brightAchromatic);
             clusters.add(new Cluster(brightAchromatic, Double.NaN, true));
         } else {
             brightAchromatic.release();
         }
         // Dark achromatic cluster
         if (Core.countNonZero(darkAchromatic) >= MIN_PIXEL_COUNT) {
+            zeroImageBorder(darkAchromatic);
             clusters.add(new Cluster(darkAchromatic, Double.NaN, true));
         } else {
             darkAchromatic.release();
