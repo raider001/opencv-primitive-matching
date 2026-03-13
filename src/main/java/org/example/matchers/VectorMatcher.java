@@ -374,12 +374,14 @@ public final class VectorMatcher {
      *   <li>Their contourArea ratio (min/max) exceeds {@value #DEDUP_AREA_RATIO_MIN}
      *       — confirming same boundary, not an inner/outer ring pair</li>
      * </ul>
-     * Chromatic entries are never deduplicated.
+     * Chromatic entries are never deduplicated against each other, but a chromatic
+     * entry and a dark achromatic entry tracing the same physical boundary are
+     * collapsed (Pass 2) using the same IoU + area-ratio conditions.
      */
     private static List<SceneContourEntry> deduplicateAchromaticPairs(
             List<SceneContourEntry> entries) {
 
-        // Find the bright and dark achromatic entries (at most one each)
+        // ── Pass 1: bright/dark achromatic pair ───────────────────────────
         SceneContourEntry brightEntry = null;
         SceneContourEntry darkEntry   = null;
         for (SceneContourEntry e : entries) {
@@ -389,24 +391,49 @@ public final class VectorMatcher {
             }
         }
 
-        if (brightEntry == null || darkEntry == null) return entries; // nothing to dedup
+        List<SceneContourEntry> result = new ArrayList<>(entries);
 
-        Rect   bb     = Imgproc.boundingRect(brightEntry.contour);
-        Rect   db     = Imgproc.boundingRect(darkEntry.contour);
-        double iou    = bboxIoU(bb, db);
-        double areaB  = contourArea(brightEntry.contour);
-        double areaD  = contourArea(darkEntry.contour);
-        double ratio  = (areaB > 0 && areaD > 0)
-                ? Math.min(areaB, areaD) / Math.max(areaB, areaD) : 0.0;
+        if (brightEntry != null && darkEntry != null) {
+            Rect   bb     = Imgproc.boundingRect(brightEntry.contour);
+            Rect   db     = Imgproc.boundingRect(darkEntry.contour);
+            double iou    = bboxIoU(bb, db);
+            double areaB  = contourArea(brightEntry.contour);
+            double areaD  = contourArea(darkEntry.contour);
+            double ratio  = (areaB > 0 && areaD > 0)
+                    ? Math.min(areaB, areaD) / Math.max(areaB, areaD) : 0.0;
 
-        if (iou < DEDUP_IOU_MIN || ratio < DEDUP_AREA_RATIO_MIN) {
-            return entries; // different boundaries — keep both
+            if (iou >= DEDUP_IOU_MIN && ratio >= DEDUP_AREA_RATIO_MIN) {
+                SceneContourEntry discard = (areaB >= areaD) ? darkEntry : brightEntry;
+                result.remove(discard);
+                if (discard == darkEntry) darkEntry = null;
+                else brightEntry = null;
+            }
         }
 
-        // Same physical boundary — keep the one with the larger contour area
-        SceneContourEntry discard = (areaB >= areaD) ? darkEntry : brightEntry;
-        List<SceneContourEntry> result = new ArrayList<>(entries);
-        result.remove(discard);
+        // ── Pass 2: chromatic/dark achromatic pair ────────────────────────
+        // A coloured scene shape produces a chromatic cluster (colour side) and a
+        // dark achromatic cluster (background side) at the same boundary.  Collapse
+        // to the chromatic entry so matchedCount stays in sync with a ref that has
+        // already been deduped the same way.
+        if (darkEntry != null) {
+            Rect   db    = Imgproc.boundingRect(darkEntry.contour);
+            double areaD = contourArea(darkEntry.contour);
+            boolean shouldRemoveDark = false;
+            for (SceneContourEntry e : result) {
+                if (e.achromatic) continue;
+                Rect   cb    = Imgproc.boundingRect(e.contour);
+                double areaC = contourArea(e.contour);
+                double iou   = bboxIoU(cb, db);
+                double ratio = (areaC > 0 && areaD > 0)
+                        ? Math.min(areaC, areaD) / Math.max(areaC, areaD) : 0.0;
+                if (iou >= DEDUP_IOU_MIN && ratio >= DEDUP_AREA_RATIO_MIN) {
+                    shouldRemoveDark = true;
+                    break;
+                }
+            }
+            if (shouldRemoveDark) result.remove(darkEntry);
+        }
+
         return result;
     }
 
@@ -454,8 +481,22 @@ public final class VectorMatcher {
     }
 
     /**
-     * Applies the same bright/dark achromatic dedup rule to the reference clusters.
-     * Keeps the cluster with the larger contour area; releases and removes the other.
+     * Collapses ref clusters that trace the same physical boundary from opposite sides.
+     *
+     * <p><b>Pass 1 — bright/dark achromatic pair:</b> a white/grey shape on a dark
+     * background produces a bright achromatic cluster (bright side) and a dark
+     * achromatic cluster (dark side) at the same location.
+     *
+     * <p><b>Pass 2 — chromatic/dark achromatic pair:</b> a coloured shape (e.g. red
+     * {@code CIRCLE_FILLED}) on a dark background produces a chromatic cluster (colour
+     * side) and a dark achromatic cluster (background side) at the same location.
+     * Without this pass, {@code refCount=2} while a white-on-black scene candidate is
+     * correctly deduped to {@code matchedCount=1}, causing a spurious
+     * {@code exp(-1.5)=0.22} Layer 1 penalty on every simple coloured shape.
+     *
+     * <p>Both passes use the same safety conditions (bbox IoU > 0.5 AND contourArea
+     * ratio > 0.90) so that genuine two-boundary shapes (e.g. {@code HEXAGON_OUTLINE},
+     * whose inner void has area ratio ≈ 0.79 &lt; 0.90) are never collapsed.
      */
     private static List<RefCluster> deduplicateRefClusters(List<RefCluster> clusters) {
         RefCluster brightRef = null, darkRef = null;
@@ -465,25 +506,54 @@ public final class VectorMatcher {
                 else                     darkRef   = rc;
             }
         }
-        if (brightRef == null || darkRef == null) return clusters;
 
-        // Use the primary contour bbox for IoU comparison
-        Rect   bb    = primaryBbox(brightRef);
-        Rect   db    = primaryBbox(darkRef);
-        double iou   = bboxIoU(bb, db);
-        double areaB = brightRef.maxContourArea;
-        double areaD = darkRef.maxContourArea;
-        double ratio = (areaB > 0 && areaD > 0)
-                ? Math.min(areaB, areaD) / Math.max(areaB, areaD) : 0.0;
+        List<RefCluster> result = new ArrayList<>(clusters);
 
-        if (iou < DEDUP_IOU_MIN || ratio < DEDUP_AREA_RATIO_MIN) return clusters;
+        // ── Pass 1: bright/dark achromatic pair ───────────────────────────
+        if (brightRef != null && darkRef != null) {
+            Rect   bb    = primaryBbox(brightRef);
+            Rect   db    = primaryBbox(darkRef);
+            double iou   = bboxIoU(bb, db);
+            double areaB = brightRef.maxContourArea;
+            double areaD = darkRef.maxContourArea;
+            double ratio = (areaB > 0 && areaD > 0)
+                    ? Math.min(areaB, areaD) / Math.max(areaB, areaD) : 0.0;
 
-        // Same physical boundary — keep the one with the larger contour area
-        RefCluster discard = (areaB >= areaD) ? darkRef : brightRef;
-        List<RefCluster> deduped = new ArrayList<>(clusters);
-        deduped.remove(discard);
-        discard.release();
-        return deduped;
+            if (iou >= DEDUP_IOU_MIN && ratio >= DEDUP_AREA_RATIO_MIN) {
+                RefCluster discard = (areaB >= areaD) ? darkRef : brightRef;
+                result.remove(discard);
+                discard.release();
+                // Track whether darkRef was removed so Pass 2 knows
+                if (discard == darkRef) darkRef = null;
+                else brightRef = null;
+            }
+        }
+
+        // ── Pass 2: chromatic/dark achromatic pair ────────────────────────
+        // Only runs when a dark achromatic cluster survived Pass 1.
+        if (darkRef != null) {
+            Rect   db    = primaryBbox(darkRef);
+            double areaD = darkRef.maxContourArea;
+            boolean shouldRemoveDark = false;
+            for (RefCluster rc : result) {
+                if (rc.achromatic) continue;   // only compare against chromatic
+                Rect   cb    = primaryBbox(rc);
+                double areaC = rc.maxContourArea;
+                double iou   = bboxIoU(cb, db);
+                double ratio = (areaC > 0 && areaD > 0)
+                        ? Math.min(areaC, areaD) / Math.max(areaC, areaD) : 0.0;
+                if (iou >= DEDUP_IOU_MIN && ratio >= DEDUP_AREA_RATIO_MIN) {
+                    shouldRemoveDark = true;
+                    break;
+                }
+            }
+            if (shouldRemoveDark) {
+                result.remove(darkRef);
+                darkRef.release();
+            }
+        }
+
+        return result;
     }
 
     /** Returns the bounding rect of the primary (largest-area) contour in a ref cluster. */

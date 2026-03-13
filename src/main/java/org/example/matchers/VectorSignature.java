@@ -675,18 +675,28 @@ public final class VectorSignature {
 
         // ── Segment-score coherence boost ────────────────────────────────
         // When all OTHER geometric features (type, circularity, solidity, vertices,
-        // aspect ratio) agree strongly (each > 0.80), the SegmentDescriptor should
-        // not drag the total score below what the geometry implies.  This primarily
-        // helps ellipses and circles whose SegmentDescriptor varies across different
-        // contour densities but whose shape metrics are highly consistent.
-        // The boost floors segScore at 0.60 only when the coherence is very high
-        // (all metrics ≥ 0.80 and type = exact match), preventing over-penalisation.
+        // aspect ratio) agree strongly, the SegmentDescriptor should not drag the
+        // total score below what the geometry implies.  This primarily helps ellipses
+        // and circles whose SegmentDescriptor varies across different contour
+        // densities but whose shape metrics are highly consistent.
+        //
+        // Floor levels are tiered by agreement strength:
+        //   • Very strong (all ≥ 0.95, exact type match): floor at 0.85
+        //     → clean self-matches get L3 ≥ ~0.93, producing overall score ≥ ~90%
+        //   • Strong (all ≥ 0.80, exact type match):      floor at 0.72
+        //     → good-quality matches are not suppressed below ~85% overall
         if (typeScore >= 1.0
+                && circScore     >= 0.95
+                && solidityScore >= 0.95
+                && vertexScore   >= 0.95
+                && aspectScore   >= 0.90) {
+            segScore = Math.max(segScore, 0.85);
+        } else if (typeScore >= 1.0
                 && circScore     >= 0.80
                 && solidityScore >= 0.80
                 && vertexScore   >= 0.80
                 && aspectScore   >= 0.70) {
-            segScore = Math.max(segScore, 0.60);
+            segScore = Math.max(segScore, 0.72);
         }
 
         // Weights — segmentDescriptor is the primary structural discriminator.
