@@ -27,25 +27,43 @@ public final class SceneDescriptor {
         /** Centre hue (OpenCV half-degrees 0-179). NaN = achromatic cluster. */
         public final double hue;
         public final boolean achromatic;
+        /**
+         * True if this is a BRIGHT achromatic cluster (white/light-grey).
+         * False for chromatic or dark-achromatic (black/dark-grey) clusters.
+         */
+        public final boolean brightAchromatic;
         /** True if this entry is the combined outer envelope of all chromatic clusters. */
         public final boolean envelope;
-        ClusterContours(List<MatOfPoint> contours, double hue, boolean achromatic) {
-            this(contours, hue, achromatic, false);
+        ClusterContours(List<MatOfPoint> contours, double hue, boolean achromatic,
+                        boolean brightAchromatic) {
+            this(contours, hue, achromatic, brightAchromatic, false);
         }
-        ClusterContours(List<MatOfPoint> contours, double hue, boolean achromatic, boolean envelope) {
-            this.contours   = contours;
-            this.hue        = hue;
-            this.achromatic = achromatic;
-            this.envelope   = envelope;
+        ClusterContours(List<MatOfPoint> contours, double hue, boolean achromatic,
+                        boolean brightAchromatic, boolean envelope) {
+            this.contours        = contours;
+            this.hue             = hue;
+            this.achromatic      = achromatic;
+            this.brightAchromatic = brightAchromatic;
+            this.envelope        = envelope;
         }
     }
     private final List<ClusterContours> clusters;
     public final double sceneArea;
     public final long buildMs;
-    private SceneDescriptor(List<ClusterContours> clusters, double sceneArea, long buildMs) {
-        this.clusters  = clusters;
-        this.sceneArea = sceneArea;
-        this.buildMs   = buildMs;
+    /**
+     * Binary mask (255 = chromatic pixel, 0 = achromatic/background).
+     * Built by OR-ing all chromatic cluster masks during construction.
+     * Used for exact pixel-level chromatic contamination checks.
+     * Release via {@link #release()}.
+     */
+    public final Mat combinedChromaticMask;
+
+    private SceneDescriptor(List<ClusterContours> clusters, double sceneArea,
+                            long buildMs, Mat combinedChromaticMask) {
+        this.clusters              = clusters;
+        this.sceneArea             = sceneArea;
+        this.buildMs               = buildMs;
+        this.combinedChromaticMask = combinedChromaticMask;
     }
     /**
      * Builds a SceneDescriptor from a BGR scene.
@@ -59,14 +77,31 @@ public final class SceneDescriptor {
     public static SceneDescriptor build(Mat bgrScene) {
         long t0    = System.currentTimeMillis();
         double area = (double) bgrScene.rows() * bgrScene.cols();
-        List<SceneColourClusters.Cluster> rawClusters = SceneColourClusters.extract(bgrScene);
+        // Use extractFromBorderPixels so scene cluster discovery is edge-aligned —
+        // consistent with how ref clusters are identified (both sides use border pixels).
+        List<SceneColourClusters.Cluster> rawClusters =
+                SceneColourClusters.extractFromBorderPixels(bgrScene);
         List<ClusterContours> result = new ArrayList<>(rawClusters.size());
-        for (SceneColourClusters.Cluster cluster : rawClusters) {
-            List<MatOfPoint> contours = contoursFromMask(cluster.mask);
-            result.add(new ClusterContours(contours, cluster.hue, cluster.achromatic));
+
+        // Build combined chromatic mask using full (non-border) chromatic pixels —
+        // needed for Fix B contamination check which counts filled chromatic pixels
+        // inside a candidate bbox. Border-only pixels would be too sparse for that.
+        Mat combinedChromatic = Mat.zeros(bgrScene.rows(), bgrScene.cols(), CvType.CV_8UC1);
+        List<SceneColourClusters.Cluster> fullClusters = SceneColourClusters.extract(bgrScene);
+        for (SceneColourClusters.Cluster cluster : fullClusters) {
+            if (!cluster.achromatic) {
+                Core.bitwise_or(combinedChromatic, cluster.mask, combinedChromatic);
+            }
             cluster.release();
         }
-        return new SceneDescriptor(result, area, System.currentTimeMillis() - t0);
+
+        for (SceneColourClusters.Cluster cluster : rawClusters) {
+            List<MatOfPoint> contours = contoursFromMask(cluster.mask);
+            result.add(new ClusterContours(contours, cluster.hue, cluster.achromatic,
+                    cluster.brightAchromatic));
+            cluster.release();
+        }
+        return new SceneDescriptor(result, area, System.currentTimeMillis() - t0, combinedChromatic);
     }
 
     /**
@@ -179,5 +214,6 @@ public final class SceneDescriptor {
         for (ClusterContours cc : clusters)
             for (MatOfPoint c : cc.contours) c.release();
         clusters.clear();
+        if (combinedChromaticMask != null) combinedChromaticMask.release();
     }
 }

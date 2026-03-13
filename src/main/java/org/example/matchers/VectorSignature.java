@@ -406,24 +406,56 @@ public final class VectorSignature {
     /**
      * Concavity ratio = total depth of convexity defects / perimeter.
      * Returns 0 for fully convex contours.
+     *
+     * <p>Self-intersecting contours (common in noisy scene masks) cause
+     * {@code convexityDefects} to throw because the hull indices become
+     * non-monotonic.  We sanitise the contour with {@code approxPolyDP}
+     * before computing defects — this collapses tiny loops and removes
+     * self-intersections without materially changing the shape.</p>
      */
     static double computeConcavityRatio(MatOfPoint contour, double perimeter) {
         try {
-            MatOfInt    hull    = new MatOfInt();
-            MatOfInt4   defects = new MatOfInt4();
-            MatOfPoint2f c2f   = new MatOfPoint2f(contour.toArray());
-            Imgproc.convexHull(contour, hull, false);
-            if (hull.rows() < 3) { hull.release(); c2f.release(); return 0.0; }
-            Imgproc.convexityDefects(contour, hull, defects);
+            // ── Sanitise: approxPolyDP removes self-intersections ────────
+            MatOfPoint2f raw2f = new MatOfPoint2f(contour.toArray());
+            double eps = Math.max(1.0, 0.005 * perimeter);   // very light — just fix crossings
+            MatOfPoint2f approxF = new MatOfPoint2f();
+            Imgproc.approxPolyDP(raw2f, approxF, eps, true);
+            raw2f.release();
+
+            MatOfPoint clean = new MatOfPoint();
+            approxF.convertTo(clean, CvType.CV_32S);
+            approxF.release();
+
+            if (clean.rows() < 3) { clean.release(); return 0.0; }
+
+            // ── Convex hull (index form, counter-clockwise = false) ──────
+            MatOfInt  hull    = new MatOfInt();
+            MatOfInt4 defects = new MatOfInt4();
+            Imgproc.convexHull(clean, hull, false);
+            if (hull.rows() < 3) { hull.release(); clean.release(); return 0.0; }
+
+            // ── Verify hull indices are monotonically increasing ─────────
+            // Non-monotonic indices mean the simplified contour still has a
+            // tiny self-intersection; in that case we return 0 safely.
+            int[] hullIdx = new int[(int) hull.total()];
+            hull.get(0, 0, hullIdx);
+            boolean mono = true;
+            for (int i = 1; i < hullIdx.length; i++) {
+                if (hullIdx[i] <= hullIdx[i - 1]) { mono = false; break; }
+            }
+            if (!mono) { hull.release(); clean.release(); return 0.0; }
+
+            // ── Compute defect depths ────────────────────────────────────
+            Imgproc.convexityDefects(clean, hull, defects);
             double totalDepth = 0.0;
             if (!defects.empty()) {
                 int[] data = new int[(int)(defects.total() * defects.channels())];
                 defects.get(0, 0, data);
                 for (int i = 0; i < data.length; i += 4) {
-                    totalDepth += data[i + 3] / 256.0;  // depth is Q8 fixed-point
+                    totalDepth += data[i + 3] / 256.0;   // Q8 fixed-point depth
                 }
             }
-            hull.release(); defects.release(); c2f.release();
+            hull.release(); defects.release(); clean.release();
             return perimeter > 0 ? Math.min(1.0, totalDepth / perimeter) : 0.0;
         } catch (Exception e) {
             return 0.0;
@@ -480,11 +512,12 @@ public final class VectorSignature {
         // Rule (c): area-ratio reject — only fires when BOTH sides have a finite
         // normalisedArea (e.g. scene-vs-scene comparison).
         if (!Double.isNaN(ref.normalisedArea)) {
-            // Rule (a): near-full-image reject
+            // Rule (a): near-full-image reject — contour fills > 80% of the scene
+            // → almost certainly the frame border or a full-image background blob.
             if (ref.normalisedArea > 0.80) {
                 return Math.min(0.25, computeRawSimilarity(ref));
             }
-            // Rule (b): minimum-size reject
+            // Rule (b): minimum-size reject — tiny noise fragment
             if (ref.normalisedArea < 0.003) {
                 return Math.min(0.25, computeRawSimilarity(ref));
             }
@@ -520,16 +553,29 @@ public final class VectorSignature {
         } else if ((this.type == ShapeType.CIRCLE && ref.type == ShapeType.CLOSED_CONVEX_POLY)
                 || (this.type == ShapeType.CLOSED_CONVEX_POLY && ref.type == ShapeType.CIRCLE)) {
             // Borderline: one classified as CIRCLE, one as POLY.
-            // If the circular one has circ < 0.95 it's likely a high-vertex polygon (octagon etc).
+            // Only allow partial credit if BOTH of the following hold:
+            //   (a) the circular side has borderline circularity (< 0.95) — i.e. it is
+            //       really a high-vertex polygon (octagon, hexagon) that straddles the
+            //       CIRCLE/POLY boundary at this scale.
+            //   (b) the polygon side has many vertices (≥ 6) — low-vertex shapes
+            //       (triangle=3, rect=4, pentagon=5) cannot legitimately be confused
+            //       with a circle. Background random circles must not match these.
             double circSide = (this.type == ShapeType.CIRCLE) ? this.circularity : ref.circularity;
-            if (circSide < 0.95) {
-                // Borderline polygon — partial penalty only, no hard gate
+            int    polySide = (this.type == ShapeType.CLOSED_CONVEX_POLY) ? this.vertexCount : ref.vertexCount;
+            if (circSide < 0.95 && polySide >= 6) {
+                // Borderline high-vertex polygon — partial penalty only
                 typeScore = 0.4;
             } else {
-                // Truly circular vs clearly polygonal — hard gate
+                // Low-vertex polygon (triangle/rect/pentagon) or truly circular — hard gate
                 typeScore = 0.0;
                 hardGate  = true;
             }
+        } else if ((this.type == ShapeType.CIRCLE && ref.type == ShapeType.CLOSED_CONCAVE_POLY)
+                || (this.type == ShapeType.CLOSED_CONCAVE_POLY && ref.type == ShapeType.CIRCLE)) {
+            // Circles vs concave shapes (stars, arrowheads, chevrons) — always hard gate.
+            // No circle can legitimately match a star or arrowhead.
+            typeScore = 0.0;
+            hardGate  = true;
         } else {
             // Fundamentally incompatible (LINE vs anything, CONCAVE vs CIRCLE, etc.)
             typeScore = 0.0;
@@ -581,10 +627,11 @@ public final class VectorSignature {
             //   e.g. vRef=4, vDet=6 → min(6,4)/4 = 1.0  (no penalty for extra)
             //        vRef=4, vDet=2 → min(2,4)/4 = 0.5  (missing half the vertices)
             //        vRef=5, vDet=2 → min(2,5)/5 = 0.4
+            // Symmetric ratio — penalises both missing AND extra vertices equally.
+            // min/max ensures a 20-vertex noise blob cannot score 1.0 against a 4-vertex rect.
             double found    = Math.min(this.vertexCount, ref.vertexCount);
-            double expected = this.vertexCount;
-            vertexScore = (expected > 0) ? found / expected : 1.0;
-            vertexScore = Math.min(1.0, vertexScore);
+            double total    = Math.max(this.vertexCount, ref.vertexCount);
+            vertexScore = (total > 0) ? found / total : 1.0;
         }
 
         // ── 5. Segment descriptor — geometric traversal (primary structural signal) ──
@@ -606,10 +653,18 @@ public final class VectorSignature {
         // ── 7. Angle histogram intersection — rotation invariant ──────────
         double angleScore = histogramIntersection(this.angleHistogram, ref.angleHistogram);
 
-        // ── 8. Aspect ratio — scale invariant ─────────────────────────────
+        // ── 8. Aspect ratio — multiplicative gate ─────────────────────────
+        // AR is nearly invariant for a shape (scale-independent, rotation-stable
+        // up to 90°). A rect with AR=1.30 should never match a blob with AR=1.82.
+        // Applied as a multiplier so a wrong AR suppresses the entire score.
+        // Only fires when mismatch > 30% to avoid penalising shapes drawn at
+        // slightly different proportions between ref and scene.
         double arA = Math.max(this.aspectRatio, 1.0);
         double arB = Math.max(ref.aspectRatio,  1.0);
         double aspectScore = 1.0 - Math.abs(arA - arB) / Math.max(arA, arB);
+        // Multiplier: only applied when aspectScore < 0.70 (> 30% mismatch).
+        // At 0.70 → 1.0. At 0.50 → 0.510. At 0.35 → 0.250.
+        double arMultiplier = aspectScore >= 0.70 ? 1.0 : Math.pow(aspectScore / 0.70, 2.0);
 
         // ── Component count penalty ───────────────────────────────────────
         double componentPenalty = 0.0;
@@ -630,22 +685,29 @@ public final class VectorSignature {
                 && circScore     >= 0.80
                 && solidityScore >= 0.80
                 && vertexScore   >= 0.80
-                && aspectScore   >= 0.80) {
+                && aspectScore   >= 0.70) {
             segScore = Math.max(segScore, 0.60);
         }
 
         // Weights — segmentDescriptor is the primary structural discriminator.
-        double score = typeScore     * 0.15   // type classification (hard gate applies)
-                     + segScore      * 0.34   // geometric segment traversal (PRIMARY)
-                     + topoScore     * 0.12   // topology (corroboration — raised)
+        // Aspect ratio is applied as a multiplier rather than an additive term
+        // so a significantly wrong AR suppresses the entire score, not just adds
+        // a small penalty.  The remaining weights sum to 1.0.
+        double score = (typeScore     * 0.15   // type classification (hard gate applies)
+                     + segScore      * 0.30   // geometric segment traversal (PRIMARY)
+                     + topoScore     * 0.10   // topology (corroboration)
                      + circScore     * 0.13   // circularity ratio
-                     + solidityScore * 0.12   // solidity ratio
-                     + vertexScore   * 0.08   // vertex count (reduced — noisy bg adds vertices)
-                     + angleScore    * 0.05   // angle histogram (raised — rotation invariant)
-                     + aspectScore   * 0.01   // aspect ratio
-                     - componentPenalty;
+                     + solidityScore * 0.20   // solidity ratio — primary filled/outline discriminator
+                     + vertexScore   * 0.08   // vertex count (symmetric min/max)
+                     + angleScore    * 0.04   // angle histogram (rotation invariant)
+                     - componentPenalty)
+                     * arMultiplier;          // AR gate: wrong shape proportions → full suppression
 
         double result = Math.max(0.0, Math.min(1.0, score));
+
+        // Temporary debug
+        System.out.printf("[SIG] type=%.2f seg=%.2f topo=%.2f circ=%.2f solid=%.2f vtx=%.2f ang=%.2f arMult=%.2f => %.3f  [refT=%s detT=%s refC=%.2f detC=%.2f]%n",
+            typeScore, segScore, topoScore, circScore, solidityScore, vertexScore, angleScore, arMultiplier, result, ref.type, this.type, ref.circularity, this.circularity);
 
         // Hard gate: cap cross-type matches well below any pass threshold
         if (hardGate) result = Math.min(result, 0.25);

@@ -195,9 +195,13 @@ class VectorMatcherDiagnosticTest {
         Mat ref   = ReferenceImageFactory.build(refId);
         Mat scene = buildMultiColourScene(refId);
 
-        // Dump scene to disk so we can inspect it
+        // Dump scene to disk so we can inspect it — upscaled 4× for clarity
         Path sceneOut = OUTPUT.resolve("debug_scene_" + refId.name() + ".png");
-        Imgcodecs.imwrite(sceneOut.toString(), scene);
+        Mat sceneBig = new Mat();
+        Imgproc.resize(scene, sceneBig, new Size(scene.cols() * 4, scene.rows() * 4),
+                0, 0, Imgproc.INTER_NEAREST);
+        Imgcodecs.imwrite(sceneOut.toString(), sceneBig);
+        sceneBig.release();
 
         // Show what clusters the ref image has
         System.out.printf("%n=== REF CLUSTERS: %s ===%n", refId.name());
@@ -251,6 +255,100 @@ class VectorMatcherDiagnosticTest {
                 scene, null, results, 0L);
 
         se.release(); ref.release(); scene.release();
+    }
+
+    @Test
+    @DisplayName("Diag: DIAMOND sig vs diamond scene and circle scene")
+    void diagDiamondSignatures() {
+        double eps = VectorVariant.VECTOR_NORMAL.epsilonFactor();
+        Mat ref         = ReferenceImageFactory.build(ReferenceId.POLYLINE_DIAMOND);
+        Mat diamScene   = buildDiamond();
+        Mat circScene   = buildCircle();
+        List<VectorSignature> refSigs = VectorMatcher.buildRefSignatures(ref, eps);
+        System.out.printf("%nREF sigs (%d):%n", refSigs.size());
+        for (VectorSignature rs : refSigs)
+            System.out.printf("  ref: %s v=%d circ=%.3f solid=%.3f ar=%.3f%n",
+                rs.type, rs.vertexCount, rs.circularity, rs.solidity, rs.aspectRatio);
+        for (String label : new String[]{"diamond","circle"}) {
+            Mat scene = label.equals("diamond") ? diamScene : circScene;
+            double sa = (double) scene.rows() * scene.cols();
+            SceneDescriptor desc = SceneDescriptor.build(scene);
+            System.out.printf("%n--- %s scene ---%n", label);
+            for (SceneDescriptor.ClusterContours cc : desc.clusters()) {
+                for (MatOfPoint c : cc.contours) {
+                    Rect bb = Imgproc.boundingRect(c);
+                    VectorSignature vs = VectorSignature.buildFromContour(c, eps, sa);
+                    double bestSim = refSigs.stream().mapToDouble(r -> r.similarity(vs)).max().orElse(0);
+                    System.out.printf("  (%d,%d %dx%d) type=%s v=%d circ=%.3f solid=%.3f ar=%.3f sim=%.3f%n",
+                        bb.x, bb.y, bb.width, bb.height,
+                        vs.type, vs.vertexCount, vs.circularity, vs.solidity, vs.aspectRatio, bestSim);
+                }
+            }
+            desc.release();
+        }
+        ref.release(); diamScene.release(); circScene.release();
+    }
+
+    @Test
+    @DisplayName("Diag: ARROW sig vs arrow scene and rect scene")
+    void diagArrowSignatures() {
+        double eps = VectorVariant.VECTOR_NORMAL.epsilonFactor();
+        Mat ref       = ReferenceImageFactory.build(ReferenceId.POLYLINE_ARROW_RIGHT);
+        Mat arrowScene = buildArrow();
+        Mat rectScene  = buildRect();
+
+        List<VectorSignature> refSigs = VectorMatcher.buildRefSignatures(ref, eps);
+        System.out.printf("%nREF sigs (%d):%n", refSigs.size());
+        for (VectorSignature rs : refSigs)
+            System.out.printf("  ref: %s v=%d circ=%.3f solid=%.3f ar=%.3f%n",
+                rs.type, rs.vertexCount, rs.circularity, rs.solidity, rs.aspectRatio);
+
+        for (String label : new String[]{"arrow","rect"}) {
+            Mat scene = label.equals("arrow") ? arrowScene : rectScene;
+            double sa = (double) scene.rows() * scene.cols();
+            SceneDescriptor desc = SceneDescriptor.build(scene);
+            System.out.printf("%n--- %s scene ---%n", label);
+            for (SceneDescriptor.ClusterContours cc : desc.clusters()) {
+                for (MatOfPoint c : cc.contours) {
+                    Rect bb = Imgproc.boundingRect(c);
+                    VectorSignature vs = VectorSignature.buildFromContour(c, eps, sa);
+                    double bestSim = refSigs.stream().mapToDouble(r -> r.similarity(vs)).max().orElse(0);
+                    System.out.printf("  (%d,%d %dx%d) type=%s v=%d circ=%.3f solid=%.3f ar=%.3f sim=%.3f%n",
+                        bb.x, bb.y, bb.width, bb.height,
+                        vs.type, vs.vertexCount, vs.circularity, vs.solidity, vs.aspectRatio, bestSim);
+                }
+            }
+            desc.release();
+        }
+        ref.release(); arrowScene.release(); rectScene.release();
+    }
+
+    private static Mat buildDiamond() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(320,100), new Point(500,240),
+                new Point(320,380), new Point(140,240))),
+                true, new Scalar(255,255,255), 3);
+        return m;
+    }
+    private static Mat buildCircle() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.circle(m, new Point(320,240), 60, new Scalar(255,255,255), -1);
+        return m;
+    }
+    private static Mat buildArrow() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(160,200), new Point(340,200), new Point(340,155),
+                new Point(480,240), new Point(340,325), new Point(340,280),
+                new Point(160,280))),
+                true, new Scalar(255,255,255), 3);
+        return m;
+    }
+    private static Mat buildRect() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.rectangle(m, new Point(230,160), new Point(410,320), new Scalar(255,255,255), -1);
+        return m;
     }
 }
 

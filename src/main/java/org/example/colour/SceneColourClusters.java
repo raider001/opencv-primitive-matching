@@ -29,10 +29,18 @@ public final class SceneColourClusters {
         public final Mat     mask;
         public final double  hue;
         public final boolean achromatic;
-        Cluster(Mat mask, double hue, boolean achromatic) {
-            this.mask       = mask;
-            this.hue        = hue;
-            this.achromatic = achromatic;
+        /**
+         * True if this is a BRIGHT achromatic cluster (white / light-grey, val >= threshold).
+         * False for chromatic clusters or dark-achromatic clusters (black / dark-grey).
+         * Used by the matcher to distinguish the foreground shape cluster from the
+         * background cluster when both are achromatic.
+         */
+        public final boolean brightAchromatic;
+        Cluster(Mat mask, double hue, boolean achromatic, boolean brightAchromatic) {
+            this.mask             = mask;
+            this.hue              = hue;
+            this.achromatic       = achromatic;
+            this.brightAchromatic = brightAchromatic;
         }
         public void release() { mask.release(); }
     }
@@ -79,7 +87,6 @@ public final class SceneColourClusters {
         Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
         Mat borderMask = new Mat();
         Imgproc.morphologyEx(chromaticMask, borderMask, Imgproc.MORPH_GRADIENT, kernel);
-        kernel.release();
         chromaticMask.release();
 
         // Zero the 1px image border so edge artefacts from the morphological
@@ -105,30 +112,39 @@ public final class SceneColourClusters {
                 continue;
             }
             zeroImageBorder(clusterMask);
-            clusters.add(new Cluster(clusterMask, peakHue, false));
+            clusters.add(new Cluster(clusterMask, peakHue, false, false));
         }
 
-        // Achromatic clusters — unchanged (full-image brightness split)
-        Mat brightAchromatic = new Mat();
+        // Achromatic clusters — apply morphological gradient so masks represent
+        // the BORDER of bright/dark regions, not the full filled interior.
+        // This makes achromatic contours edge-aligned, consistent with chromatic.
+        Mat brightFull = new Mat();
         Core.inRange(hsv,
                 new Scalar(0,   0,       BRIGHT_VAL_THRESHOLD),
                 new Scalar(179, MIN_SAT, 255),
-                brightAchromatic);
-        Mat darkAchromatic = new Mat();
+                brightFull);
+        Mat darkFull = new Mat();
         Core.inRange(hsv,
                 new Scalar(0,   0, 0),
                 new Scalar(179, 255, BRIGHT_VAL_THRESHOLD),
-                darkAchromatic);
+                darkFull);
+        Mat brightBorder = new Mat();
+        Mat darkBorder   = new Mat();
+        Imgproc.morphologyEx(brightFull, brightBorder, Imgproc.MORPH_GRADIENT, kernel);
+        Imgproc.morphologyEx(darkFull,   darkBorder,   Imgproc.MORPH_GRADIENT, kernel);
+        kernel.release();
+        brightFull.release();
+        darkFull.release();
 
-        if (Core.countNonZero(brightAchromatic) >= MIN_PIXEL_COUNT) {
-            zeroImageBorder(brightAchromatic);
-            clusters.add(new Cluster(brightAchromatic, Double.NaN, true));
-        } else { brightAchromatic.release(); }
+        if (Core.countNonZero(brightBorder) >= MIN_PIXEL_COUNT) {
+            zeroImageBorder(brightBorder);
+            clusters.add(new Cluster(brightBorder, Double.NaN, true, true));   // bright border
+        } else { brightBorder.release(); }
 
-        if (Core.countNonZero(darkAchromatic) >= MIN_PIXEL_COUNT) {
-            zeroImageBorder(darkAchromatic);
-            clusters.add(new Cluster(darkAchromatic, Double.NaN, true));
-        } else { darkAchromatic.release(); }
+        if (Core.countNonZero(darkBorder) >= MIN_PIXEL_COUNT) {
+            zeroImageBorder(darkBorder);
+            clusters.add(new Cluster(darkBorder, Double.NaN, true, false));    // dark border
+        } else { darkBorder.release(); }
 
         hsv.release();
         return clusters;
@@ -177,19 +193,19 @@ public final class SceneColourClusters {
                 continue;
             }
             zeroImageBorder(clusterMask);
-            clusters.add(new Cluster(clusterMask, peakHue, false));
+            clusters.add(new Cluster(clusterMask, peakHue, false, false)); // chromatic
         }
         // Bright achromatic cluster
         if (Core.countNonZero(brightAchromatic) >= MIN_PIXEL_COUNT) {
             zeroImageBorder(brightAchromatic);
-            clusters.add(new Cluster(brightAchromatic, Double.NaN, true));
+            clusters.add(new Cluster(brightAchromatic, Double.NaN, true, true));  // bright
         } else {
             brightAchromatic.release();
         }
         // Dark achromatic cluster
         if (Core.countNonZero(darkAchromatic) >= MIN_PIXEL_COUNT) {
             zeroImageBorder(darkAchromatic);
-            clusters.add(new Cluster(darkAchromatic, Double.NaN, true));
+            clusters.add(new Cluster(darkAchromatic, Double.NaN, true, false));   // dark
         } else {
             darkAchromatic.release();
         }

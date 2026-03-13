@@ -263,28 +263,28 @@ public class MatchReportLibrary {
                     int ly = Math.max(9, bb.y - 2);
                     Imgproc.putText(annotated, String.format("%.0f%%", pct),
                             new Point(lx, ly),
-                            Imgproc.FONT_HERSHEY_SIMPLEX, 0.30, col, 1);
+                            Imgproc.FONT_HERSHEY_SIMPLEX, 0.20, col, 1);
                 });
 
-        // ── Ground-truth box (cyan) ───────────────────────────────────────
+        // ── Ground-truth box (yellow) ─────────────────────────────────────
         if (gt != null)
             Imgproc.rectangle(annotated,
                     new Point(gt.x, gt.y), new Point(gt.x+gt.width, gt.y+gt.height),
-                    new Scalar(220,220,0), 2);
+                    new Scalar(220,220,0), 1);
 
-        // ── Winner box (thick, bright) ────────────────────────────────────
+        // ── Winner box (bright) ───────────────────────────────────────────
         if (winnerBbox != null && winnerBbox.width > 1 && winnerBbox.height > 1) {
             Scalar col = winnerScore >= 70 ? new Scalar(0,200,0)
                        : winnerScore >= 40 ? new Scalar(0,200,200)
                        :                    new Scalar(0,0,200);
             Imgproc.rectangle(annotated,
                     new Point(winnerBbox.x, winnerBbox.y),
-                    new Point(winnerBbox.x+winnerBbox.width, winnerBbox.y+winnerBbox.height), col, 3);
+                    new Point(winnerBbox.x+winnerBbox.width, winnerBbox.y+winnerBbox.height), col, 1);
         }
         // Winner score label (top-left corner)
         Scalar lc = winnerScore >= 50 ? new Scalar(0,220,0) : new Scalar(0,0,220);
         Imgproc.putText(annotated, String.format("%.1f%%", winnerScore),
-                new Point(6, 28), Imgproc.FONT_HERSHEY_SIMPLEX, 0.55, lc, 2);
+                new Point(4, 14), Imgproc.FONT_HERSHEY_SIMPLEX, 0.28, lc, 1);
 
         String png = matToBase64Png(annotated);
         annotated.release();
@@ -313,8 +313,14 @@ public class MatchReportLibrary {
 
     public static String matToBase64Png(Mat m) {
         try {
+            // Upscale 4× with nearest-neighbour so contours and annotations
+            // are clearly visible in the HTML report lightbox.
+            Mat big = new Mat();
+            Imgproc.resize(m, big, new Size(m.cols() * 4, m.rows() * 4),
+                    0, 0, Imgproc.INTER_NEAREST);
             MatOfByte buf = new MatOfByte();
-            Imgcodecs.imencode(".png", m, buf);
+            Imgcodecs.imencode(".png", big, buf);
+            big.release();
             return Base64.getEncoder().encodeToString(buf.toArray());
         } catch (Exception e) { return ""; }
     }
