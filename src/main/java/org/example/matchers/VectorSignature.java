@@ -313,7 +313,18 @@ public final class VectorSignature {
         if (aspectRatio >= 4.0) {
             type = ShapeType.LINE_SEGMENT;
         } else if (circularity >= 0.85) {
-            type = ShapeType.CIRCLE;
+            // A true circle's contour is already dense; its SegmentDescriptor is a
+            // single closed curved loop (isClosedCurve = true).
+            // High-vertex polygons (pentagon ≈0.86, hexagon ≈0.91, heptagon ≈0.93,
+            // octagon ≈0.95) also exceed 0.85, but after contour densification their
+            // SegmentDescriptor correctly shows discrete STRAIGHT segments
+            // (isClosedCurve = false).  Use that evidence to reclassify them as
+            // CLOSED_CONVEX_POLY so self-matches score cleanly and cross-matches
+            // against true circles are hard-gated.
+            boolean hasStarightSegs = segDesc != null
+                    && !segDesc.isClosedCurve
+                    && !segDesc.segments.isEmpty();
+            type = hasStarightSegs ? ShapeType.CLOSED_CONVEX_POLY : ShapeType.CIRCLE;
         } else if (concavityRatio >= 0.08) {
             type = ShapeType.CLOSED_CONCAVE_POLY;
         } else {

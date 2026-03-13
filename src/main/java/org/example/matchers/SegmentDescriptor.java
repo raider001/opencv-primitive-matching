@@ -128,9 +128,29 @@ public final class SegmentDescriptor {
         if (contour == null || contour.empty() || perimeter < 1.0)
             return empty();
 
-        Point[] pts = contour.toArray();
-        int n = pts.length;
-        if (n < 6) return empty();
+        Point[] rawPts = contour.toArray();
+        int n = rawPts.length;
+        if (n < 3) return empty();
+
+        // ── Densify sparse contours ───────────────────────────────────────
+        // CHAIN_APPROX_SIMPLE compresses every straight side of a polygon to
+        // just its two endpoints, so an octagon arrives with only 8 points.
+        // With MIN_SEG_POINTS = 3, those 8 points cannot form 8 STRAIGHT
+        // runs; they collapse into a single pseudo-curve and the shape is
+        // mistakenly flagged as isClosedCurve = true (indistinguishable from
+        // a circle).  Densification interpolates ≥5 evenly-spaced points along
+        // each edge, giving the traversal enough samples to correctly identify
+        // straight vs. curved runs.
+        // Trigger: average inter-point spacing > 4 px (all CHAIN_APPROX_SIMPLE
+        // polygons) while true circles/ellipses are already dense (spacing ~1–2 px).
+        Point[] pts;
+        if (perimeter / n > 4.0) {
+            pts = densifyContour(rawPts, 5);
+            n   = pts.length;
+        } else {
+            pts = rawPts;
+        }
+        if (n < 6) return empty();   // still too few even after densification
 
         // ── Step 1: compute per-point curvature and direction ────────────
         double[] kappa  = new double[n]; // curvature at each point
@@ -475,6 +495,32 @@ public final class SegmentDescriptor {
             }
         }
         return segs;
+    }
+
+    /**
+     * Interpolates {@code minPtsPerEdge} evenly-spaced points along each edge of
+     * a polygon contour, plus additional points so no edge has fewer than
+     * {@code ceil(edgeLen / 3)} samples.  This turns a sparse CHAIN_APPROX_SIMPLE
+     * polygon (e.g. 8 corners for an octagon) into a dense point cloud where
+     * straight sides produce near-zero curvature runs that the traversal reliably
+     * classifies as STRAIGHT segments.
+     */
+    private static Point[] densifyContour(Point[] pts, int minPtsPerEdge) {
+        int n = pts.length;
+        List<Point> out = new ArrayList<>(n * minPtsPerEdge);
+        for (int i = 0; i < n; i++) {
+            out.add(pts[i]);
+            Point p0 = pts[i];
+            Point p1 = pts[(i + 1) % n];
+            double dx  = p1.x - p0.x, dy = p1.y - p0.y;
+            double len = Math.sqrt(dx * dx + dy * dy);
+            int steps  = Math.max(minPtsPerEdge, (int) Math.ceil(len / 3.0));
+            for (int j = 1; j < steps; j++) {
+                double t = (double) j / steps;
+                out.add(new Point(p0.x + t * dx, p0.y + t * dy));
+            }
+        }
+        return out.toArray(new Point[0]);
     }
 
     private static SegmentDescriptor empty() {
