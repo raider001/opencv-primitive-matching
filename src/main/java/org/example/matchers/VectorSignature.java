@@ -692,16 +692,16 @@ public final class VectorSignature {
         // densities but whose shape metrics are highly consistent.
         //
         // Floor levels are tiered by agreement strength:
-        //   • Very strong (all ≥ 0.95, exact type match): floor at 0.85
-        //     → clean self-matches get L3 ≥ ~0.93, producing overall score ≥ ~90%
-        //   • Strong (all ≥ 0.80, exact type match):      floor at 0.72
+        //   • Very strong (type match, circ/solid/vtx ≥ 0.95, AR ≥ 0.80): floor at 0.92
+        //     → clean self-matches produce overall score ≥ ~95%
+        //   • Acceptable (type match, all ≥ 0.80, AR ≥ 0.70): floor at 0.72
         //     → good-quality matches are not suppressed below ~85% overall
         if (typeScore >= 1.0
                 && circScore     >= 0.95
                 && solidityScore >= 0.95
                 && vertexScore   >= 0.95
-                && aspectScore   >= 0.90) {
-            segScore = Math.max(segScore, 0.85);
+                && aspectScore   >= 0.80) {
+            segScore = Math.max(segScore, 0.92);
         } else if (typeScore >= 1.0
                 && circScore     >= 0.80
                 && solidityScore >= 0.80
@@ -726,9 +726,6 @@ public final class VectorSignature {
 
         double result = Math.max(0.0, Math.min(1.0, score));
 
-        // Temporary debug
-        System.out.printf("[SIG] type=%.2f seg=%.2f topo=%.2f circ=%.2f solid=%.2f vtx=%.2f ang=%.2f arMult=%.2f => %.3f  [refT=%s detT=%s refC=%.2f detC=%.2f]%n",
-            typeScore, segScore, topoScore, circScore, solidityScore, vertexScore, angleScore, arMultiplier, result, ref.type, this.type, ref.circularity, this.circularity);
 
         // Hard gate: cap cross-type matches well below any pass threshold
         if (hardGate) result = Math.min(result, 0.25);

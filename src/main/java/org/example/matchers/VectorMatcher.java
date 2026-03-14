@@ -353,9 +353,6 @@ public final class VectorMatcher {
                         + matchScore  * W_MATCH
                         + geomScore   * W_GEOM;
 
-        // Temporary debug
-        System.out.printf("[VM] refCnt=%d matchCnt=%d L1=%.3f L2=%.3f L3=%.3f => %.3f%n",
-            refCount, matchedCount, countScore, matchScore, geomScore, combined);
 
         return Math.max(0.0, Math.min(1.0, combined));
     }
