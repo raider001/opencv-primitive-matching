@@ -14,6 +14,7 @@ import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.LocalDateTime;
@@ -46,7 +47,7 @@ public class MatchReportLibrary {
             String refOrig, String refPoints,
             String sceneOrig,
             String allPoints, String sceneAnnot,
-            double iou, boolean falsePositive,
+            double iou,
             long elapsedMs, long descriptorMs) {}
 
     /** Simple carrier for a list of results + descriptor build time. */
@@ -58,8 +59,86 @@ public class MatchReportLibrary {
 
     private final List<ReportRow> rows = new CopyOnWriteArrayList<>();
 
-    /** Clear accumulated rows (call in {@code @BeforeAll}). */
-    public void clear() { rows.clear(); }
+    // ── Test documentation ────────────────────────────────────────────────────
+
+    /**
+     * Holds the documentation extracted from a single {@code @Test} method's
+     * {@link ExpectedOutcome} and {@link org.junit.jupiter.api.DisplayName} annotations.
+     */
+    public record TestDoc(
+            String methodName,
+            String displayName,
+            String reason) {}
+
+    private final List<TestDoc> testDocs = new ArrayList<>();
+    /** Keyed by the derived label — see {@link #deriveLabel(String)}. */
+    private final Map<String, TestDoc> docByLabel = new HashMap<>();
+
+    /**
+     * Reads every {@code @Test} method on {@code testClass} that carries an
+     * {@link ExpectedOutcome} annotation and stores the metadata so that each
+     * result row can render its expected outcome inline in the HTML report.
+     *
+     * <p>Call this once from {@code @BeforeAll} after {@link #clear()}.
+     */
+    public void scanTestAnnotations(Class<?> testClass) {
+        testDocs.clear();
+        docByLabel.clear();
+        for (Method m : testClass.getDeclaredMethods()) {
+            if (m.getAnnotation(org.junit.jupiter.api.Test.class) == null) continue;
+            ExpectedOutcome eo = m.getAnnotation(ExpectedOutcome.class);
+            if (eo == null) continue;
+            org.junit.jupiter.api.DisplayName dn =
+                    m.getAnnotation(org.junit.jupiter.api.DisplayName.class);
+            String displayName = (dn != null && !dn.value().isBlank()) ? dn.value() : m.getName();
+            TestDoc doc = new TestDoc(m.getName(), displayName, eo.reason());
+            testDocs.add(doc);
+            docByLabel.put(deriveLabel(displayName), doc);
+        }
+    }
+
+    /**
+     * Derives the {@code record()} label key from a {@code @DisplayName} string so that
+     * each row can be matched to its {@link TestDoc} without changing test call-sites.
+     *
+     * <p>Supported patterns (all produced by VectorMatchingTest):
+     * <ul>
+     *   <li>{@code "REFNAME — ..."}                           → {@code "REFNAME"}
+     *   <li>{@code "REFNAME — on random-lines background"}    → {@code "REFNAME@BG_RANDOM_LINES"}
+     *   <li>{@code "REFNAME — on random-circles background"}  → {@code "REFNAME@BG_RANDOM_CIRCLES"}
+     *   <li>{@code "QUERYREF in SCENEREF scene — ..."}        → {@code "QUERYREF→SCENEREF"}
+     *   <li>{@code "QUERYREF in SCENEREF — lines bg ..."}     → {@code "QUERYREF→SCENEREF@BG_RANDOM_LINES"}
+     *   <li>{@code "QUERYREF in SCENEREF — circles bg ..."}   → {@code "QUERYREF→SCENEREF@BG_RANDOM_CIRCLES"}
+     * </ul>
+     */
+    static String deriveLabel(String displayName) {
+        if (displayName.contains(" in ")) {
+            int inIdx = displayName.indexOf(" in ");
+            String queryRef = displayName.substring(0, inIdx).trim();
+            String rest = displayName.substring(inIdx + 4);
+            if (rest.contains(" scene — ")) {
+                String sceneRef = rest.substring(0, rest.indexOf(" scene — ")).trim();
+                return queryRef + "→" + sceneRef;
+            } else if (rest.contains(" — lines bg")) {
+                String sceneRef = rest.substring(0, rest.indexOf(" — lines bg")).trim();
+                return queryRef + "→" + sceneRef + "@BG_RANDOM_LINES";
+            } else if (rest.contains(" — circles bg")) {
+                String sceneRef = rest.substring(0, rest.indexOf(" — circles bg")).trim();
+                return queryRef + "→" + sceneRef + "@BG_RANDOM_CIRCLES";
+            }
+        }
+        if (displayName.contains(" — ")) {
+            String refName = displayName.substring(0, displayName.indexOf(" — ")).trim();
+            String desc    = displayName.substring(displayName.indexOf(" — ") + 3).trim();
+            if (desc.startsWith("on random-lines background"))   return refName + "@BG_RANDOM_LINES";
+            if (desc.startsWith("on random-circles background")) return refName + "@BG_RANDOM_CIRCLES";
+            return refName;
+        }
+        return displayName;
+    }
+
+    /** Clear accumulated rows and test docs (call in {@code @BeforeAll}). */
+    public void clear() { rows.clear(); testDocs.clear(); docByLabel.clear(); }
 
     public List<ReportRow> rows() { return Collections.unmodifiableList(rows); }
 
@@ -82,7 +161,6 @@ public class MatchReportLibrary {
                          String sceneDesc, Mat sceneMat,
                          Rect groundTruth, List<AnalysisResult> results, long descriptorMs) {
         double score = normalScore(results);
-        boolean passed = score >= 50.0;
 
         ReferenceId rid = results.isEmpty() ? null : results.get(0).referenceId();
 
@@ -160,25 +238,44 @@ public class MatchReportLibrary {
 
         String sceneAnnotPng = buildAnnotated(sceneWithRef, bestBbox, groundTruth, score, allHits);
 
-        // ── IoU / false-positive flag ─────────────────────────────────────
+        // ── IoU / pass / false-positive flag ─────────────────────────────
+        // Raw IoU: 1.0 = exact match, >1.0 = det larger than GT, <1.0 = partial coverage.
         double iou = Double.NaN;
-        boolean fp = false;
         if (bestBbox != null && groundTruth != null) {
             iou = MatchDiagnosticLibrary.iou(bestBbox, groundTruth);
-            fp  = (score >= 40.0) && (iou < 0.3);
         }
+
+        boolean passed = determinePassed(label, score, iou);
 
         rows.add(new ReportRow(stage, label, shapeName, sceneDesc,
                 score, passed,
                 refOrigPng, refPointsPng,
                 sceneOrigPng, allPointsPng, sceneAnnotPng,
-                iou, fp, elapsedMs, descriptorMs));
+                iou, elapsedMs, descriptorMs));
 
         sceneWithRef.release();
         return score;
     }
 
-    // ── Report writer ─────────────────────────────────────────────────────────
+    /**
+     * Pass/fail is determined purely by match score and IoU — no annotation dependency.
+     *
+     * <h3>Detection tests</h3> (label does NOT contain {@code "→"})
+     * <ul>
+     *   <li>PASS — score ≥ 60 % AND (IoU unavailable OR IoU ≥ 0.95)</li>
+     *   <li>FAIL — everything else</li>
+     * </ul>
+     *
+     * <h3>Rejection tests</h3> (label contains {@code "→"}, reference absent)
+     * <ul>
+     *   <li>PASS — score &lt; 60 % (correctly did not fire)</li>
+     *   <li>FAIL — score ≥ 60 % (incorrectly fired on absent reference)</li>
+     * </ul>
+     */
+    private boolean determinePassed(String label, double score, double iou) {
+        if (label.contains("→")) return score < 60.0;                    // rejection: no fire = pass
+        return score >= 60.0 && (Double.isNaN(iou) || iou >= 0.95);     // detection: score + location
+    }
 
     /**
      * Writes an HTML report covering only the rows accumulated since {@link #clear()}.
@@ -188,15 +285,13 @@ public class MatchReportLibrary {
         Files.createDirectories(outputDir);
         Path out = outputDir.resolve("report.html");
         Files.deleteIfExists(out);
-        Files.writeString(out, buildHtml(rows, title), StandardCharsets.UTF_8);
+        Files.writeString(out, buildHtml(rows, docByLabel, title), StandardCharsets.UTF_8);
         System.out.println("[MatchReportLibrary] Report: " + out.toAbsolutePath());
 
-        // stdout summary
         long total  = rows.size();
         long passed = rows.stream().filter(ReportRow::passed).count();
-        long fp     = rows.stream().filter(ReportRow::falsePositive).count();
-        System.out.printf("[MatchReportLibrary] %d rows | %d passed | %d failed | %d false positives%n",
-                total, passed, total - passed, fp);
+        System.out.printf("[MatchReportLibrary] %d rows  %d passed  %d failed%n",
+                total, passed, total - passed);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -327,14 +422,13 @@ public class MatchReportLibrary {
 
     // ── HTML builder ──────────────────────────────────────────────────────────
 
-    private static String buildHtml(List<ReportRow> rows, String title) {
+    private static String buildHtml(List<ReportRow> rows, Map<String, TestDoc> docByLabel, String title) {
         Map<String, List<ReportRow>> byStage = new LinkedHashMap<>();
         for (ReportRow r : rows)
             byStage.computeIfAbsent(r.stage(), k -> new ArrayList<>()).add(r);
 
         long total    = rows.size();
         long passed   = rows.stream().filter(ReportRow::passed).count();
-        long fp       = rows.stream().filter(ReportRow::falsePositive).count();
         String ts     = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
 
         StringBuilder sb = new StringBuilder();
@@ -345,9 +439,9 @@ public class MatchReportLibrary {
           .append("<h1>").append(esc(title)).append("</h1>")
           .append("<div class='ts-line'>Generated: <span class='ts-val'>").append(ts).append("</span></div>")
           .append("<p class='subtitle'>")
-          .append(total).append(" calls &nbsp;·&nbsp; ").append(passed).append(" passed")
-          .append(" &nbsp;·&nbsp; <span style='color:#f85149'>").append(total-passed).append(" failed</span>")
-          .append(" &nbsp;·&nbsp; <span style='color:#bf55ec;font-weight:700'>").append(fp).append(" false positives</span>")
+          .append(total).append(" calls &nbsp;·&nbsp; ")
+          .append("<span style='color:#56d364'>").append(passed).append(" passed</span>")
+          .append(" &nbsp;·&nbsp; <span style='color:#f85149'>").append(total - passed).append(" failed</span>")
           .append("</p>")
           .append("<div class='legend-block'>")
           .append("<div class='legend-title'>Pipeline (per row)</div>")
@@ -360,34 +454,47 @@ public class MatchReportLibrary {
           .append("</div></div>")
           .append("<div class='legend-block'><div class='legend-title'>Row status</div>")
           .append("<div class='legend-row'>")
-          .append("<span class='legend-pill pass-pill'>green = passed</span>")
+          .append("<span class='legend-pill pass-pill'>green = passed (score ≥ 60 % &amp; IoU ≥ 0.95)</span>")
           .append("<span class='legend-pill fail-pill'>red = failed</span>")
-          .append("<span class='legend-pill fp-pill'>purple = false positive</span>")
           .append("</div></div>")
           .append("</div>");
 
         for (Map.Entry<String, List<ReportRow>> e : byStage.entrySet()) {
             sb.append("<section><h2>").append(esc(e.getKey())).append("</h2>");
             for (ReportRow r : e.getValue()) {
-                String cls = r.falsePositive() ? "row fp"
-                           : r.passed()        ? "row pass" : "row fail";
+                // Row is green (pass) or red (fail) — purely score + IoU
+                String cls = r.passed() ? "row pass" : "row fail";
                 sb.append("<div class='").append(cls).append("'>")
                   .append("<div class='row-meta'>")
                   .append("<span class='row-id'>").append(esc(r.label())).append("</span>")
                   .append("<span class='row-shape'>").append(esc(r.shapeName())).append("</span>")
                   .append("<span class='row-desc'>").append(esc(r.sceneDesc())).append("</span>");
-                if (r.falsePositive())
-                    sb.append("<span class='badge fp-badge'>⚠ FALSE POSITIVE</span>");
                 if (!Double.isNaN(r.iou())) {
-                    String ic = r.iou()>=0.5?"iou-good":r.iou()>=0.3?"iou-warn":"iou-bad";
+                    // 1.0 = exact fit | >1.0 = det larger than GT | <1.0 = partial coverage
+                    String ic = r.iou() >= 1.0 ? "iou-excellent"
+                              : r.iou() >= 0.8 ? "iou-good"
+                              : r.iou() >= 0.5 ? "iou-warn"
+                              : "iou-bad";
                     sb.append("<span class='iou-val ").append(ic).append("'>IoU ")
-                      .append(String.format("%.2f",r.iou())).append("</span>");
+                      .append(String.format("%.2f", r.iou())).append("</span>");
                 }
                 sb.append("<span class='timing-badge'>")
                   .append("desc:").append(r.descriptorMs()).append("ms")
                   .append(" match:").append(r.elapsedMs()).append("ms</span>")
-                  .append("</div>")
-                  .append("<div class='pipeline-row'><div class='pipeline'>");
+                  .append("</div>");
+
+                // ── Inline expected outcome (matched by label) ────────────
+                TestDoc doc = docByLabel.get(r.label());
+                if (doc != null) {
+                    sb.append("<div class='outcome-line'>")
+                      .append("<details class='outcome-details'><summary>Scenario: ")
+                      .append(esc(doc.displayName())).append("</summary>")
+                      .append("<span class='outcome-reason'>").append(esc(doc.reason())).append("</span>")
+                      .append("</details>")
+                      .append("</div>");
+                }
+
+                sb.append("<div class='pipeline-row'><div class='pipeline'>");
                 step(sb, r.refOrig(),    "Ref");
                 step(sb, r.refPoints(),  "Ref Points");
                 step(sb, r.sceneOrig(),  "Scene");
@@ -457,40 +564,44 @@ public class MatchReportLibrary {
         .legend-pill{font-size:.72rem;font-weight:600;border-radius:4px;padding:2px 8px;border-left:3px solid transparent}
         .pass-pill{border-left-color:#238636;background:#0d2619;color:#56d364}
         .fail-pill{border-left-color:#da3633;background:#2b0c0c;color:#f85149}
-        .fp-pill{border-left-color:#bf55ec;background:#1a0e2e;color:#d2a8ff}
         section{padding:0 24px 16px}
         h2{color:#79c0ff;font-size:1rem;margin:14px 0 10px;padding-bottom:4px;border-bottom:1px solid #21262d}
-        .row{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:8px;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+        .row{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
         .row.pass{border-left:3px solid #238636}
         .row.fail{border-left:3px solid #da3633}
-        .row.fp{border-left:3px solid #bf55ec;background:#1a0e2e}
-        .fp-badge{background:#bf55ec;color:#fff;font-size:.68rem;font-weight:700;border-radius:3px;padding:1px 6px}
         .iou-val{font-size:.72rem;font-weight:600;white-space:nowrap}
-        .iou-good{color:#56d364}.iou-warn{color:#d29922}.iou-bad{color:#f85149}
+        .iou-excellent{color:#79c0ff}.iou-good{color:#56d364}.iou-warn{color:#d29922}.iou-bad{color:#f85149}
         .timing-badge{font-size:.68rem;color:#8b949e;background:#21262d;border:1px solid #30363d;border-radius:4px;padding:1px 8px;white-space:nowrap;margin-left:auto}
         .row-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
         .row-id{font-size:.72rem;font-weight:700;background:#21262d;border-radius:3px;padding:1px 6px;color:#79c0ff}
         .row-shape{font-size:.78rem;font-weight:600;color:#c9d1d9}
         .row-desc{font-size:.72rem;color:#8b949e;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-        .pipeline-row{display:flex;align-items:center;gap:8px}
-        .pipeline{display:flex;align-items:flex-start;gap:6px;overflow-x:auto;flex:1}
-        .pipeline-score{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;min-width:70px}
-        .step{display:flex;flex-direction:column;align-items:center;gap:3px;flex-shrink:0}
-        .step-img{width:128px;height:96px;object-fit:contain;border-radius:4px;border:1px solid #30363d;background:#0d1117;cursor:zoom-in;transition:border-color .15s}
-        .step-img:hover{border-color:#58a6ff}
-        .step-empty{width:128px;height:96px;border:1px dashed #30363d;border-radius:4px}
-        .step-label{font-size:.65rem;color:#8b949e;text-align:center;max-width:128px}
-        .score-val{font-size:.82rem;font-weight:700}
+        .outcome-line{padding:3px 0 1px}
+        .outcome-details{font-size:.75rem;color:#8b949e}
+        .outcome-details summary{cursor:pointer;color:#8b949e;list-style:none;display:inline}
+        .outcome-details summary::-webkit-details-marker{display:none}
+        .outcome-details summary::before{content:'▸ ';font-size:.65rem;color:#484f58}
+        .outcome-details[open] summary::before{content:'▾ ';color:#58a6ff}
+        .outcome-details[open] summary{color:#c9d1d9}
+        .outcome-reason{display:block;margin-top:4px;padding:6px 10px;background:#0d1117;border-left:2px solid #30363d;border-radius:0 4px 4px 0;font-size:.73rem;color:#8b949e;line-height:1.55;white-space:pre-wrap}
+        .pipeline-row{display:flex;align-items:flex-start;gap:12px}
+        .pipeline{display:flex;align-items:flex-start;gap:8px;flex-wrap:nowrap}
+        .step{display:flex;flex-direction:column;align-items:center;gap:4px}
+        .step-img{width:160px;height:auto;display:block;border:1px solid #30363d;border-radius:4px}
+        .step-empty{width:160px;height:120px;background:#21262d;border:1px solid #30363d;border-radius:4px;display:block}
+        .step-label{font-size:.68rem;color:#8b949e;text-align:center;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .pipeline-score{display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 0 0;min-width:80px}
+        .score-val{font-size:1.3rem;font-weight:700}
         .s-good{color:#56d364}.s-warn{color:#d29922}.s-bad{color:#f85149}
-        .bar-bg{width:120px;height:7px;background:#21262d;border-radius:4px;overflow:hidden}
+        .bar-bg{width:80px;height:8px;background:#21262d;border-radius:4px;overflow:hidden}
         .bar-fill{height:100%;border-radius:4px}
-        .lb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:9999;overflow:auto;padding:48px 24px 24px}
-        .lb-overlay.lb-visible{display:flex;align-items:center;justify-content:center}
-        .lb-box{position:relative;padding:8px;background:#161b22;border:1px solid #30363d;border-radius:8px}
-        .lb-img{display:block;max-width:90vw;max-height:80vh;image-rendering:pixelated;border-radius:4px}
-        .lb-caption{color:#c9d1d9;font-size:.85rem;text-align:center;margin-top:6px}
-        .lb-close{position:absolute;top:-14px;right:-14px;width:28px;height:28px;border-radius:50%;background:#21262d;border:1px solid #484f58;color:#c9d1d9;font-size:1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:10000}
-        .lb-close:hover{background:#30363d;color:#fff}
+        .lb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;align-items:center;justify-content:center;cursor:zoom-out}
+        .lb-visible{display:flex}
+        .lb-box{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;max-width:90vw;max-height:90vh;overflow:auto;position:relative;cursor:default}
+        .lb-close{position:absolute;top:8px;right:10px;background:none;border:none;color:#8b949e;font-size:1.2rem;cursor:pointer;line-height:1}
+        .lb-close:hover{color:#c9d1d9}
+        .lb-img{display:block;max-width:100%;max-height:80vh;border-radius:4px}
+        .lb-caption{font-size:.78rem;color:#8b949e;margin-top:8px;text-align:center}
         """;
 }
 
