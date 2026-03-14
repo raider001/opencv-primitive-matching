@@ -465,12 +465,19 @@ public class MatchDiagnosticLibrary {
         return m;
     }
     private static Mat rot45Rect() {
-        Mat base = rect(230, 160, 410, 320);
-        Point centre = new Point(base.cols()/2.0, base.rows()/2.0);
+        // Reference proportions: hw=48, hh=28 on 128×128 → AR = 96/56 = 1.714
+        // Scaled ×2.5 centred at (320,240): hw=120, hh=70 → rect 240×140 (AR=1.714)
+        // Drawn as polylines (outline) to match ReferenceImageFactory.drawRotatedRect().
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(200, 170), new Point(440, 170),
+                new Point(440, 310), new Point(200, 310))),
+                true, new Scalar(255, 255, 255), 3);
+        Point centre = new Point(m.cols() / 2.0, m.rows() / 2.0);
         Mat rotM = Imgproc.getRotationMatrix2D(centre, -45, 1.0);
-        Mat dst  = Mat.zeros(base.size(), base.type());
-        Imgproc.warpAffine(base, dst, rotM, base.size());
-        rotM.release(); base.release();
+        Mat dst  = Mat.zeros(m.size(), m.type());
+        Imgproc.warpAffine(m, dst, rotM, m.size());
+        rotM.release(); m.release();
         return dst;
     }
 

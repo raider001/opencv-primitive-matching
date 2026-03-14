@@ -358,10 +358,13 @@ class VectorMatchingTest {
     }
 
     private static Mat whiteRot45RectOnBlack() {
+        // Reference proportions: hw=48, hh=28 on 128×128 → AR = 96/56 = 1.714
+        // Scaled ×2.5 centred at (320,240): hw=120, hh=70 → rect 240×140 (AR=1.714)
+        // After 45° rotation half-diagonal ≈ 134 px — fits within 640×480.
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Imgproc.polylines(m, List.of(new MatOfPoint(
-                new Point(230, 160), new Point(410, 160),
-                new Point(410, 320), new Point(230, 320))),
+                new Point(200, 170), new Point(440, 170),
+                new Point(440, 310), new Point(200, 310))),
                 true, new Scalar(255, 255, 255), 3);
         return rotate(m, 45);
     }
