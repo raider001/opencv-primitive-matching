@@ -7,7 +7,10 @@ import org.example.analytics.PerformanceProfiler;
 import org.example.factories.ReferenceId;
 import org.example.scene.SceneCategory;
 import org.example.scene.SceneEntry;
+import org.example.matchers.SceneDescriptor;
 import org.example.scene.SceneShapePlacement;
+import org.opencv.core.MatOfPoint;
+import org.opencv.core.Point;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -33,6 +36,9 @@ import java.util.stream.Collectors;
 public final class HtmlReportWriter {
 
     private HtmlReportWriter() {}
+
+    /** Carries the per-scene cluster JS sidecar URL and its window-key. */
+    private record ClusterRef(String jsUrl, String winKey) {}
 
     /**
      * Writes the report to {@code reportPath}.
@@ -81,7 +87,9 @@ public final class HtmlReportWriter {
                                     Map<AnalysisResult, DetectionVerdict> verdicts,
                                     Map<AnalysisResult, SceneEntry> sceneMap,
                                     Path reportPath) {
-        String resultsTab     = buildResultsTab(results, verdicts, reportPath);
+        Map<AnalysisResult, ClusterRef> clusterRefs =
+                writeClusterSidecars(results, sceneMap, reportPath);
+        String resultsTab     = buildResultsTab(results, verdicts, clusterRefs, reportPath);
         String performanceTab = buildPerformanceTab(profiles);
         String cfTab          = withCfTab       ? buildCfComparisonTab(results) : "";
         String verdictsTab    = withVerdictsTab ? buildVerdictsTab(results, verdicts, sceneMap) : "";
@@ -124,6 +132,30 @@ public final class HtmlReportWriter {
              + "aria-label=\"Close\">\u2715</button>\n"
              + "  <img id=\"lb-img\" src=\"\" alt=\"Enlarged scene\">\n"
              + "  <div id=\"lb-cap\" class=\"lb-cap\"></div>\n"
+             // Cluster explorer panel — hidden until a 🔬 button is clicked
+             + "  <div id=\"lb-clusters\" class=\"lb-clusters\" onclick=\"event.stopPropagation()\">\n"
+             + "    <div class=\"lb-cl-header\">\n"
+             + "      <span class=\"lb-cl-title\">\uD83D\uDD2C Colour Cluster Explorer</span>\n"
+             + "      <span id=\"lb-cl-counter\" class=\"lb-cl-counter\"></span>\n"
+             + "    </div>\n"
+             + "    <div id=\"lb-cl-status\" class=\"lb-cl-status\"></div>\n"
+             + "    <div class=\"lb-cl-body\">\n"
+             + "      <div class=\"lb-cl-img-wrap\">\n"
+             + "        <img id=\"lb-cl-img\" src=\"\" alt=\"Scene base\">\n"
+             + "        <svg id=\"lb-cl-svg\" class=\"lb-cl-svg\" "
+             + "xmlns=\"http://www.w3.org/2000/svg\"></svg>\n"
+             + "      </div>\n"
+             + "    </div>\n"
+             + "    <div class=\"lb-cl-controls\">\n"
+             + "      <button class=\"lb-cl-btn\" onclick=\"lbClusterStep(-1)\">&#9664; Prev</button>\n"
+             + "      <div class=\"lb-cl-info\">\n"
+             + "        <span id=\"lb-cl-label\" class=\"lb-cl-label\"></span>\n"
+             + "        <span id=\"lb-cl-cnt\" class=\"lb-cl-cnt\"></span>\n"
+             + "      </div>\n"
+             + "      <button class=\"lb-cl-btn\" onclick=\"lbClusterStep(+1)\">Next &#9654;</button>\n"
+             + "    </div>\n"
+             + "    <div id=\"lb-cl-cap\" class=\"lb-cap\"></div>\n"
+             + "  </div>\n"
              + "</div>\n"
 
              // Tab buttons + content
@@ -144,19 +176,107 @@ public final class HtmlReportWriter {
              + verdictsContent
              + "</div>\n"
              + "<script>\n"
+             + "var _lbClData = null, _lbClIdx = 0;\n"
+             + "\n"
              + "function lbOpen(src, caption) {\n"
              + "  var lb = document.getElementById('lb');\n"
              + "  document.getElementById('lb-img').src = src;\n"
+             + "  document.getElementById('lb-img').style.display = '';\n"
              + "  document.getElementById('lb-cap').textContent = caption;\n"
+             + "  document.getElementById('lb-cap').style.display = '';\n"
+             + "  document.getElementById('lb-clusters').style.display = 'none';\n"
              + "  lb.classList.add('lb-visible');\n"
              + "  lb.focus();\n"
              + "}\n"
+             + "\n"
+             + "function lbOpenClusters(btn) {\n"
+             + "  var imgSrc  = btn.getAttribute('data-img');\n"
+             + "  var jsUrl   = btn.getAttribute('data-js');\n"
+             + "  var winKey  = btn.getAttribute('data-key');\n"
+             + "  var caption = btn.getAttribute('data-cap');\n"
+             + "  var lb = document.getElementById('lb');\n"
+             + "  document.getElementById('lb-img').style.display  = 'none';\n"
+             + "  document.getElementById('lb-cap').style.display  = 'none';\n"
+             + "  document.getElementById('lb-cl-cap').textContent = caption || '';\n"
+             + "  document.getElementById('lb-cl-img').src         = imgSrc  || '';\n"
+             + "  document.getElementById('lb-clusters').style.display = 'flex';\n"
+             + "  lb.classList.add('lb-visible');\n"
+             + "  lb.focus();\n"
+             + "  _lbClData = null;\n"
+             + "  _lbClIdx  = 0;\n"
+             + "  document.getElementById('lb-cl-status').textContent  = 'Loading\u2026';\n"
+             + "  document.getElementById('lb-cl-label').textContent   = '';\n"
+             + "  document.getElementById('lb-cl-cnt').textContent     = '';\n"
+             + "  document.getElementById('lb-cl-counter').textContent = '';\n"
+             + "  document.getElementById('lb-cl-svg').innerHTML = '';\n"
+             + "  if (window[winKey]) {\n"
+             + "    _lbClData = window[winKey]; _lbRenderCluster(0); return;\n"
+             + "  }\n"
+             + "  var s = document.createElement('script');\n"
+             + "  s.src = jsUrl;\n"
+             + "  s.onload = function() {\n"
+             + "    if (window[winKey]) { _lbClData = window[winKey]; _lbRenderCluster(0); }\n"
+             + "    else document.getElementById('lb-cl-status').textContent ="
+             + " 'Key not found: ' + winKey;\n"
+             + "  };\n"
+             + "  s.onerror = function() {\n"
+             + "    document.getElementById('lb-cl-status').textContent ="
+             + " 'Failed to load: ' + jsUrl;\n"
+             + "  };\n"
+             + "  document.head.appendChild(s);\n"
+             + "}\n"
+             + "\n"
              + "function lbClose() {\n"
              + "  document.getElementById('lb').classList.remove('lb-visible');\n"
              + "  document.getElementById('lb-img').src = '';\n"
+             + "  document.getElementById('lb-img').style.display = '';\n"
+             + "  document.getElementById('lb-cap').style.display = '';\n"
+             + "  document.getElementById('lb-clusters').style.display = 'none';\n"
+             + "  document.getElementById('lb-cl-svg').innerHTML = '';\n"
+             + "  _lbClData = null;\n"
              + "}\n"
+             + "\n"
+             + "function lbClusterStep(dir) {\n"
+             + "  if (!_lbClData || !_lbClData.clusters.length) return;\n"
+             + "  var n = _lbClData.clusters.length;\n"
+             + "  _lbRenderCluster(((_lbClIdx + dir) % n + n) % n);\n"
+             + "}\n"
+             + "\n"
+             + "function _lbRenderCluster(idx) {\n"
+             + "  if (!_lbClData) return;\n"
+             + "  var cls = _lbClData.clusters;\n"
+             + "  if (!cls || !cls.length) {\n"
+             + "    document.getElementById('lb-cl-status').textContent = 'No clusters found.';\n"
+             + "    return;\n"
+             + "  }\n"
+             + "  idx = ((idx % cls.length) + cls.length) % cls.length;\n"
+             + "  _lbClIdx = idx;\n"
+             + "  var c = cls[idx];\n"
+             + "  document.getElementById('lb-cl-status').textContent  = '';\n"
+             + "  document.getElementById('lb-cl-counter').textContent = (idx + 1) + ' / ' + cls.length;\n"
+             + "  document.getElementById('lb-cl-label').textContent   = c.label;\n"
+             + "  document.getElementById('lb-cl-cnt').textContent     = c.contours.length + ' contour(s)';\n"
+             + "  var svg = document.getElementById('lb-cl-svg');\n"
+             + "  svg.setAttribute('viewBox', '0 0 ' + _lbClData.imageW + ' ' + _lbClData.imageH);\n"
+             + "  svg.setAttribute('preserveAspectRatio', 'none');\n"
+             + "  svg.innerHTML = '';\n"
+             + "  c.contours.forEach(function(pts) {\n"
+             + "    if (!pts.length) return;\n"
+             + "    var el = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');\n"
+             + "    el.setAttribute('points', pts.map(function(p){return p[0]+','+p[1];}).join(' '));\n"
+             + "    el.setAttribute('fill',         c.colour + '33');\n"
+             + "    el.setAttribute('stroke',       c.colour);\n"
+             + "    el.setAttribute('stroke-width', '1.5');\n"
+             + "    svg.appendChild(el);\n"
+             + "  });\n"
+             + "}\n"
+             + "\n"
              + "document.addEventListener('keydown', function(e) {\n"
              + "  if (e.key === 'Escape') lbClose();\n"
+             + "  if (document.getElementById('lb-clusters').style.display !== 'none') {\n"
+             + "    if (e.key === 'ArrowLeft')  lbClusterStep(-1);\n"
+             + "    if (e.key === 'ArrowRight') lbClusterStep(+1);\n"
+             + "  }\n"
              + "});\n"
              + "</script>\n"
              + "</body>\n</html>\n";
@@ -168,6 +288,7 @@ public final class HtmlReportWriter {
 
     private static String buildResultsTab(List<AnalysisResult> results,
                                            Map<AnalysisResult, DetectionVerdict> verdicts,
+                                           Map<AnalysisResult, ClusterRef> clusterRefs,
                                            Path reportPath) {
         // Group by referenceId
         Map<ReferenceId, List<AnalysisResult>> byRef = results.stream()
@@ -481,7 +602,24 @@ public final class HtmlReportWriter {
                           .append(" ").append(r.matchScoreEmoji())
                           .append(" ").append(r.elapsedMs()).append("ms")
                           .append(verdictBadge.isEmpty() ? "" : "<br>" + verdictBadge)
-                          .append("</div>\n</div>\n");
+                          .append("</div>\n");
+                        // Cluster explorer button — only when a sidecar was written
+                        ClusterRef cr = clusterRefs != null ? clusterRefs.get(r) : null;
+                        if (cr != null) {
+                            String safeImg = imgSrc != null ? imgSrc : "";
+                            String clCap   = (r.referenceId() != null
+                                    ? esc(r.referenceId().name()) : "D")
+                                    + " | " + esc(r.variantLabel()) + " \u2014 Colour Clusters";
+                            sb.append("  <button class=\"cl-btn\""
+                                    + " data-img=\"").append(safeImg).append("\""
+                                    + " data-js=\"").append(cr.jsUrl()).append("\""
+                                    + " data-key=\"").append(cr.winKey()).append("\""
+                                    + " data-cap=\"").append(clCap).append("\""
+                                    + " onclick=\"lbOpenClusters(this)\""
+                                    + " title=\"Explore colour clusters for this scene\">"
+                                    + "\uD83D\uDD2C Clusters</button>\n");
+                        }
+                        sb.append("</div>\n"); // close scene-thumb
                     }
                     sb.append("</div>\n</details>\n"); // cf-group
                 }
@@ -935,6 +1073,162 @@ public final class HtmlReportWriter {
     }
 
     // =========================================================================
+    // Cluster sidecar writing
+    // =========================================================================
+
+    /**
+     * For each unique {@link SceneEntry} in {@code sceneMap}, writes a small JS file to
+     * {@code <reportDir>/clusters/<key>.js} containing the raw colour-cluster contour
+     * data from its {@link SceneDescriptor}.  The JS file assigns a single property on
+     * {@code window} so it can be loaded lazily via a dynamic {@code <script>} tag even
+     * when the report is served from a {@code file://} URL.
+     *
+     * @return map from each {@link AnalysisResult} to its {@link ClusterRef} (jsUrl +
+     *         winKey), or an empty map when no descriptors are available.
+     */
+    private static Map<AnalysisResult, ClusterRef> writeClusterSidecars(
+            List<AnalysisResult> results,
+            Map<AnalysisResult, SceneEntry> sceneMap,
+            Path reportPath) {
+
+        if (sceneMap == null || sceneMap.isEmpty()) return Collections.emptyMap();
+
+        Path clustersDir = reportPath.getParent().resolve("clusters");
+
+        // One JS file per unique SceneEntry instance (identity, not equality).
+        IdentityHashMap<SceneEntry, ClusterRef> sceneToRef = new IdentityHashMap<>();
+
+        for (Map.Entry<AnalysisResult, SceneEntry> e : sceneMap.entrySet()) {
+            SceneEntry scene = e.getValue();
+            if (sceneToRef.containsKey(scene)) continue;
+            if (scene == null || scene.descriptor() == null) {
+                sceneToRef.put(scene, null);
+                continue;
+            }
+
+            // Build a safe filename key from scene identity fields.
+            String refPart = scene.primaryReferenceId() != null
+                    ? scene.primaryReferenceId().name() : "D";
+            String bgPart  = scene.backgroundId() != null
+                    ? scene.backgroundId().name() : "NONE";
+            String varPart = scene.variantLabel() != null
+                    ? scene.variantLabel() : "default";
+            String safeKey = (refPart + "_" + bgPart + "_" + varPart)
+                    .replaceAll("[^A-Za-z0-9_]", "_");
+
+            String jsFilename = safeKey + ".js";
+            String winKey     = "__cluster_" + safeKey;
+
+            int W = 640, H = 480;
+            if (scene.sceneMat() != null && !scene.sceneMat().empty()) {
+                W = scene.sceneMat().cols();
+                H = scene.sceneMat().rows();
+            }
+
+            try {
+                Files.createDirectories(clustersDir);
+                String js = buildClusterJs(winKey, scene.descriptor(), W, H);
+                Files.writeString(clustersDir.resolve(jsFilename), js,
+                        StandardCharsets.UTF_8);
+                sceneToRef.put(scene, new ClusterRef("clusters/" + jsFilename, winKey));
+            } catch (IOException ex) {
+                sceneToRef.put(scene, null);
+            }
+        }
+
+        // Map every result back to its scene's ClusterRef.
+        Map<AnalysisResult, ClusterRef> out = new HashMap<>(results.size() * 2);
+        for (AnalysisResult r : results) {
+            SceneEntry scene = sceneMap.get(r);
+            if (scene != null) {
+                ClusterRef ref = sceneToRef.get(scene);
+                if (ref != null) out.put(r, ref);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Builds the content of a {@code clusters/<key>.js} sidecar file.
+     *
+     * <p>The file assigns a single window property:
+     * <pre>
+     *   window["__cluster_<key>"] = { imageW, imageH, clusters: [...] };
+     * </pre>
+     * Each cluster entry contains the raw contour points exactly as produced by
+     * {@link SceneDescriptor} — no filtering or simplification is applied.
+     */
+    private static String buildClusterJs(String winKey, SceneDescriptor desc,
+                                          int imageW, int imageH) {
+        StringBuilder sb = new StringBuilder(4096);
+        sb.append("window[\"").append(winKey).append("\"] = ");
+        sb.append("{\"imageW\":").append(imageW)
+          .append(",\"imageH\":").append(imageH)
+          .append(",\"clusters\":[");
+
+        List<SceneDescriptor.ClusterContours> clusters = desc.clusters();
+        for (int i = 0; i < clusters.size(); i++) {
+            if (i > 0) sb.append(",");
+            SceneDescriptor.ClusterContours cc = clusters.get(i);
+
+            sb.append("{\"label\":\"").append(clusterLabel(cc).replace("\"", "\\\"")).append("\"")
+              .append(",\"hue\":").append(cc.hue)
+              .append(",\"achromatic\":").append(cc.achromatic)
+              .append(",\"brightAchromatic\":").append(cc.brightAchromatic)
+              .append(",\"colour\":\"").append(clusterSvgColour(cc)).append("\"")
+              .append(",\"contours\":[");
+
+            List<MatOfPoint> contours = cc.contours;
+            for (int j = 0; j < contours.size(); j++) {
+                if (j > 0) sb.append(",");
+                sb.append("[");
+                Point[] pts = contours.get(j).toArray();
+                for (int k = 0; k < pts.length; k++) {
+                    if (k > 0) sb.append(",");
+                    sb.append("[").append((int) pts[k].x)
+                      .append(",").append((int) pts[k].y).append("]");
+                }
+                sb.append("]");
+            }
+            sb.append("]}");
+        }
+        sb.append("]};");
+        return sb.toString();
+    }
+
+    /** Human-readable cluster label for the explorer panel. */
+    private static String clusterLabel(SceneDescriptor.ClusterContours cc) {
+        if (cc.envelope)        return "Envelope (Combined Chromatic)";
+        if (cc.achromatic)      return cc.brightAchromatic
+                ? "Bright Achromatic (White / Light-Grey)"
+                : "Dark Achromatic (Black / Dark-Grey)";
+        return String.format("Chromatic H=%.0f\u00B0 (%s)",
+                cc.hue * 2.0, hueNameApprox(cc.hue));
+    }
+
+    /** SVG stroke/fill colour derived from the cluster's hue. */
+    private static String clusterSvgColour(SceneDescriptor.ClusterContours cc) {
+        if (cc.envelope)   return "#ffffff";
+        if (cc.achromatic) return cc.brightAchromatic ? "#e8e8e8" : "#888888";
+        // OpenCV hue is half-degrees (0-179); CSS hsl() expects full degrees (0-359).
+        int cssDeg = ((int) Math.round(cc.hue * 2.0)) % 360;
+        return String.format("hsl(%d,100%%,60%%)", cssDeg);
+    }
+
+    /** Approximate colour name from an OpenCV half-degree hue value. */
+    private static String hueNameApprox(double ocvHue) {
+        int deg = ((int) (ocvHue * 2.0)) % 360;
+        if (deg < 15 || deg >= 345) return "Red";
+        if (deg <  45)              return "Orange";
+        if (deg <  75)              return "Yellow";
+        if (deg < 150)              return "Green";
+        if (deg < 195)              return "Cyan";
+        if (deg < 255)              return "Blue";
+        if (deg < 285)              return "Violet";
+        return "Magenta";
+    }
+
+    // =========================================================================
     // CSS
     // =========================================================================
 
@@ -1111,6 +1405,40 @@ public final class HtmlReportWriter {
                      display: flex; align-items: center; justify-content: center;
                      z-index: 1001; line-height: 1; }
         .lb-close:hover { background: #444; color: #fff; }
+
+        /* Cluster explorer panel (inside lightbox) */
+        #lb-clusters { display: none; flex-direction: column; align-items: center;
+                        gap: 10px; max-height: 90vh; cursor: default; width: 100%; }
+        .lb-cl-header { display: flex; align-items: center; gap: 16px; width: 100%;
+                         justify-content: center; }
+        .lb-cl-title  { font-weight: bold; color: #a0c0ff; font-size: 0.9rem; }
+        .lb-cl-counter { color: #6080a0; font-size: 0.85rem; background: #1a1a2e;
+                          padding: 2px 10px; border-radius: 10px; min-width: 60px;
+                          text-align: center; }
+        .lb-cl-status { color: #8090b0; font-size: 0.8rem; min-height: 1.2em;
+                         text-align: center; }
+        .lb-cl-body   { overflow: auto; }
+        .lb-cl-img-wrap { position: relative; display: inline-block; }
+        .lb-cl-img-wrap img { display: block; max-width: 88vw; max-height: 62vh;
+                               background: #050508; }
+        .lb-cl-svg  { position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+                       pointer-events: none; }
+        .lb-cl-controls { display: flex; align-items: center; gap: 20px; }
+        .lb-cl-btn  { background: #1e2840; border: 1px solid #4060a0; color: #a0c0ff;
+                       padding: 6px 16px; border-radius: 4px; cursor: pointer;
+                       font-size: 0.85rem; }
+        .lb-cl-btn:hover { background: #253050; }
+        .lb-cl-info { text-align: center; min-width: 220px; }
+        .lb-cl-label { display: block; color: #d0d8f0; font-weight: bold;
+                        font-size: 0.9rem; }
+        .lb-cl-cnt  { display: block; color: #6080a0; font-size: 0.78rem; }
+
+        /* Scene-card cluster button */
+        .cl-btn { display: block; width: 100%; background: #141828;
+                   border: 0; border-top: 1px solid #252540;
+                   color: #6080b0; font-size: 0.7rem; padding: 4px 0;
+                   cursor: pointer; text-align: center; }
+        .cl-btn:hover { background: #1c2238; color: #90b0e0; }
     """;
 }
 

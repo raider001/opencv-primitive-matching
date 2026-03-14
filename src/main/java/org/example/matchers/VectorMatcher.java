@@ -159,8 +159,9 @@ public final class VectorMatcher {
             }
             double sceneDiag = Math.sqrt(sceneW * sceneW + sceneH * sceneH);
 
-            double bestScore = 0.0;
-            Rect   bestBbox  = null;
+            double bestScore  = 0.0;
+            Rect   bestBbox   = null;
+            SceneContourEntry bestAnchor = null;
 
             for (SceneContourEntry anchor : candidates) {
                 Rect anchorBbox = Imgproc.boundingRect(anchor.contour);
@@ -221,8 +222,39 @@ public final class VectorMatcher {
                         matched, descriptor, regionBbox);
 
                 if (score > bestScore) {
-                    bestScore = score;
-                    bestBbox  = regionBbox;
+                    bestScore  = score;
+                    bestBbox   = regionBbox;
+                    bestAnchor = anchor;
+                }
+            }
+
+            // ── Post-score bbox expansion ─────────────────────────────────
+            // Union in same-cluster sibling contours that are substantially
+            // contained within the winning bbox.  This ensures compound shapes
+            // (e.g. COMPOUND_CIRCLE_IN_RECT) where multiple contours share one
+            // achromatic cluster are reported with their full bounding extent.
+            //
+            // Condition: ≥ 75 % of the sibling's bbox area must already lie
+            // inside the current bestBbox.  Concentric / near-identical contours
+            // (outer boundary vs inner hole of the same gradient ring) satisfy
+            // this easily, while distant or only partially-overlapping background
+            // contours do not.
+            if (bestBbox != null && bestAnchor != null) {
+                for (SceneContourEntry ce : candidates) {
+                    if (ce == bestAnchor) continue;
+                    if (ce.clusterIdx != bestAnchor.clusterIdx) continue;
+                    Rect   ceBb      = Imgproc.boundingRect(ce.contour);
+                    double ceArea    = (double) ceBb.width * ceBb.height;
+                    if (ceArea <= 0) continue;
+                    int ix1 = Math.max(bestBbox.x, ceBb.x);
+                    int iy1 = Math.max(bestBbox.y, ceBb.y);
+                    int ix2 = Math.min(bestBbox.x + bestBbox.width,  ceBb.x + ceBb.width);
+                    int iy2 = Math.min(bestBbox.y + bestBbox.height, ceBb.y + ceBb.height);
+                    if (ix2 <= ix1 || iy2 <= iy1) continue;       // no overlap at all
+                    double interArea = (double)(ix2 - ix1) * (iy2 - iy1);
+                    if (interArea >= ceArea * 0.75) {              // ≥ 75 % contained
+                        bestBbox = unionRect(bestBbox, ceBb);
+                    }
                 }
             }
 
@@ -353,6 +385,15 @@ public final class VectorMatcher {
                         + matchScore  * W_MATCH
                         + geomScore   * W_GEOM;
 
+        // DEBUG — remove after diagnosis
+        if (combined > 0.4 && System.getProperty("vm.debug") != null) {
+            VectorSignature rs = primaryRef != null ? primaryRef.bestSig(EPSILON) : null;
+            SceneContourEntry ps = primaryScene != null ? primaryScene : null;
+            System.out.printf("[VM-DEBUG] count=%.3f match=%.3f geom=%.3f combined=%.3f | refType=%s refCirc=%.3f refV=%d | sceneType=%s sceneCirc=%.3f sceneV=%d%n",
+                countScore, matchScore, geomScore, combined,
+                rs != null ? rs.type : "?", rs != null ? rs.circularity : 0, rs != null ? rs.vertexCount : 0,
+                ps != null ? ps.sig.type : "?", ps != null ? ps.sig.circularity : 0, ps != null ? ps.sig.vertexCount : 0);
+        }
 
         return Math.max(0.0, Math.min(1.0, combined));
     }
@@ -738,6 +779,12 @@ public final class VectorMatcher {
         int x2 = Math.max(a.x + a.width,  b.x + b.width);
         int y2 = Math.max(a.y + a.height, b.y + b.height);
         return new Rect(x, y, x2 - x, y2 - y);
+    }
+
+    /** Returns true if the two rectangles overlap (share any area). */
+    private static boolean rectsIntersect(Rect a, Rect b) {
+        return a.x < b.x + b.width  && b.x < a.x + a.width
+            && a.y < b.y + b.height && b.y < a.y + a.height;
     }
 
     private static double bboxIoU(Rect a, Rect b) {

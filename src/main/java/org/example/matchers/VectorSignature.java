@@ -730,6 +730,13 @@ public final class VectorSignature {
         // Hard gate: cap cross-type matches well below any pass threshold
         if (hardGate) result = Math.min(result, 0.25);
 
+        // DEBUG — remove after diagnosis
+        if (result > 0.4 && System.getProperty("vm.debug") != null) {
+            System.out.printf("[SIG-DEBUG] result=%.3f hardGate=%b type=%s->%s typeScore=%.2f seg=%.3f topo=%.3f circ=%.3f(%.3f->%.3f) solid=%.3f vtx=%.2f angle=%.3f ar=%.3f%n",
+                result, hardGate, this.type, ref.type, typeScore, segScore, topoScore,
+                circScore, this.circularity, ref.circularity, solidityScore, vertexScore, angleScore, arMultiplier);
+        }
+
         return result;
     } // end computeRawSimilarity
 

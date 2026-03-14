@@ -107,13 +107,26 @@ public class MatchDiagnosticLibrary {
         boolean correctHit    = false;
         boolean missed        = false;
 
-        if (bestBbox != null && gt != null) {
-            iou           = iou(bestBbox, gt);
-            falsePositive = (scorePercent >= passThreshold) && (iou < 0.3);
-            badIou        = (scorePercent >= passThreshold) && (iou >= 0.3) && (iou < goodIou);
-            correctHit    = (scorePercent >= passThreshold) && (iou >= goodIou);
+        // ── Pass / fail rules ─────────────────────────────────────────────
+        // Positive scene (reference present): PASS when IoU ≥ 95 % of target.
+        // Negative scene (reference absent):  PASS when score < 60 %;
+        //                                     FAIL (false alarm) when score ≥ 60 %.
+        final double iouThreshold = goodIou * 0.95;  // e.g. 0.475 when goodIou = 0.5
+        final double fpGate       = 60.0;            // score above which a negative detection fails
+
+        if (gt != null) {
+            // Positive scene — reference is present
+            if (bestBbox != null) {
+                iou           = iou(bestBbox, gt);
+                falsePositive = (scorePercent >= fpGate)        && (iou < 0.3);
+                badIou        = (scorePercent >= passThreshold) && (iou >= 0.3) && (iou < iouThreshold);
+                correctHit    = (scorePercent >= passThreshold) && (iou >= iouThreshold);
+            }
+            if (scorePercent < passThreshold) missed = true;
+        } else {
+            // Negative scene — reference is absent; any score ≥ fpGate is a false alarm
+            falsePositive = (scorePercent >= fpGate);
         }
-        if (scorePercent < passThreshold && gt != null) missed = true;
         boolean lowScore = correctHit && (scorePercent < targetScore);
 
         // Derive scene sig for reporting
@@ -288,25 +301,31 @@ public class MatchDiagnosticLibrary {
     // ── Static geometry / IoU helpers (reusable) ──────────────────────────────
 
     /**
-     * Containment-aware IoU: {@code max(standard_IoU, IoMin)}.
+     * Coverage-scaled IoU: {@code recall × max(1, detArea / gtArea)}.
      *
-     * <p>Standard IoU heavily penalises a detected box that is larger than but
-     * fully <em>contains</em> the ground-truth rect (e.g. IoU ≈ 0.06 when the
-     * detection is 4× bigger).  IoMin = intersection / min(areaA, areaB) equals
-     * 1.0 whenever one rect is fully inside the other, so taking the max rewards
-     * correct containment while still using standard IoU for same-size boxes.
+     * <p><b>Parameter convention:</b> {@code a} = detection bbox, {@code b} = ground-truth bbox.
+     *
+     * <ul>
+     *   <li><b>1.0</b> — detection fits the GT exactly.</li>
+     *   <li><b>&gt; 1.0</b> — detection is larger than GT (e.g. 1.20 = 20 % bigger).
+     *       The scale factor only amplifies when the detection fully (or mostly) covers
+     *       the GT, because recall is also high in that case.</li>
+     *   <li><b>&lt; 1.0</b> — detection only covers part of the GT
+     *       (e.g. 0.80 = covers 80 % of GT area).</li>
+     *   <li><b>0.0</b> — no overlap at all.</li>
+     * </ul>
      */
     public static double iou(Rect a, Rect b) {
         int ix1 = Math.max(a.x, b.x),  iy1 = Math.max(a.y, b.y);
         int ix2 = Math.min(a.x + a.width,  b.x + b.width);
         int iy2 = Math.min(a.y + a.height, b.y + b.height);
         if (ix2 <= ix1 || iy2 <= iy1) return 0.0;
-        double inter = (double)(ix2 - ix1) * (iy2 - iy1);
-        double ua    = (double) a.width * a.height;
-        double ub    = (double) b.width * b.height;
-        double standardIou    = inter / (ua + ub - inter);
-        double containmentIou = inter / Math.min(ua, ub);   // IoMin — 1.0 when one is inside the other
-        return Math.max(standardIou, containmentIou);
+        double inter   = (double)(ix2 - ix1) * (iy2 - iy1);
+        double detArea = (double) a.width * a.height;
+        double gtArea  = (double) b.width * b.height;
+        double recall  = inter   / gtArea;                 // fraction of GT covered [0, 1]
+        double scale   = Math.max(1.0, detArea / gtArea);  // ≥ 1.0 when det is bigger than GT
+        return recall * scale;
     }
 
     public static Rect groundTruthRect(Mat shapeMat) {
