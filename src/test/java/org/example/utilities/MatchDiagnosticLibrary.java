@@ -287,14 +287,26 @@ public class MatchDiagnosticLibrary {
 
     // ── Static geometry / IoU helpers (reusable) ──────────────────────────────
 
+    /**
+     * Containment-aware IoU: {@code max(standard_IoU, IoMin)}.
+     *
+     * <p>Standard IoU heavily penalises a detected box that is larger than but
+     * fully <em>contains</em> the ground-truth rect (e.g. IoU ≈ 0.06 when the
+     * detection is 4× bigger).  IoMin = intersection / min(areaA, areaB) equals
+     * 1.0 whenever one rect is fully inside the other, so taking the max rewards
+     * correct containment while still using standard IoU for same-size boxes.
+     */
     public static double iou(Rect a, Rect b) {
-        int ix1 = Math.max(a.x, b.x),   iy1 = Math.max(a.y, b.y);
-        int ix2 = Math.min(a.x+a.width,  b.x+b.width);
-        int iy2 = Math.min(a.y+a.height, b.y+b.height);
+        int ix1 = Math.max(a.x, b.x),  iy1 = Math.max(a.y, b.y);
+        int ix2 = Math.min(a.x + a.width,  b.x + b.width);
+        int iy2 = Math.min(a.y + a.height, b.y + b.height);
         if (ix2 <= ix1 || iy2 <= iy1) return 0.0;
-        double inter = (double)(ix2-ix1)*(iy2-iy1);
-        double ua = (double)a.width*a.height, ub = (double)b.width*b.height;
-        return inter / (ua + ub - inter);
+        double inter = (double)(ix2 - ix1) * (iy2 - iy1);
+        double ua    = (double) a.width * a.height;
+        double ub    = (double) b.width * b.height;
+        double standardIou    = inter / (ua + ub - inter);
+        double containmentIou = inter / Math.min(ua, ub);   // IoMin — 1.0 when one is inside the other
+        return Math.max(standardIou, containmentIou);
     }
 
     public static Rect groundTruthRect(Mat shapeMat) {

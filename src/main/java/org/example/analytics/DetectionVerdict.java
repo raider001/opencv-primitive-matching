@@ -128,8 +128,13 @@ public enum DetectionVerdict {
     }
 
     /**
-     * Computes Intersection-over-Union for two axis-aligned rectangles.
-     * Retained as a utility even though the primary check now uses centre-in-rect.
+     * Containment-aware IoU: {@code max(standard_IoU, IoMin)}.
+     *
+     * <p>Standard IoU heavily penalises a detected box that is larger than but
+     * fully <em>contains</em> the ground-truth rect.  IoMin = intersection /
+     * min(areaA, areaB) equals 1.0 whenever one rect is fully inside the other,
+     * so taking the max rewards correct containment while still using standard
+     * IoU for same-size boxes.
      */
     public static double iou(Rect a, Rect b) {
         int ix = Math.max(a.x, b.x);
@@ -138,10 +143,12 @@ public enum DetectionVerdict {
         int ih = Math.min(a.y + a.height, b.y + b.height) - iy;
         if (iw <= 0 || ih <= 0) return 0.0;
         double intersection = (double) iw * ih;
-        double union        = (double) a.width * a.height
-                            + (double) b.width * b.height
-                            - intersection;
-        return union <= 0 ? 0.0 : intersection / union;
+        double ua           = (double) a.width * a.height;
+        double ub           = (double) b.width * b.height;
+        double union        = ua + ub - intersection;
+        double standardIou    = union <= 0 ? 0.0 : intersection / union;
+        double containmentIou = intersection / Math.min(ua, ub);  // IoMin — 1.0 when one is inside the other
+        return Math.max(standardIou, containmentIou);
     }
 
     // -------------------------------------------------------------------------
