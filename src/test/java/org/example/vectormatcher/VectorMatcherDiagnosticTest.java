@@ -30,7 +30,7 @@ import java.util.*;
 class VectorMatcherDiagnosticTest {
     private static final Path   OUTPUT      = Paths.get("test_output", "vector_matching");
     private static final double PASS_THRESH = 40.0;
-    private static final double TARGET      = 75.0;
+    private static final double TARGET      = 90.0;
     private static final double GOOD_IOU    = 0.5;
     private static final ReferenceId[] ALL_SHAPES = {
         ReferenceId.CIRCLE_FILLED, ReferenceId.RECT_FILLED, ReferenceId.TRIANGLE_FILLED,
@@ -337,12 +337,15 @@ class VectorMatcherDiagnosticTest {
         return m;
     }
     private static Mat buildArrow() {
+        // Reference proportions: hw=45, hh=20, headH=36 on 128×128 → AR = 90/72 = 1.25
+        // Scaled ×3 centred at (320,240): hw=135, hh=60, headH=108 → AR = 270/216 = 1.25
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Imgproc.polylines(m, List.of(new MatOfPoint(
-                new Point(160,200), new Point(340,200), new Point(340,155),
-                new Point(480,240), new Point(340,325), new Point(340,280),
-                new Point(160,280))),
-                true, new Scalar(255,255,255), 3);
+                new Point(185, 180), new Point(320, 180), new Point(320, 132),
+                new Point(455, 240),
+                new Point(320, 348), new Point(320, 300),
+                new Point(185, 300))),
+                true, new Scalar(255, 255, 255), 3);
         return m;
     }
     private static Mat buildRect() {

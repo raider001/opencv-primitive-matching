@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-This is a **multi-technique computer vision benchmark** built on OpenCV 4.7.0 (via `org.openpnp:opencv`). `MatcherRegistry.ALL` registers **13 matchers**; `BenchmarkReportRunner.KNOWN_REPORTS` adds `CF1` and `MCF1` (Colour-First region-proposal) entries for a total of 15 benchmark entries. Per-technique HTML reports are unified into a single benchmark dashboard.
+This is a **multi-technique computer vision benchmark** built on OpenCV 4.7.0 (via `org.openpnp:opencv`), compiled with **Java 25** (`maven.compiler.source=25` in `pom.xml`). `MatcherRegistry.ALL` registers **13 matchers**; `BenchmarkReportRunner.KNOWN_REPORTS` adds `CF1` and `MCF1` (Colour-First region-proposal) entries for a total of 15 benchmark entries. Per-technique HTML reports are unified into a single benchmark dashboard.
 
 **Core data flow:**
 ```
@@ -27,6 +27,8 @@ ReferenceId enum → ReferenceImageFactory (128×128 BGR Mat)
 4. Create a test class extending `AnalyticalTestBase` implementing the **seven** abstract methods (`tag`, `techniqueName`, `outputDir`, `debugMode`, `debugRef`, `saveVariants`, `runMatcher`).
 
 Variant names **must** follow the convention `<BASE>_CF_LOOSE` / `<BASE>_CF_TIGHT` for colour-filtered variants — this suffix is parsed at runtime by `cfTierFilter()`.
+
+> **No `AnalyticalTestBase` subclasses exist yet** for any of the 13 registered matchers. The first focused matcher test (`vectormatcher/VectorMatchingTest` and `VectorMatcherDiagnosticTest`) instead uses the standalone `MatchReportLibrary` / `MatchDiagnosticLibrary` utilities (`src/test/java/org/example/utilities/`) which produce their own `report.html` and `diagnostics.json`. Use `AnalyticalTestBase` for full-catalogue benchmark runs; use `MatchReportLibrary`/`MatchDiagnosticLibrary` for focused per-shape diagnostic tests.
 
 > **Exception — `MorphologyAnalyzer`**: uses string constants `VAR_POLY` / `VAR_CIRC` / `VAR_COMBINED` instead of a variant enum; `MatcherRegistry` calls `morphVariantNames()` to build the variant set programmatically.
 
@@ -53,11 +55,13 @@ Scenes live at `test_output/catalogue_samples/` as `<name>.png` + `<name>.json` 
 |---|---|
 | `A_CLEAN` | Reference centred, no transform |
 | `B_TRANSFORMED` | Scaled and/or rotated, repositioned |
-| `C_DEGRADED` | Noise, blur, occlusion, hue shift |
+| `C_DEGRADED` | Noise, blur, occlusion, hue shift — **defined in `SceneCategory` but not generated**; `SceneGenerator` has no `buildCategoryC()` and `SceneCatalogue.build()` includes only A, B, D |
 | `D_NEGATIVE` | No reference present (false-positive probe) |
 
-Full catalogue: ~1540 scenes. Slim catalogue: 177 scenes. Debug catalogue: 3 scenes (instant).
+Full catalogue: ~1540 scenes (A=352, B=1144, D=44). Slim catalogue: 187 scenes (93×A + 93×B + 1×D; increased from 177 when Milestone 21 added 5 multi-colour refs). Debug catalogue: 3 scenes (instant).
 Reference images: 93 synthetic 128×128 px BGR shapes in `test_output/references/` — 88 single-colour shapes plus 5 multi-colour shapes (`BICOLOUR_*`, `TRICOLOUR_*`) added in Milestone 21 for MCF1 validation.
+
+`SceneGenerator.buildMultiShape()` produces 8 hand-crafted demo scenes containing 2–4 reference shapes each in non-overlapping quadrant positions. These scenes are **not** part of the A/B/C/D catalogue — they exist for human inspection and multi-placement metadata validation only.
 
 ## Developer Workflows
 
@@ -68,8 +72,8 @@ mvn clean compile
 # Run all tests (Surefire already sets --enable-native-access=ALL-UNNAMED)
 mvn test
 
-# Run one test class
-mvn test -Dtest=TemplateMatchingTest
+# Run one test class (use an existing class, e.g. VectorMatchingTest or SceneCatalogueTest)
+mvn test -Dtest=VectorMatchingTest
 
 # Build shaded fat-JAR → target/PatternMatching-all.jar
 mvn package
@@ -104,6 +108,11 @@ test_output/
     annotated/
       <variant>/       ← annotated PNGs + JSON sidecars (ResultMetadataStore)
   benchmark/           ← unified report.html (Milestone 20)
+  colour_prefilter/    ← ColourPreFilterTest panels (Milestone 6)
+  colour_prefilter_visual/ ← ColourPreFilterVisualTest per-category panels
+  cluster_visual/      ← ColourClusterVisualTest cluster overlay images
+  infrastructure_test/ ← AnalysisInfrastructureTest dummy-matcher output
+  backgrounds/         ← BackgroundFactoryTest generated background PNGs
 ```
 
 ## Score Tiers

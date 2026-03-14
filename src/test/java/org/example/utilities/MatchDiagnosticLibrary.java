@@ -408,12 +408,16 @@ public class MatchDiagnosticLibrary {
         return m;
     }
     private static Mat arrow() {
+        // Reference proportions: hw=45, hh=20, headH=36 on 128×128 → AR = 90/72 = 1.25
+        // Scaled ×3 centred at (320,240): hw=135, hh=60, headH=108 → AR = 270/216 = 1.25
+        // Drawn as polylines (outline) to match ReferenceImageFactory.drawArrow()
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        Imgproc.fillPoly(m, List.of(new MatOfPoint(
-            new Point(160,200), new Point(340,200), new Point(340,155),
-            new Point(480,240), new Point(340,325), new Point(340,280),
-            new Point(160,280))),
-            new Scalar(255,255,255));
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(185, 180), new Point(320, 180), new Point(320, 132),
+                new Point(455, 240),
+                new Point(320, 348), new Point(320, 300),
+                new Point(185, 300))),
+                true, new Scalar(255, 255, 255), 3);
         return m;
     }
     private static Mat ellipse() {
@@ -432,9 +436,18 @@ public class MatchDiagnosticLibrary {
         return m;
     }
     private static Mat plus() {
+        // Reference proportions: SIZE=128, ctr=44 → shape spans [16,112]×[16,112] = 96×96 (AR=1.0)
+        //   half_total=48, half_arm=20, arm_width=40 (symmetric both axes)
+        // Scaled ×2.5 centred at (320,240): half_total=120, half_arm=50 → 240×240 (AR=1.0)
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        Imgproc.rectangle(m, new Point(270,140), new Point(370,340), new Scalar(255,255,255), -1);
-        Imgproc.rectangle(m, new Point(170,200), new Point(470,280), new Scalar(255,255,255), -1);
+        Imgproc.fillPoly(m, List.of(new MatOfPoint(
+                new Point(270, 120), new Point(370, 120),
+                new Point(370, 190), new Point(440, 190),
+                new Point(440, 290), new Point(370, 290),
+                new Point(370, 360), new Point(270, 360),
+                new Point(270, 290), new Point(200, 290),
+                new Point(200, 190), new Point(270, 190))),
+                new Scalar(255, 255, 255));
         return m;
     }
     private static Mat concaveArrowhead() {
