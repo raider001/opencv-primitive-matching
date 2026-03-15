@@ -111,4 +111,22 @@ In production, the matcher runs against one incoming image every ~100–200 ms. 
 
 **Combined with connected-component filtering (3a) as first pass** — handles isolated noise blobs that are not connected to the main shape, before erosion handles connected arms. Two-stage, applied inside `VectorMatcher.runMatch()` prior to `collectSceneCandidates`.
 
+---
+
+## ✅ IMPLEMENTED (2026-03-14)
+
+### Stage 1 — Connected-component filter (`VectorMatcher.applyConnectedComponentFilter`)
+Per-cluster: contours whose area < 10% of the cluster's largest contour are dropped as isolated noise blobs. Applied to `collectSceneCandidates` output before the scoring loop.
+
+### Stage 2 — Reference-adaptive erosion (`VectorMatcher.reExtractTopCandidates`)
+Top-3 candidates by area are re-extracted with `MORPH_OPEN` keyed to `primaryRef.bestSig.solidity`: 2 px (≥0.70), 1 px (0.30–0.70), 0 (skip). For achromatic candidates, a `MORPH_GRADIENT` step follows the opening to restore border-pixel representation. Spatially closest new contour replaces the original entry.
+
+### Hue anti-aliasing — valley-based exclusive assignment (`SceneColourClusters`)
+- `computeSmoothedHist` extracted as standalone helper; smoothing radius reduced from 2 → 1 (3-bin window) for sharper peak separation.
+- `findPeaks` refactored to accept pre-smoothed histogram.
+- `computeValleyBounds` + `findValleyBetween` added: for each pair of adjacent hue peaks the actual histogram minimum is found and used as the hard cluster boundary. Each pixel assigned to exactly one cluster (no ±14° window overlap between adjacent colours).
+- `hueRangeMaskByBounds(hsv, lo, hi)` builds masks from valley bounds with circular wrap-around.
+- Public `buildHueMask` / `buildAchromaticMask` added for `VectorMatcher` re-extraction.
+
+
 

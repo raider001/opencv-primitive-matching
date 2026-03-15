@@ -2,6 +2,7 @@ package org.example.utilities;
 
 import org.example.analytics.AnalysisResult;
 import org.example.analytics.AnalysisResult;
+import org.example.colour.ColourCluster;
 import org.example.colour.SceneColourClusters;
 import org.example.factories.BackgroundFactory;
 import org.example.factories.BackgroundId;
@@ -521,10 +522,10 @@ public class MatchDiagnosticLibrary {
     public static List<double[]> allScoredBboxes(Mat scene, VectorSignature refSig) {
         // Build the full list of ref sigs via colour clusters (same as VectorMatcher)
         List<VectorSignature> refSigs = new ArrayList<>();
-        List<SceneColourClusters.Cluster> refClusters = SceneColourClusters.extract(scene);
+        List<ColourCluster> refClusters = SceneColourClusters.extract(scene);
         // We don't have the original ref Mat here, so fall back to the single sig passed in
         refSigs.add(refSig);
-        for (SceneColourClusters.Cluster c : refClusters) c.release();
+        for (ColourCluster c : refClusters) c.release();
 
         return allScoredBboxes(scene, refSigs);
     }
@@ -536,8 +537,8 @@ public class MatchDiagnosticLibrary {
         if (refSigs == null || refSigs.isEmpty()) return hits;
         double area = (double) scene.rows() * scene.cols();
         double eps  = VectorVariant.VECTOR_NORMAL.epsilonFactor();
-        List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(scene);
-        for (SceneColourClusters.Cluster c : clusters) {
+        List<ColourCluster> clusters = SceneColourClusters.extract(scene);
+        for (ColourCluster c : clusters) {
             List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(c.mask);
             double maxA = contours.stream()
                     .mapToDouble(cnt -> { Rect r = Imgproc.boundingRect(cnt); return (double)r.width*r.height; })

@@ -1,6 +1,7 @@
 package org.example.vectormatcher;
 import org.example.OpenCvLoader;
 import org.example.analytics.AnalysisResult;
+import org.example.colour.ColourCluster;
 import org.example.colour.SceneColourClusters;
 import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
@@ -330,9 +331,9 @@ class VectorMatcherDiagnosticTest {
 
         // Show what clusters the ref image has
         System.out.printf("%n=== REF CLUSTERS: %s ===%n", refId.name());
-        List<SceneColourClusters.Cluster> refClusters = SceneColourClusters.extract(ref);
+        List<ColourCluster> refClusters = SceneColourClusters.extract(ref);
         for (int i = 0; i < refClusters.size(); i++) {
-            SceneColourClusters.Cluster c = refClusters.get(i);
+            ColourCluster c = refClusters.get(i);
             List<MatOfPoint> cnts = SceneDescriptor.contoursFromMask(c.mask);
             System.out.printf("  ref cluster %d: hue=%.0f achromatic=%b px=%d contours=%d%n",
                 i, c.hue, c.achromatic, Core.countNonZero(c.mask), cnts.size());

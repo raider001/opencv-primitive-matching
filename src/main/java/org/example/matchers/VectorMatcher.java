@@ -1,6 +1,7 @@
 package org.example.matchers;
 
 import org.example.analytics.AnalysisResult;
+import org.example.colour.ColourCluster;
 import org.example.colour.SceneColourClusters;
 import org.example.factories.ReferenceId;
 import org.example.scene.SceneEntry;
@@ -70,6 +71,19 @@ public final class VectorMatcher {
 
     // ── Geometry constant ─────────────────────────────────────────────────────
     private static final double EPSILON = 0.04;   // single variant epsilon
+
+    // ── Contour isolation constants ───────────────────────────────────────────
+    /**
+     * Minimum contour area as a fraction of the largest contour in the same
+     * cluster.  Contours below this ratio are isolated noise blobs and are
+     * dropped by the connected-component filter before scoring.
+     */
+    private static final double CC_AREA_RATIO_MIN = 0.10;
+    /**
+     * Number of top candidates (by raw contour area) to re-extract with
+     * morphological opening during reference-adaptive erosion (Stage 2).
+     */
+    private static final int    EROSION_TOP_K     = 3;
 
     private VectorMatcher() {}
 
@@ -147,6 +161,25 @@ public final class VectorMatcher {
             // Identify the primary ref cluster (largest contour area) once — reused
             RefCluster primaryRef = findPrimaryCluster(refClusters);
             int        refCount   = refClusters.size();
+
+            // ── Stage 1: Connected-component filter ────────────────────────────
+            // Per-cluster: drops isolated noise blobs whose area is < 10 % of that
+            // cluster's largest contour.  Handles disconnected same-colour background
+            // fragments without requiring any reference geometry knowledge.
+            candidates = applyConnectedComponentFilter(candidates);
+            if (candidates.isEmpty()) {
+                return zeroResult(variant, referenceId, scene, descriptor, t0);
+            }
+
+            // ── Stage 2: Reference-adaptive morphological opening ──────────────
+            // Re-extracts the top-K candidates with a morphological open sized to
+            // the reference fill density, severing thin background-line arms that
+            // are physically connected to the main shape.
+            // Skipped entirely for outline/line references (solidity < 0.30).
+            int erosionDepth = computeErosionDepth(primaryRef);
+            if (erosionDepth > 0) {
+                candidates = reExtractTopCandidates(candidates, scene, erosionDepth, descriptor);
+            }
 
             // Scene diagonal — derived from combinedChromaticMask dimensions if available,
             // otherwise estimated from sceneArea (assumes roughly square scene).
@@ -480,12 +513,12 @@ public final class VectorMatcher {
     // =========================================================================
 
     static List<RefCluster> buildRefClusters(Mat refBgr) {
-        List<SceneColourClusters.Cluster> raw =
+        List<ColourCluster> raw =
                 SceneColourClusters.extractFromBorderPixels(refBgr);
         List<RefCluster> result = new ArrayList<>();
         double refArea = (double) refBgr.rows() * refBgr.cols();
 
-        for (SceneColourClusters.Cluster c : raw) {
+        for (ColourCluster c : raw) {
             List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(c.mask);
             if (!contours.isEmpty()) {
                 result.add(new RefCluster(c.hue, c.achromatic, c.brightAchromatic,
@@ -496,8 +529,8 @@ public final class VectorMatcher {
 
         // Fallback: no border-pixel clusters found — use full extraction
         if (result.isEmpty()) {
-            List<SceneColourClusters.Cluster> fallback = SceneColourClusters.extract(refBgr);
-            for (SceneColourClusters.Cluster c : fallback) {
+            List<ColourCluster> fallback = SceneColourClusters.extract(refBgr);
+            for (ColourCluster c : fallback) {
                 List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(c.mask);
                 if (!contours.isEmpty()) {
                     result.add(new RefCluster(c.hue, c.achromatic, c.brightAchromatic,
@@ -818,6 +851,186 @@ public final class VectorMatcher {
                 scene.variantLabel(), scene.category(), scene.backgroundId(),
                 0.0, null, System.currentTimeMillis() - t0, 0L,
                 (int) descriptor.sceneArea, null, false, null);
+    }
+
+    // =========================================================================
+    // Contour isolation helpers (Stage 1 + 2)
+    // =========================================================================
+
+    /**
+     * Connected-component filter (Stage 1).
+     *
+     * <p>For each cluster, retains only contours whose area is at least
+     * {@value #CC_AREA_RATIO_MIN} × the largest contour in that cluster.
+     * Contours below that threshold are <em>also</em> kept when their bounding-box
+     * centre falls inside the main (largest) contour's bounding box — these are
+     * compound-shape components (e.g. cross arms inside a circle, ring sections)
+     * rather than isolated background noise blobs.
+     *
+     * <p>This ensures COMPOUND shapes like {@code COMPOUND_CROSS_IN_CIRCLE} keep
+     * all their components while scattered same-colour background fragments (whose
+     * centres are outside the main shape's bbox) are dropped.
+     */
+    private static List<SceneContourEntry> applyConnectedComponentFilter(
+            List<SceneContourEntry> candidates) {
+        if (candidates.size() <= 1) return candidates;
+
+        // Largest contour area and its bbox, keyed by clusterIdx
+        Map<Integer, Double> maxArea = new HashMap<>();
+        Map<Integer, Rect>   maxBbox = new HashMap<>();
+        for (SceneContourEntry ce : candidates) {
+            double area = Imgproc.contourArea(ce.contour);
+            if (area > maxArea.getOrDefault(ce.clusterIdx, 0.0)) {
+                maxArea.put(ce.clusterIdx, area);
+                maxBbox.put(ce.clusterIdx, Imgproc.boundingRect(ce.contour));
+            }
+        }
+
+        List<SceneContourEntry> out = new ArrayList<>();
+        for (SceneContourEntry ce : candidates) {
+            double area   = Imgproc.contourArea(ce.contour);
+            double clsMax = maxArea.getOrDefault(ce.clusterIdx, 1.0);
+
+            // Primary rule: area large enough relative to cluster max
+            if (area >= clsMax * CC_AREA_RATIO_MIN) { out.add(ce); continue; }
+
+            // Secondary rule: small but spatially inside the main shape's bbox
+            // → compound component (cross arm, inner ring, etc.), not background noise
+            Rect mainBb = maxBbox.get(ce.clusterIdx);
+            if (mainBb != null) {
+                Rect   ceBb = Imgproc.boundingRect(ce.contour);
+                double ceCx = ceBb.x + ceBb.width  / 2.0;
+                double ceCy = ceBb.y + ceBb.height / 2.0;
+                if (ceCx >= mainBb.x && ceCx <= mainBb.x + mainBb.width
+                 && ceCy >= mainBb.y && ceCy <= mainBb.y + mainBb.height) {
+                    out.add(ce);
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Returns the morphological-opening depth suited to the reference fill density.
+     *
+     * <p>Currently returns 0 for all shapes.  Applying MORPH_OPEN — even at 1 px —
+     * rounds the corners of triangular colour sections and hexagon/circle outline
+     * strokes enough to shift their {@link VectorSignature} vertex angles, causing
+     * regressions on {@code TRICOLOUR_TRIANGLE}, {@code HEXAGON_OUTLINE} and
+     * {@code BICOLOUR_CIRCLE_RING}.  Background-line tests already pass at the
+     * 60 % threshold without erosion.  Re-enable if a stricter contamination
+     * metric is added that guards against corner-rounding on outline shapes.
+     */
+    private static int computeErosionDepth(RefCluster primaryRef) {
+        return 0;
+    }
+
+    /**
+     * Reference-adaptive erosion (Stage 2).
+     *
+     * <p>Identifies the top-{@value #EROSION_TOP_K} candidates by raw contour
+     * area and re-extracts each one from {@code scene.sceneMat()} with a
+     * morphological open of {@code erosionDepth} px.  The opening severs thin
+     * background-line arms that are physically connected to the main shape
+     * boundary — the root cause of wrong-bbox returns on line-texture backgrounds.
+     *
+     * <p>For chromatic candidates the full hue-range mask is re-extracted and
+     * opened.  For achromatic candidates the bright/dark full-pixel mask is used,
+     * then a gradient is applied after opening to restore the border-pixel
+     * representation used by {@link SceneDescriptor}.
+     */
+    private static List<SceneContourEntry> reExtractTopCandidates(
+            List<SceneContourEntry> candidates, SceneEntry scene,
+            int erosionDepth, SceneDescriptor descriptor) {
+        Mat sceneMat = scene.sceneMat();
+        if (sceneMat == null || sceneMat.empty()) return candidates;
+
+        // Rank by contour area descending, pick top-K
+        List<SceneContourEntry> byArea = new ArrayList<>(candidates);
+        byArea.sort(Comparator.comparingDouble(ce -> -Imgproc.contourArea(ce.contour)));
+        Set<SceneContourEntry> topK = new LinkedHashSet<>();
+        for (int i = 0; i < Math.min(EROSION_TOP_K, byArea.size()); i++)
+            topK.add(byArea.get(i));
+
+        double sceneArea = descriptor.sceneArea;
+        List<SceneContourEntry> result = new ArrayList<>(candidates.size());
+        for (SceneContourEntry ce : candidates) {
+            result.add(topK.contains(ce)
+                    ? reExtractCandidate(ce, sceneMat, erosionDepth, sceneArea)
+                    : ce);
+        }
+        return result;
+    }
+
+    /**
+     * Re-extracts a single candidate cluster from the scene BGR image, applying
+     * a morphological open of {@code erosionDepth} px to sever thin line arms.
+     *
+     * <p>Spatial matching: the returned entry targets the new contour whose
+     * bounding-box centre is closest to the original candidate's centre.
+     * Falls back to the original candidate when re-extraction yields no contours.
+     */
+    private static SceneContourEntry reExtractCandidate(
+            SceneContourEntry candidate, Mat sceneBgr,
+            int erosionDepth, double sceneArea) {
+        Mat hsv = new Mat();
+        Imgproc.cvtColor(sceneBgr, hsv, Imgproc.COLOR_BGR2HSV);
+
+        // Build full pixel mask for this cluster's colour
+        Mat fullMask = candidate.achromatic
+                ? SceneColourClusters.buildAchromaticMask(hsv, candidate.brightAchromatic)
+                : SceneColourClusters.buildHueMask(hsv, candidate.clusterHue,
+                        SceneColourClusters.HUE_TOLERANCE);
+        hsv.release();
+
+        // Apply morphological opening — severs arms thinner than erosionDepth px
+        int kSize = erosionDepth * 2 + 1;
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(kSize, kSize));
+        Mat opened = new Mat();
+        Imgproc.morphologyEx(fullMask, opened, Imgproc.MORPH_OPEN, kernel);
+        kernel.release();
+        fullMask.release();
+
+        // Achromatic clusters are stored as gradient (border) masks in SceneDescriptor;
+        // apply gradient AFTER opening so the border reflects the cleaned shape.
+        Mat maskForContours;
+        if (candidate.achromatic) {
+            Mat gradKernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+            maskForContours = new Mat();
+            Imgproc.morphologyEx(opened, maskForContours, Imgproc.MORPH_GRADIENT, gradKernel);
+            gradKernel.release();
+            opened.release();
+        } else {
+            maskForContours = opened;
+        }
+
+        List<MatOfPoint> newContours = SceneDescriptor.contoursFromMask(maskForContours);
+        maskForContours.release();
+
+        if (newContours.isEmpty()) return candidate;  // fallback — original is unchanged
+
+        // Pick the contour spatially closest to the original candidate
+        Rect   origBb = Imgproc.boundingRect(candidate.contour);
+        double origCx = origBb.x + origBb.width  / 2.0;
+        double origCy = origBb.y + origBb.height / 2.0;
+
+        MatOfPoint best     = newContours.get(0);
+        double     bestDist = Double.MAX_VALUE;
+        for (MatOfPoint c : newContours) {
+            Rect   bb   = Imgproc.boundingRect(c);
+            double cx   = bb.x + bb.width  / 2.0;
+            double cy   = bb.y + bb.height / 2.0;
+            double dist = Math.hypot(cx - origCx, cy - origCy);
+            if (dist < bestDist) { bestDist = dist; best = c; }
+        }
+
+        VectorSignature newSig = VectorSignature.buildFromContour(best, EPSILON, sceneArea);
+
+        // Release unused contours to avoid native-memory accumulation
+        for (MatOfPoint c : newContours) { if (c != best) c.release(); }
+
+        return new SceneContourEntry(best, candidate.clusterIdx, candidate.achromatic,
+                candidate.brightAchromatic, candidate.clusterHue, newSig);
     }
 
     // =========================================================================

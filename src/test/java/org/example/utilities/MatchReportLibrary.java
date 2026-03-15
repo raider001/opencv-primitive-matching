@@ -1,6 +1,7 @@
 package org.example.utilities;
 
 import org.example.analytics.AnalysisResult;
+import org.example.colour.ColourCluster;
 import org.example.colour.SceneColourClusters;
 import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
@@ -46,7 +47,7 @@ public class MatchReportLibrary {
             double score, boolean passed,
             String refOrig, String refPoints,
             String sceneOrig,
-            String allPoints, String clusterJson, String sceneAnnot,
+            String allPoints, String sceneAnnot,
             double iou,
             long elapsedMs, long descriptorMs) {}
 
@@ -177,8 +178,8 @@ public class MatchReportLibrary {
             // every colour region and edge boundary is visible — exactly mirrors how
             // SceneColourClusters works on the scene side.
             List<MatOfPoint> refContours = new ArrayList<>();
-            List<SceneColourClusters.Cluster> refClusters = SceneColourClusters.extract(refOrig);
-            for (SceneColourClusters.Cluster c : refClusters) {
+            List<ColourCluster> refClusters = SceneColourClusters.extract(refOrig);
+            for (ColourCluster c : refClusters) {
                 refContours.addAll(SceneDescriptor.contoursFromMask(c.mask));
                 c.release();
             }
@@ -200,49 +201,13 @@ public class MatchReportLibrary {
 
 
         // ── Colour clusters (what the matcher actually sees) ──────────────
+        // Each cluster is drawn in its actual hue colour (chromatic) or grey
+        // (achromatic).  Labels show peak hue and valley-based exclusive bounds.
         String allPointsPng;
-        String clusterJson;
         {
-            List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(sceneWithRef);
-            List<MatOfPoint> allContours = new ArrayList<>();
-
-            // Build per-cluster JSON while contour masks are still live
-            StringBuilder cj = new StringBuilder();
-            cj.append("{\"imageW\":").append(sceneWithRef.cols())
-              .append(",\"imageH\":").append(sceneWithRef.rows())
-              .append(",\"clusters\":[");
-
-            for (int ci = 0; ci < clusters.size(); ci++) {
-                SceneColourClusters.Cluster c = clusters.get(ci);
-                List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(c.mask);
-                allContours.addAll(contours);
-
-                if (ci > 0) cj.append(",");
-                String clabel  = clusterLabel(c);
-                String ccolour = clusterColour(c);
-                cj.append("{\"label\":\"").append(clabel.replace("\\", "\\\\").replace("\"", "\\\"")).append("\"")
-                  .append(",\"colour\":\"").append(ccolour).append("\"")
-                  .append(",\"contours\":[");
-                for (int j = 0; j < contours.size(); j++) {
-                    if (j > 0) cj.append(",");
-                    cj.append("[");
-                    Point[] pts = contours.get(j).toArray();
-                    for (int k = 0; k < pts.length; k++) {
-                        if (k > 0) cj.append(",");
-                        cj.append("[").append((int) pts[k].x)
-                          .append(",").append((int) pts[k].y).append("]");
-                    }
-                    cj.append("]");
-                }
-                cj.append("]}");
-                c.release();
-            }
-            cj.append("]}");
-            clusterJson = cj.toString();
-
-            Mat graph = VectorMatcher.drawContourGraph(sceneWithRef.size(), null, allContours, 0);
-            allPointsPng = matToBase64Png(graph);
-            graph.release();
+            List<ColourCluster> clusters = SceneColourClusters.extract(sceneWithRef);
+            allPointsPng = buildClusterOverlay(sceneWithRef, clusters);
+            clusters.forEach(ColourCluster::release);
         }
 
         // ── Annotated result ──────────────────────────────────────────────
@@ -282,7 +247,7 @@ public class MatchReportLibrary {
         rows.add(new ReportRow(stage, label, shapeName, sceneDesc,
                 score, passed,
                 refOrigPng, refPointsPng,
-                sceneOrigPng, allPointsPng, clusterJson, sceneAnnotPng,
+                sceneOrigPng, allPointsPng, sceneAnnotPng,
                 iou, elapsedMs, descriptorMs));
 
         sceneWithRef.release();
@@ -494,7 +459,6 @@ public class MatchReportLibrary {
         for (Map.Entry<String, List<ReportRow>> e : byStage.entrySet()) {
             sb.append("<section><h2>").append(esc(e.getKey())).append("</h2>");
             for (ReportRow r : e.getValue()) {
-                int ri = rows.indexOf(r); // unique row index for element IDs
                 // Row is green (pass) or red (fail) — purely score + IoU
                 String cls = r.passed() ? "row pass" : "row fail";
                 sb.append("<div class='").append(cls).append("'>")
@@ -530,9 +494,8 @@ public class MatchReportLibrary {
                 sb.append("<div class='pipeline-row'><div class='pipeline'>");
                 step(sb, r.refOrig(),    "Ref");
                 step(sb, r.refPoints(),  "Ref Points");
-                stepWithId(sb, r.sceneOrig(), "Scene", "si-" + ri);
-                stepWithClusters(sb, r.allPoints(), "Colour Clusters",
-                        r.clusterJson(), "si-" + ri, r.label());
+                step(sb, r.sceneOrig(),  "Scene");
+                step(sb, r.allPoints(),  "Clusters (hue-coloured)");
                 step(sb, r.sceneAnnot(), "Match");
                 sb.append("</div>")
                   .append("<div class='pipeline-score'>")
@@ -549,141 +512,79 @@ public class MatchReportLibrary {
           .append("<button class='lb-close' onclick='closeLb()'>✕</button>")
           .append("<img id='lb-img' src='' alt='' class='lb-img'/>")
           .append("<div id='lb-caption' class='lb-caption'></div></div></div>")
-
-          // Cluster explorer overlay — separate from the standard image lightbox
-          .append("<div id='cl-lb' class='cl-lb-overlay' onclick='closeCluster()'>")
-          .append("<div class='cl-lb-box' onclick='event.stopPropagation()'>")
-          .append("<button class='lb-close' onclick='closeCluster()'>✕</button>")
-          .append("<div class='cl-lb-header'>")
-          .append("<span>&#x1F52C; Colour Cluster Explorer</span>")
-          .append("<span id='cl-counter' class='cl-counter'></span>")
-          .append("</div>")
-          .append("<div id='cl-status' class='cl-status'></div>")
-          .append("<div class='cl-img-wrap'>")
-          .append("<img id='cl-base-img' src='' alt=''>")
-          .append("<svg id='cl-svg' class='cl-svg' xmlns='http://www.w3.org/2000/svg'></svg>")
-          .append("</div>")
-          .append("<div class='cl-controls'>")
-          .append("<button class='cl-nav-btn' onclick='clusterStep(-1)'>&#9664; Prev</button>")
-          .append("<div class='cl-info'>")
-          .append("<span id='cl-label'></span>")
-          .append("<span id='cl-cnt'></span>")
-          .append("</div>")
-          .append("<button class='cl-nav-btn' onclick='clusterStep(+1)'>Next &#9654;</button>")
-          .append("</div>")
-          .append("<div id='cl-cap' class='lb-caption'></div>")
-          .append("</div></div>")
-
           .append("<script>")
           .append("function openLb(s,c){document.getElementById('lb-img').src=s;")
           .append("document.getElementById('lb-caption').textContent=c;")
           .append("document.getElementById('lb').classList.add('lb-visible');}")
           .append("function closeLb(){document.getElementById('lb').classList.remove('lb-visible');}")
-
-          .append("var _clData=null,_clIdx=0;")
-          .append("function openCluster(btn){")
-          .append("  var json=btn.getAttribute('data-clusters');")
-          .append("  var sceneId=btn.getAttribute('data-scene-id');")
-          .append("  var cap=btn.getAttribute('data-cap');")
-          .append("  var imgEl=document.getElementById(sceneId);")
-          .append("  document.getElementById('cl-base-img').src=imgEl?imgEl.src:'';")
-          .append("  document.getElementById('cl-cap').textContent=cap||'';")
-          .append("  _clData=JSON.parse(json); _clIdx=0;")
-          .append("  document.getElementById('cl-lb').classList.add('cl-visible');")
-          .append("  clRender(0);")
-          .append("}")
-          .append("function closeCluster(){")
-          .append("  document.getElementById('cl-lb').classList.remove('cl-visible');")
-          .append("  document.getElementById('cl-svg').innerHTML='';")
-          .append("  _clData=null;")
-          .append("}")
-          .append("function clusterStep(d){")
-          .append("  if(!_clData||!_clData.clusters.length)return;")
-          .append("  var n=_clData.clusters.length;")
-          .append("  clRender((_clIdx+d+n)%n);")
-          .append("}")
-          .append("function clRender(idx){")
-          .append("  if(!_clData)return;")
-          .append("  var cls=_clData.clusters;")
-          .append("  if(!cls||!cls.length){document.getElementById('cl-status').textContent='No clusters.';return;}")
-          .append("  idx=((idx%cls.length)+cls.length)%cls.length; _clIdx=idx;")
-          .append("  var c=cls[idx];")
-          .append("  document.getElementById('cl-status').textContent='';")
-          .append("  document.getElementById('cl-counter').textContent=(idx+1)+' / '+cls.length;")
-          .append("  document.getElementById('cl-label').textContent=c.label;")
-          .append("  document.getElementById('cl-cnt').textContent=c.contours.length+' contour(s)';")
-          .append("  var svg=document.getElementById('cl-svg');")
-          .append("  svg.setAttribute('viewBox','0 0 '+_clData.imageW+' '+_clData.imageH);")
-          .append("  svg.setAttribute('preserveAspectRatio','none');")
-          .append("  svg.innerHTML='';")
-          .append("  c.contours.forEach(function(pts){")
-          .append("    if(!pts.length)return;")
-          .append("    var el=document.createElementNS('http://www.w3.org/2000/svg','polygon');")
-          .append("    el.setAttribute('points',pts.map(function(p){return p[0]+','+p[1];}).join(' '));")
-          .append("    el.setAttribute('fill',c.colour+'33');")
-          .append("    el.setAttribute('stroke',c.colour);")
-          .append("    el.setAttribute('stroke-width','1.5');")
-          .append("    svg.appendChild(el);")
-          .append("  });")
-          .append("}")
-          .append("document.addEventListener('keydown',function(e){")
-          .append("  if(document.getElementById('cl-lb').classList.contains('cl-visible')){")
-          .append("    if(e.key==='ArrowLeft')clusterStep(-1);")
-          .append("    if(e.key==='ArrowRight')clusterStep(+1);")
-          .append("    if(e.key==='Escape')closeCluster();")
-          .append("  }else if(e.key==='Escape')closeLb();")
-          .append("});")
+          .append("document.addEventListener('keydown',e=>{if(e.key==='Escape')closeLb();});")
           .append("</script></body></html>");
         return sb.toString();
     }
 
-    /** Like {@link #step} but stamps the img element with a unique {@code id}. */
-    private static void stepWithId(StringBuilder sb, String b64, String label, String imgId) {
-        sb.append("<div class='step'>");
-        if (b64 != null && !b64.isEmpty()) {
-            String src = "data:image/png;base64," + b64;
-            sb.append("<img id='").append(imgId).append("' src='").append(src)
-              .append("' class='step-img' alt='").append(esc(label))
-              .append("' title='Click to enlarge' onclick=\"openLb('").append(src)
-              .append("','").append(esc(label)).append("')\" style='cursor:zoom-in'/>");
-        } else {
-            sb.append("<img id='").append(imgId).append("' class='step-img step-empty' src='' alt=''>");
-        }
-        sb.append("<div class='step-label'>").append(esc(label)).append("</div></div>");
-    }
-
     /**
-     * Renders the "Colour Clusters" pipeline step: the combined image plus a
-     * 🔬 button that opens the per-cluster SVG explorer in the cluster lightbox.
-     * Falls back to a plain {@link #step} call when no cluster JSON is available.
+     * Builds a cluster-coloured contour overlay image.
+     *
+     * <p>Each colour cluster's contours are drawn in a colour derived from the
+     * cluster's actual peak hue — so a red cluster's contours appear red, a blue
+     * cluster's appear blue, etc.  Achromatic clusters use light-grey (bright) or
+     * mid-grey (dark).  A small label above each cluster group shows the peak hue
+     * and the valley-based exclusive bounds: {@code H=30 [16..44]}.
+     *
+     * <p>This makes the valley-based exclusive assignment visually verifiable:
+     * adjacent clusters should have touching (not overlapping) hue windows, and
+     * each boundary pixel should appear in only one cluster's colour.
      */
-    private static void stepWithClusters(StringBuilder sb, String b64, String label,
-                                          String clusterJson, String sceneImgId,
-                                          String rowLabel) {
-        sb.append("<div class='step'>");
-        if (b64 != null && !b64.isEmpty()) {
-            String src = "data:image/png;base64," + b64;
-            sb.append("<img src='").append(src).append("' class='step-img' alt='").append(esc(label))
-              .append("' title='Click to enlarge' onclick=\"openLb('").append(src)
-              .append("','").append(esc(label)).append("')\" style='cursor:zoom-in'/>");
-        } else {
-            sb.append("<div class='step-img step-empty'></div>");
+    private static String buildClusterOverlay(Mat scene,
+                                               List<ColourCluster> clusters) {
+        Mat overlay = Mat.zeros(scene.rows(), scene.cols(), CvType.CV_8UC3);
+        // Dim the original scene as a subtle underlay so shapes are identifiable
+        Mat dimmed = new Mat();
+        scene.convertTo(dimmed, -1, 0.20, 0);
+        Core.add(overlay, dimmed, overlay);
+        dimmed.release();
+
+        for (ColourCluster c : clusters) {
+            List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(c.mask);
+            if (contours.isEmpty()) continue;
+
+            // ── Determine display colour ──────────────────────────────────
+            Scalar colour;
+            String label;
+            if (c.achromatic) {
+                colour = c.brightAchromatic
+                        ? new Scalar(220, 220, 220)  // bright → white-ish
+                        : new Scalar(100, 100, 100); // dark  → mid-grey
+                label  = c.brightAchromatic ? "bright-ach" : "dark-ach";
+            } else {
+                // Convert peak hue to a saturated BGR display colour
+                Mat hsvPx = new Mat(1, 1, CvType.CV_8UC3, new Scalar(c.hue, 210, 220));
+                Mat bgrPx = new Mat();
+                Imgproc.cvtColor(hsvPx, bgrPx, Imgproc.COLOR_HSV2BGR);
+                double[] bgr = bgrPx.get(0, 0);
+                colour = new Scalar(bgr[0], bgr[1], bgr[2]);
+                hsvPx.release(); bgrPx.release();
+                label = String.format("H=%.0f [%d..%d]", c.hue, c.loBound, c.hiBound);
+            }
+
+            // ── Draw contours in cluster colour ───────────────────────────
+            for (MatOfPoint cnt : contours) {
+                Imgproc.drawContours(overlay, List.of(cnt), 0, colour, 1);
+            }
+
+            // ── Label at the bounding-box top-left of the first contour ───
+            Rect bb = Imgproc.boundingRect(contours.getFirst());
+            int lx = Math.max(2, bb.x);
+            int ly = Math.max(10, bb.y - 3);
+            Imgproc.putText(overlay, label, new Point(lx, ly),
+                    Imgproc.FONT_HERSHEY_PLAIN, 0.75, colour, 1);
+
+            contours.forEach(MatOfPoint::release);
         }
-        sb.append("<div class='step-label'>").append(esc(label)).append("</div>");
-        // Cluster explorer button — only when cluster data is present
-        if (clusterJson != null && !clusterJson.isEmpty()) {
-            // Embed JSON as a single-quoted attribute; escape ' and & within the value.
-            String jsonAttr = clusterJson.replace("&", "&amp;").replace("'", "&#39;");
-            String cap = esc(rowLabel) + " — Colour Clusters";
-            sb.append("<button class='cl-btn'")
-              .append(" data-clusters='").append(jsonAttr).append("'")
-              .append(" data-scene-id='").append(sceneImgId).append("'")
-              .append(" data-cap='").append(cap).append("'")
-              .append(" onclick='openCluster(this)'")
-              .append(" title='Explore individual colour clusters'>")
-              .append("&#x1F52C; Clusters</button>");
-        }
-        sb.append("</div>");
+
+        String png = matToBase64Png(overlay);
+        overlay.release();
+        return png;
     }
 
     private static void step(StringBuilder sb, String b64, String label) {
@@ -697,33 +598,6 @@ public class MatchReportLibrary {
             sb.append("<div class='step-img step-empty'></div>");
         }
         sb.append("<div class='step-label'>").append(esc(label)).append("</div></div>");
-    }
-
-    // ── Cluster helpers ───────────────────────────────────────────────────────
-
-    private static String clusterLabel(SceneColourClusters.Cluster c) {
-        if (c.achromatic) return c.brightAchromatic
-                ? "Bright Achromatic (White / Light-Grey)"
-                : "Dark Achromatic (Black / Dark-Grey)";
-        return String.format("Chromatic H=%.0f\u00b0 (%s)", c.hue * 2.0, hueNameApprox(c.hue));
-    }
-
-    private static String clusterColour(SceneColourClusters.Cluster c) {
-        if (c.achromatic) return c.brightAchromatic ? "#e8e8e8" : "#888888";
-        int cssDeg = ((int) Math.round(c.hue * 2.0)) % 360;
-        return String.format("hsl(%d,100%%,60%%)", cssDeg);
-    }
-
-    private static String hueNameApprox(double ocvHue) {
-        int deg = ((int) (ocvHue * 2.0)) % 360;
-        if (deg < 15 || deg >= 345) return "Red";
-        if (deg <  45)              return "Orange";
-        if (deg <  75)              return "Yellow";
-        if (deg < 150)              return "Green";
-        if (deg < 195)              return "Cyan";
-        if (deg < 255)              return "Blue";
-        if (deg < 285)              return "Violet";
-        return "Magenta";
     }
 
     private static String bar(double s) {
@@ -790,23 +664,6 @@ public class MatchReportLibrary {
         .lb-close:hover{color:#c9d1d9}
         .lb-img{display:block;max-width:100%;max-height:80vh;border-radius:4px}
         .lb-caption{font-size:.78rem;color:#8b949e;margin-top:8px;text-align:center}
-        .cl-lb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:1001;align-items:center;justify-content:center;cursor:zoom-out}
-        .cl-visible{display:flex!important}
-        .cl-lb-box{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;max-width:95vw;max-height:95vh;overflow:auto;position:relative;cursor:default;display:flex;flex-direction:column;gap:10px;align-items:center}
-        .cl-lb-header{display:flex;align-items:center;gap:14px;color:#58a6ff;font-weight:bold;font-size:.9rem}
-        .cl-counter{color:#484f58;font-size:.82rem;background:#21262d;padding:1px 10px;border-radius:10px;min-width:60px;text-align:center}
-        .cl-status{font-size:.78rem;color:#8b949e;min-height:1em;text-align:center}
-        .cl-img-wrap{position:relative;display:inline-block}
-        .cl-img-wrap img{display:block;max-width:88vw;max-height:62vh;background:#0d1117}
-        .cl-svg{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none}
-        .cl-controls{display:flex;align-items:center;gap:16px}
-        .cl-nav-btn{background:#21262d;border:1px solid #30363d;color:#79c0ff;padding:5px 14px;border-radius:4px;cursor:pointer;font-size:.85rem}
-        .cl-nav-btn:hover{background:#2d333b}
-        .cl-info{text-align:center;min-width:220px}
-        #cl-label{display:block;color:#c9d1d9;font-weight:bold;font-size:.88rem}
-        #cl-cnt{display:block;color:#8b949e;font-size:.74rem}
-        .cl-btn{display:block;width:100%;background:#0d1219;border:0;border-top:1px solid #21262d;color:#484f58;font-size:.68rem;padding:3px 0;cursor:pointer;text-align:center;border-radius:0 0 4px 4px}
-        .cl-btn:hover{background:#21262d;color:#79c0ff}
         """;
 }
 

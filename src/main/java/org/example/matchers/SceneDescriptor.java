@@ -1,4 +1,5 @@
 package org.example.matchers;
+import org.example.colour.ColourCluster;
 import org.example.colour.SceneColourClusters;
 import org.opencv.core.*;
 import org.opencv.imgproc.Imgproc;
@@ -79,7 +80,7 @@ public final class SceneDescriptor {
         double area = (double) bgrScene.rows() * bgrScene.cols();
         // Use extractFromBorderPixels so scene cluster discovery is edge-aligned —
         // consistent with how ref clusters are identified (both sides use border pixels).
-        List<SceneColourClusters.Cluster> rawClusters =
+        List<ColourCluster> rawClusters =
                 SceneColourClusters.extractFromBorderPixels(bgrScene);
         List<ClusterContours> result = new ArrayList<>(rawClusters.size());
 
@@ -87,15 +88,15 @@ public final class SceneDescriptor {
         // needed for Fix B contamination check which counts filled chromatic pixels
         // inside a candidate bbox. Border-only pixels would be too sparse for that.
         Mat combinedChromatic = Mat.zeros(bgrScene.rows(), bgrScene.cols(), CvType.CV_8UC1);
-        List<SceneColourClusters.Cluster> fullClusters = SceneColourClusters.extract(bgrScene);
-        for (SceneColourClusters.Cluster cluster : fullClusters) {
+        List<ColourCluster> fullClusters = SceneColourClusters.extract(bgrScene);
+        for (ColourCluster cluster : fullClusters) {
             if (!cluster.achromatic) {
                 Core.bitwise_or(combinedChromatic, cluster.mask, combinedChromatic);
             }
             cluster.release();
         }
 
-        for (SceneColourClusters.Cluster cluster : rawClusters) {
+        for (ColourCluster cluster : rawClusters) {
             List<MatOfPoint> contours = contoursFromMask(cluster.mask);
             result.add(new ClusterContours(contours, cluster.hue, cluster.achromatic,
                     cluster.brightAchromatic));
@@ -201,9 +202,9 @@ public final class SceneDescriptor {
      *   COMPOUND_BULLSEYE (rings)           → 3+ (multiple achromatic rings + bg)
      */
     public static int countAllClusters(Mat bgrImage) {
-        List<SceneColourClusters.Cluster> clusters = SceneColourClusters.extract(bgrImage);
+        List<ColourCluster> clusters = SceneColourClusters.extract(bgrImage);
         int count = 0;
-        for (SceneColourClusters.Cluster c : clusters) {
+        for (ColourCluster c : clusters) {
             if (org.opencv.core.Core.countNonZero(c.mask) >= SceneColourClusters.MIN_CONTOUR_AREA)
                 count++;
             c.release();
