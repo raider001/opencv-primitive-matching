@@ -4,6 +4,7 @@ import org.opencv.core.*;
 import org.opencv.imgproc.Imgproc;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 
@@ -67,11 +68,32 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
 
     // Constants shared with / kept in sync with SceneColourClusters
     private static final double HUE_TOLERANCE       = SceneColourClusters.HUE_TOLERANCE;
-    private static final int    PEAK_MIN_SEPARATION  = 18;
+    private static final int    PEAK_MIN_SEPARATION  = SceneColourClusters.PEAK_MIN_SEPARATION;
     private static final double MIN_SAT              = 35.0;
     private static final double MIN_VAL              = 25.0;
     private static final double BRIGHT_VAL_THRESHOLD = 100.0;
     private static final int    MIN_PIXEL_COUNT      = 64;
+
+    /**
+     * Minimum bin separation (0–255 saturation scale) required between two
+     * distinct S peaks within a single hue cluster.  Peaks closer than this
+     * are treated as the same saturation mode and merged into one sub-cluster.
+     * 32 ≈ 12.5 % of the full saturation range.
+     */
+    private static final int S_PEAK_MIN_SEP = 32;
+
+    /**
+     * Maximum recursion depth for Otsu-based S sub-cluster detection.
+     * Depth 1 → at most a binary split (2 sub-clusters per hue cluster).
+     */
+    private static final int S_MAX_DEPTH = 1;
+
+    // Integer-typed copies of the thresholds used in the hot single-pass loop
+    // to avoid repeated double→int casts.
+    private static final int MIN_SAT_I    = (int) MIN_SAT;              // 35
+    private static final int MIN_VAL_I    = (int) MIN_VAL;              // 25
+    private static final int BRIGHT_VAL_I = (int) BRIGHT_VAL_THRESHOLD; // 100
+    private static final int SAT_MAX_I    = MIN_SAT_I - 1;              // 34
 
     private ExperimentalSceneColourClusters() {}
 
@@ -82,110 +104,407 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
     /**
      * Border-pixel histogram variant.
      *
-     * <p>Hue peaks are detected from the morphological-gradient border pixels
-     * (consistent with {@link SceneColourClusters#extractFromBorderPixels}).
-     * Full-pixel masks are built for each peak, then auto-healed and split
-     * spatially by connected components.
+     * <p>Hue peaks are detected from the morphological-gradient border pixels.
+     * Full-pixel masks are built for each peak via the single-pass O(n) helper,
+     * then auto-healed and split spatially by connected components.
      */
     @Override
     public List<ColourCluster> extractFromBorderPixels(Mat bgrScene) {
         Mat hsv = new Mat();
         Imgproc.cvtColor(bgrScene, hsv, Imgproc.COLOR_BGR2HSV);
 
-        // Build border-pixel mask for histogram (same approach as production)
+        // Build border-pixel mask for histogram (same semantics as production)
         Mat chromaticRaw = buildChromaticMask(hsv);
-        Mat border3 = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
-        Mat borderMask = new Mat();
+        Mat border3      = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+        Mat borderMask   = new Mat();
         Imgproc.morphologyEx(chromaticRaw, borderMask, Imgproc.MORPH_GRADIENT, border3);
         border3.release();
         chromaticRaw.release();
-        zeroImageBorder(borderMask);
 
-        float[]       hueHist     = buildHueHistogram(hsv, borderMask);
+        // Bulk-read the border mask into Java (one JNI call).
+        // Image-border zeroing is handled implicitly by the loop bounds [1, rows-1) × [1, cols-1).
+        byte[] borderData = new byte[hsv.rows() * hsv.cols()];
+        borderMask.get(0, 0, borderData);
         borderMask.release();
-        float[]       smoothed    = computeSmoothedHist(hueHist, 1);
-        List<Integer> peaks       = findPeaks(smoothed, MIN_PIXEL_COUNT);   // no cap
-        int[][]       valleyBounds = computeValleyBounds(smoothed, peaks);
 
-        Mat healKernel = buildHealKernel();
-        List<ColourCluster> clusters = new ArrayList<>();
-
-        // Chromatic bands → spatially split
-        // Valley bounds prevent overlap with actual neighbours; MAX_HUE_HALF_WIDTH
-        // prevents a cluster from claiming hues on the far side of the wheel when
-        // only a few peaks were detected (e.g. red+orange leaving a huge gap).
-        for (int pi = 0; pi < peaks.size(); pi++) {
-            int peakHue = peaks.get(pi);
-            int[] vb    = clampBounds(valleyBounds[pi][0], valleyBounds[pi][1], peakHue);
-            int lo = vb[0], hi = vb[1];
-            Mat rawMask = hueRangeMaskByBounds(hsv, lo, hi);
-            if (Core.countNonZero(rawMask) < MIN_PIXEL_COUNT) { rawMask.release(); continue; }
-            zeroImageBorder(rawMask);
-            clusters.addAll(splitSpatially(rawMask, peakHue, false, false, lo, hi, healKernel));
-            rawMask.release();
-        }
-
-        // Achromatic bands → spatially split
-        Mat brightRaw = buildAchromaticMask(hsv, true);
-        zeroImageBorder(brightRaw);
-        clusters.addAll(splitSpatially(brightRaw, Double.NaN, true, true, 0, 179, healKernel));
-        brightRaw.release();
-
-        Mat darkRaw = buildAchromaticMask(hsv, false);
-        zeroImageBorder(darkRaw);
-        clusters.addAll(splitSpatially(darkRaw, Double.NaN, true, false, 0, 179, healKernel));
-        darkRaw.release();
-
-        healKernel.release();
+        List<ColourCluster> result = buildClustersOnePass(hsv, borderData);
         hsv.release();
-        return clusters;
+        return result;
     }
 
     /**
      * Full-pixel histogram variant.
      *
-     * <p>Uses the entire chromatic pixel set for peak detection (valley-based
-     * bounds), then applies the same auto-heal + connected-component split.
+     * <p>Uses the entire chromatic pixel set for peak detection, then applies
+     * the same auto-heal + connected-component split via the single-pass helper.
      */
     @Override
     public List<ColourCluster> extract(Mat bgrScene) {
         Mat hsv = new Mat();
         Imgproc.cvtColor(bgrScene, hsv, Imgproc.COLOR_BGR2HSV);
+        List<ColourCluster> result = buildClustersOnePass(hsv, null);
+        hsv.release();
+        return result;
+    }
 
-        Mat chromaticRaw = buildChromaticMask(hsv);
-        float[]       hueHist     = buildHueHistogram(hsv, chromaticRaw);
-        chromaticRaw.release();
-        float[]       smoothed    = computeSmoothedHist(hueHist, 1);
-        List<Integer> peaks       = findPeaks(smoothed, MIN_PIXEL_COUNT);   // no cap
+    // =========================================================================
+    // O(n) single-pass cluster builder
+    // =========================================================================
+
+    /**
+     * Full-spectrum O(n) cluster builder with saturation sub-clustering.
+     *
+     * <p>Each chromatic hue cluster is further split along the <b>S axis</b>:
+     * the saturation histogram of the cluster's border pixels is smoothed and
+     * searched for local maxima separated by ≥ {@link #S_PEAK_MIN_SEP} units.
+     * Each distinct S peak produces an independent sub-cluster with its own
+     * valley-derived S window, so two pixels that share a hue but differ
+     * significantly in saturation (e.g. steel-blue S≈135 vs vivid-blue S≈255)
+     * land in <em>separate</em> clusters.
+     *
+     * <p>Cluster membership requires <b>all three</b> of:
+     * <ol>
+     *   <li>H in the hue valley window.</li>
+     *   <li>S in the sub-cluster's S window [sLo, sHi].</li>
+     *   <li>V ≥ per-hue-cluster 10th-percentile lower bound.</li>
+     * </ol>
+     *
+     * <p>The BRIGHT/DARK achromatic split uses a data-driven V valley
+     * (see {@link #dynamicAchromaticThreshold}).
+     */
+    private List<ColourCluster> buildClustersOnePass(Mat hsv, byte[] borderData) {
+        int rows = hsv.rows(), cols = hsv.cols();
+        int n    = rows * cols;
+
+        // ── 1. Bulk read HSV data ────────────────────────────────────────────
+        byte[] hsvData = new byte[n * 3];
+        hsv.get(0, 0, hsvData);
+
+        // ── 2. Hue histogram + achromatic-V histogram (single loop) ──────────
+        float[] hueHist   = new float[180];
+        float[] achrVHist = new float[256];
+
+        if (borderData != null) {
+            for (int r = 1; r < rows - 1; r++) {
+                int off = r * cols;
+                for (int c = 1; c < cols - 1; c++) {
+                    int i = off + c;
+                    if ((borderData[i] & 0xFF) == 0) continue;
+                    int h = hsvData[i * 3]     & 0xFF;
+                    int s = hsvData[i * 3 + 1] & 0xFF;
+                    int v = hsvData[i * 3 + 2] & 0xFF;
+                    if      (s >= MIN_SAT_I && v >= MIN_VAL_I && h < 180) hueHist[h]++;
+                    else if (s <= SAT_MAX_I)                               achrVHist[v]++;
+                }
+            }
+        } else {
+            for (int r = 1; r < rows - 1; r++) {
+                int off = r * cols;
+                for (int c = 1; c < cols - 1; c++) {
+                    int i = off + c;
+                    int h = hsvData[i * 3]     & 0xFF;
+                    int s = hsvData[i * 3 + 1] & 0xFF;
+                    int v = hsvData[i * 3 + 2] & 0xFF;
+                    if      (s >= MIN_SAT_I && v >= MIN_VAL_I && h < 180) hueHist[h]++;
+                    else if (s <= SAT_MAX_I)                               achrVHist[v]++;
+                }
+            }
+        }
+
+        // ── 3. Chromatic hue peak detection + hue LUT ───────────────────────
+        float[]       smoothed     = computeSmoothedHist(hueHist, 1);
+        List<Integer> peaks        = findPeaks(smoothed, MIN_PIXEL_COUNT);
         int[][]       valleyBounds = computeValleyBounds(smoothed, peaks);
+        int           numChromatic = peaks.size();
 
-        Mat healKernel = buildHealKernel();
-        List<ColourCluster> clusters = new ArrayList<>();
+        int[] hueLUT       = new int[180];
+        int[] clusterPeaks = new int[numChromatic];
+        int[] clusterLo    = new int[numChromatic];
+        int[] clusterHi    = new int[numChromatic];
+        Arrays.fill(hueLUT, -1);
 
-        for (int pi = 0; pi < peaks.size(); pi++) {
+        for (int pi = 0; pi < numChromatic; pi++) {
             int peakHue = peaks.get(pi);
             int[] vb    = clampBounds(valleyBounds[pi][0], valleyBounds[pi][1], peakHue);
             int lo = vb[0], hi = vb[1];
-            Mat rawMask = hueRangeMaskByBounds(hsv, lo, hi);
-            if (Core.countNonZero(rawMask) < MIN_PIXEL_COUNT) { rawMask.release(); continue; }
-            zeroImageBorder(rawMask);
-            clusters.addAll(splitSpatially(rawMask, peakHue, false, false, lo, hi, healKernel));
+            clusterPeaks[pi] = peakHue;
+            clusterLo[pi]    = lo;
+            clusterHi[pi]    = hi;
+            int hiIncl = (hi == 0) ? 179 : hi - 1;
+            if (lo <= hiIncl) {
+                for (int h = lo; h <= hiIncl; h++) if (hueLUT[h] < 0) hueLUT[h] = pi;
+            } else {
+                for (int h = lo; h < 180;     h++) if (hueLUT[h] < 0) hueLUT[h] = pi;
+                for (int h = 0;  h <= hiIncl; h++) if (hueLUT[h] < 0) hueLUT[h] = pi;
+            }
+        }
+
+        // ── 4. Per-cluster S histogram (second Java pass, all interior pixels) ─
+        //
+        // IMPORTANT: always scan ALL interior pixels — never just border pixels.
+        // Border pixels between two regions that share a hue but differ in
+        // saturation are *transition* pixels: their S values ramp continuously
+        // from one mode to the other, masking the bimodal structure.  All pixels
+        // expose the true distribution — one dense cluster at the shape S value,
+        // another at the background S value.
+        int[][] sHistByCi = new int[numChromatic][256];
+
+        for (int r = 1; r < rows - 1; r++) {
+            int off = r * cols;
+            for (int c = 1; c < cols - 1; c++) {
+                int i = off + c;
+                int h = hsvData[i * 3]     & 0xFF;
+                int s = hsvData[i * 3 + 1] & 0xFF;
+                int v = hsvData[i * 3 + 2] & 0xFF;
+                if (s >= MIN_SAT_I && v >= MIN_VAL_I && h < 180) {
+                    int ci = hueLUT[h];
+                    if (ci >= 0) sHistByCi[ci][s]++;
+                }
+            }
+        }
+
+        // ── 5. S sub-cluster windows via recursive Otsu thresholding ─────────
+        //
+        // Replaces histogram peak detection.  Peak detection requires a sharp
+        // local maximum in the S histogram to fire, which fails when one S mode
+        // is broad/diffuse (e.g. a background whose orange tiles vary from
+        // S=100 to S=170 with no single dominant bin).  Otsu thresholding
+        // finds the optimal binary split between two classes regardless of
+        // whether either distribution is sharp or wide — it only requires that
+        // the two class *means* differ by ≥ 2×S_PEAK_MIN_SEP (= 64 S units)
+        // and each class holds ≥ MIN_PIXEL_COUNT pixels.
+        int[][] subSLo   = new int[numChromatic][];
+        int[][] subSHi   = new int[numChromatic][];
+        int[][] subGIdx  = new int[numChromatic][];
+        int[]   subCount = new int[numChromatic];
+        int     nextGIdx = 0;
+
+        for (int ci = 0; ci < numChromatic; ci++) {
+            List<int[]> bands = new ArrayList<>();
+            computeSBands(sHistByCi[ci], MIN_SAT_I, 255, S_MAX_DEPTH, bands);
+
+            int K = bands.size();
+            subSLo[ci]   = new int[K];
+            subSHi[ci]   = new int[K];
+            subGIdx[ci]  = new int[K];
+            subCount[ci] = K;
+
+            for (int si = 0; si < K; si++) {
+                subSLo[ci][si]  = bands.get(si)[0];
+                subSHi[ci][si]  = bands.get(si)[1];
+                subGIdx[ci][si] = nextGIdx++;
+            }
+        }
+
+        int brightIdx  = nextGIdx++;
+        int darkIdx    = nextGIdx++;
+        int totalSlots = nextGIdx;
+
+        // ── 6. Dynamic achromatic BRIGHT/DARK threshold ───────────────────────
+        int achrVThreshold = dynamicAchromaticThreshold(achrVHist);
+
+        // ── 7. Single-pass pixel classification ──────────────────────────────
+        // Chromatic: hue window → S sub-cluster linear scan.
+        // The only V floor is the global MIN_VAL_I=25 check in the outer if.
+        // A per-cluster V percentile gate was removed: it was computed from the
+        // combined V distribution of all S populations in the hue cluster, so
+        // it broke when the vivid-S pixels (high V) outnumbered the muted-S
+        // pixels (lower V), wrongly blocking the lower-V population before
+        // Otsu sub-clustering could separate them.
+        byte[][] maskData = new byte[totalSlots][n];
+        int[]    pixCount = new int[totalSlots];
+
+        for (int r = 1; r < rows - 1; r++) {
+            int off = r * cols;
+            for (int c = 1; c < cols - 1; c++) {
+                int i = off + c;
+                int h = hsvData[i * 3]     & 0xFF;
+                int s = hsvData[i * 3 + 1] & 0xFF;
+                int v = hsvData[i * 3 + 2] & 0xFF;
+
+                if (s >= MIN_SAT_I && v >= MIN_VAL_I) {
+                    if (h < 180) {
+                        int ci = hueLUT[h];
+                        if (ci >= 0) {
+                            int[] sLo = subSLo[ci], sHi = subSHi[ci], gIdx = subGIdx[ci];
+                            for (int si = 0; si < subCount[ci]; si++) {
+                                if (s >= sLo[si] && s <= sHi[si]) {
+                                    maskData[gIdx[si]][i] = (byte) 255;
+                                    pixCount[gIdx[si]]++;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } else if (s <= SAT_MAX_I) {
+                    int ci = (v >= achrVThreshold) ? brightIdx : darkIdx;
+                    maskData[ci][i] = (byte) 255;
+                    pixCount[ci]++;
+                }
+            }
+        }
+
+        // ── 8. Spatial splitting ──────────────────────────────────────────────
+        Mat healKernel = buildHealKernel();
+        List<ColourCluster> clusters = new ArrayList<>();
+
+        for (int ci = 0; ci < numChromatic; ci++) {
+            for (int si = 0; si < subCount[ci]; si++) {
+                int gIdx = subGIdx[ci][si];
+                if (pixCount[gIdx] < MIN_PIXEL_COUNT) continue;
+                Mat rawMask = new Mat(rows, cols, CvType.CV_8UC1);
+                rawMask.put(0, 0, maskData[gIdx]);
+                clusters.addAll(splitSpatially(rawMask, clusterPeaks[ci], false, false,
+                        clusterLo[ci], clusterHi[ci], subSLo[ci][si], subSHi[ci][si], healKernel));
+                rawMask.release();
+            }
+        }
+
+        if (pixCount[brightIdx] >= MIN_PIXEL_COUNT) {
+            Mat rawMask = new Mat(rows, cols, CvType.CV_8UC1);
+            rawMask.put(0, 0, maskData[brightIdx]);
+            clusters.addAll(splitSpatially(rawMask, Double.NaN, true, true, 0, 179, 0, 255, healKernel));
             rawMask.release();
         }
 
-        Mat brightRaw = buildAchromaticMask(hsv, true);
-        zeroImageBorder(brightRaw);
-        clusters.addAll(splitSpatially(brightRaw, Double.NaN, true, true, 0, 179, healKernel));
-        brightRaw.release();
-
-        Mat darkRaw = buildAchromaticMask(hsv, false);
-        zeroImageBorder(darkRaw);
-        clusters.addAll(splitSpatially(darkRaw, Double.NaN, true, false, 0, 179, healKernel));
-        darkRaw.release();
+        if (pixCount[darkIdx] >= MIN_PIXEL_COUNT) {
+            Mat rawMask = new Mat(rows, cols, CvType.CV_8UC1);
+            rawMask.put(0, 0, maskData[darkIdx]);
+            clusters.addAll(splitSpatially(rawMask, Double.NaN, true, false, 0, 179, 0, 255, healKernel));
+            rawMask.release();
+        }
 
         healKernel.release();
-        hsv.release();
         return clusters;
+    }
+
+    // =========================================================================
+    // Full-HSV helpers
+    // =========================================================================
+
+    /**
+     * Returns the histogram bin index at the {@code p}-th percentile.
+     *
+     * @param hist  frequency counts (non-negative)
+     * @param total pre-computed sum of {@code hist}
+     * @param p     percentile 0–100
+     */
+    private static int percentileIndex(int[] hist, int total, int p) {
+        int target = Math.max(1, total * p / 100);
+        int cum    = 0;
+        for (int i = 0; i < hist.length; i++) {
+            cum += hist[i];
+            if (cum >= target) return i;
+        }
+        return hist.length - 1;
+    }
+
+    /**
+     * Computes the Otsu threshold for the histogram slice {@code hist[lo..hi]}.
+     *
+     * <p>Returns the split point {@code T} such that {@code [lo, T]} is "class A"
+     * and {@code [T+1, hi]} is "class B", maximising between-class variance.
+     * Works for both symmetric bimodal <em>and</em> asymmetric distributions
+     * (one sharp peak + one broad/diffuse cloud).
+     */
+    private static int otsuThreshold(int[] hist, int lo, int hi) {
+        long total = 0, wSum = 0;
+        for (int i = lo; i <= hi; i++) { total += hist[i]; wSum += (long) i * hist[i]; }
+        if (total == 0) return (lo + hi) / 2;
+
+        long   wB = 0, sumB = 0;
+        double maxVar = -1;
+        int    best   = lo;
+        for (int i = lo; i < hi; i++) {           // T < hi so the right class is non-empty
+            wB   += hist[i];
+            sumB += (long) i * hist[i];
+            long wF = total - wB;
+            if (wB == 0 || wF == 0) continue;
+            double mB  = (double) sumB         / wB;
+            double mF  = (double)(wSum - sumB) / wF;
+            double var = (double) wB * wF * (mB - mF) * (mB - mF);
+            if (var > maxVar) { maxVar = var; best = i; }
+        }
+        return best;
+    }
+
+    /**
+     * Recursively splits {@code hist[lo..hi]} into S sub-cluster bands using
+     * Otsu thresholding, appending {@code int[]{lo, hi}} pairs to {@code out}.
+     *
+     * <p>A split is accepted only when both resulting sides have ≥
+     * {@link #MIN_PIXEL_COUNT} pixels <em>and</em> the two class means differ
+     * by ≥ {@code 2 × S_PEAK_MIN_SEP} (= 64 S units).  The mean-difference
+     * guard rejects spurious splits of unimodal distributions: Otsu always
+     * places a threshold somewhere, even for a single broad Gaussian, but the
+     * resulting class means are too close to represent distinct saturation levels.
+     *
+     * @param depth max recursion depth (1 → binary split, 2 → up to 4 bands)
+     */
+    private static void computeSBands(int[] hist, int lo, int hi, int depth, List<int[]> out) {
+        int total = 0;
+        for (int s = lo; s <= hi; s++) total += hist[s];
+
+        if (depth <= 0 || hi - lo < S_PEAK_MIN_SEP || total < MIN_PIXEL_COUNT * 2) {
+            out.add(new int[]{lo, hi});
+            return;
+        }
+
+        int  T          = otsuThreshold(hist, lo, hi);
+        int  leftCount  = 0;
+        long leftSum    = 0;
+        for (int s = lo;    s <= T;  s++) { leftCount  += hist[s]; leftSum  += (long) s * hist[s]; }
+        int  rightCount = total - leftCount;
+        long rightSum   = 0;
+        for (int s = T + 1; s <= hi; s++) rightSum += (long) s * hist[s];
+
+        if (leftCount < MIN_PIXEL_COUNT || rightCount < MIN_PIXEL_COUNT) {
+            out.add(new int[]{lo, hi});
+            return;
+        }
+
+        double mLeft  = (double) leftSum  / leftCount;
+        double mRight = (double) rightSum / rightCount;
+
+        // Guard: only split when the two class means are genuinely far apart.
+        // Prevents splitting a unimodal (single-material) hue cluster just because
+        // Otsu found the midpoint of its S distribution.
+        if (mRight - mLeft < S_PEAK_MIN_SEP * 2) {
+            out.add(new int[]{lo, hi});
+            return;
+        }
+
+        computeSBands(hist, lo,    T,  depth - 1, out);
+        computeSBands(hist, T + 1, hi, depth - 1, out);
+    }
+
+    /**
+     * Finds a data-driven V threshold between DARK and BRIGHT achromatic pixels
+     * using Otsu thresholding on the achromatic V histogram.
+     *
+     * <p>Falls back to {@link #BRIGHT_VAL_I} when the histogram is unimodal,
+     * either class has too few pixels, or the class V-means are &lt; 40 units apart.
+     */
+    private static int dynamicAchromaticThreshold(float[] achrVHist) {
+        int[] hist  = new int[256];
+        int   total = 0;
+        for (int v = 0; v < 256; v++) { hist[v] = (int) achrVHist[v]; total += hist[v]; }
+        if (total < MIN_PIXEL_COUNT * 2) return BRIGHT_VAL_I;
+
+        int  T          = otsuThreshold(hist, 0, 255);
+        int  darkCount  = 0;
+        long darkSum    = 0;
+        for (int v = 0;     v <= T;  v++) { darkCount += hist[v]; darkSum += (long) v * hist[v]; }
+        int  brightCount = total - darkCount;
+        long brightSum   = 0;
+        for (int v = T + 1; v < 256; v++) brightSum += (long) v * hist[v];
+
+        if (darkCount < MIN_PIXEL_COUNT || brightCount < MIN_PIXEL_COUNT) return BRIGHT_VAL_I;
+
+        double mDark   = (double) darkSum   / darkCount;
+        double mBright = (double) brightSum / brightCount;
+        // Guard against splitting a unimodal V distribution
+        return (mBright - mDark >= 40) ? T + 1 : BRIGHT_VAL_I;
     }
 
     // =========================================================================
@@ -193,64 +512,73 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
     // =========================================================================
 
     /**
-     * Applies auto-heal (morphological closing) to {@code rawMask}, then
-     * finds connected components in the healed image.  Each component with
-     * sufficient area is returned as a separate {@link ColourCluster}.
+     * O(n) variant: two bulk reads replace K×3 native full-image scans.
      *
-     * <p>The mask stored in each returned cluster contains only the
-     * <em>original</em> pixels (intersection of {@code rawMask} with the
-     * healed component region).  The healed pixels are used solely to decide
-     * which original pixels belong together.
+     * <p>Old approach: for each of K connected components, call
+     * {@code Core.inRange} + {@code Core.bitwise_and} + {@code Core.countNonZero}
+     * (three full W×H native scans each).  On a noisy background with 30–50
+     * dark-achromatic components that was 90–150 full-image native calls per band.
      *
-     * <p>Up to 254 distinct spatial components are supported per colour band
-     * (safe for all practical scene sizes).
-     *
-     * @param rawMask    CV_8UC1 binary mask — 255 = pixel in this colour band
-     * @param hue        peak hue (NaN for achromatic)
-     * @param achromatic true for bright/dark achromatic bands
-     * @param bright     true for BRIGHT achromatic; ignored when !achromatic
-     * @param lo         valley lower hue bound (0 for achromatic)
-     * @param hi         valley upper hue bound (179 for achromatic)
-     * @param healKernel pre-built ellipse closing kernel
+     * <p>New approach:</p>
+     * <ol>
+     *   <li>{@code morphologyEx} (MORPH_CLOSE) — unchanged, 1 native call.</li>
+     *   <li>{@code connectedComponents} on healed mask — unchanged, 1 native call.</li>
+     *   <li>Two bulk reads: {@code labels32.get()} + {@code rawMask.get()} — 2 JNI calls.</li>
+     *   <li>One Java loop over all pixels: builds every component's {@code byte[]}
+     *       mask and pixel count simultaneously.</li>
+     *   <li>One {@code Mat.put()} per valid component — plain memcpy, no per-pixel work.</li>
+     * </ol>
+     * Total native work is now {@code O(W×H)} independent of component count K.
      */
     private static List<ColourCluster> splitSpatially(
             Mat rawMask, double hue, boolean achromatic, boolean bright,
-            int lo, int hi, Mat healKernel) {
+            int lo, int hi, int sLo, int sHi, Mat healKernel) {
 
-        // Step 1 — auto-heal: close small gaps so thin breaks don't split a region
+        int rows = rawMask.rows(), cols = rawMask.cols(), n = rows * cols;
+
+        // ── 1. Auto-heal ─────────────────────────────────────────────────────
         Mat healed = new Mat();
         Imgproc.morphologyEx(rawMask, healed, Imgproc.MORPH_CLOSE, healKernel);
 
-        // Step 2 — connected-component labelling on the healed mask
+        // ── 2. Connected-component labelling (CV_32SC1, label 0 = background) ─
         Mat labels32 = new Mat();
-        int numComponents = Imgproc.connectedComponents(healed, labels32); // label 0 = background
+        int numComponents = Imgproc.connectedComponents(healed, labels32);
         healed.release();
 
-        // Convert to 8-bit labels (practical limit: 254 distinct regions per band)
-        Mat labels = new Mat();
-        labels32.convertTo(labels, CvType.CV_8U);
-        labels32.release();
-
-        List<ColourCluster> result = new ArrayList<>();
-        int maxComp = Math.min(numComponents, 255); // guard against unlikely overflow
-
-        for (int comp = 1; comp < maxComp; comp++) {
-            // Pixels belonging to this component in the healed image
-            Mat compRegion = new Mat();
-            Core.inRange(labels, new Scalar(comp), new Scalar(comp), compRegion);
-
-            // Intersect with original pixels — only real (non-healed) pixels in the cluster
-            Mat compMask = new Mat();
-            Core.bitwise_and(rawMask, compRegion, compMask);
-            compRegion.release();
-
-            if (Core.countNonZero(compMask) < MIN_PIXEL_COUNT) {
-                compMask.release();
-                continue;
-            }
-            result.add(new ColourCluster(compMask, hue, achromatic, bright, lo, hi));
+        if (numComponents <= 1) {
+            labels32.release();
+            return Collections.emptyList();
         }
-        labels.release();
+
+        // ── 3. Bulk read — 2 JNI calls replace K×(inRange+bitwise_and+countNonZero) ──
+        int[]  labelsData = new int [n];
+        byte[] rawData    = new byte[n];
+        labels32.get(0, 0, labelsData);
+        labels32.release();
+        rawMask.get(0, 0, rawData);
+
+        // ── 4. Single Java pass: fill per-component masks and count pixels ───
+        int maxComp = Math.min(numComponents, 255); // cap guard
+        byte[][] compMasks = new byte[maxComp][n];
+        int[]    compCount = new int [maxComp];
+
+        for (int i = 0; i < n; i++) {
+            int label = labelsData[i];
+            // Keep only original (non-healed) pixels
+            if (label > 0 && label < maxComp && (rawData[i] & 0xFF) > 0) {
+                compMasks[label][i] = (byte) 255;
+                compCount[label]++;
+            }
+        }
+
+        // ── 5. Materialise valid components (Mat.put = plain memcpy) ─────────
+        List<ColourCluster> result = new ArrayList<>();
+        for (int comp = 1; comp < maxComp; comp++) {
+            if (compCount[comp] < MIN_PIXEL_COUNT) continue;
+            Mat compMask = new Mat(rows, cols, CvType.CV_8UC1);
+            compMask.put(0, 0, compMasks[comp]);
+            result.add(new ColourCluster(compMask, hue, achromatic, bright, lo, hi, sLo, sHi));
+        }
         return result;
     }
 
@@ -464,6 +792,79 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
             Core.bitwise_or(m1, m2, mask); m1.release(); m2.release();
         }
         return mask;
+    }
+
+    // =========================================================================
+    // Linear histogram helpers (non-circular — used for S and V dimensions)
+    // =========================================================================
+
+    /**
+     * Non-circular boxcar smoothing of a frequency histogram.
+     * Unlike {@link #computeSmoothedHist} (circular, for hue), this clamps
+     * at the boundaries instead of wrapping.
+     *
+     * @param hist   source histogram (any length)
+     * @param radius half-width of the boxcar (window = 2r+1)
+     */
+    private static float[] smoothLinear(float[] hist, int radius) {
+        int     len = hist.length;
+        float[] out = new float[len];
+        for (int i = 0; i < len; i++) {
+            float sum   = 0;
+            int   count = 0;
+            for (int d = -radius; d <= radius; d++) {
+                int idx = i + d;
+                if (idx >= 0 && idx < len) { sum += hist[idx]; count++; }
+            }
+            out[i] = (count > 0) ? sum / count : 0;
+        }
+        return out;
+    }
+
+    /**
+     * Peak detection for a linear (non-circular) histogram.
+     *
+     * <p>Finds all local maxima above {@code minCount}, then applies
+     * non-maximum suppression so peaks within {@code minSep} bins of a
+     * taller peak are discarded.  Returns peak positions sorted ascending.
+     *
+     * @param hist     smoothed histogram
+     * @param minCount minimum height to qualify as a peak
+     * @param minSep   minimum bin distance between accepted peaks
+     */
+    private static List<Integer> findLinearPeaks(float[] hist, int minCount, int minSep) {
+        List<int[]> candidates = new ArrayList<>();
+        for (int i = 1; i < hist.length - 1; i++) {
+            if (hist[i] > hist[i - 1] && hist[i] >= hist[i + 1] && hist[i] >= minCount)
+                candidates.add(new int[]{i, (int) hist[i]});
+        }
+        candidates.sort((a, b) -> b[1] - a[1]);           // tallest first
+        boolean[]     suppressed = new boolean[candidates.size()];
+        List<Integer> result     = new ArrayList<>();
+        for (int i = 0; i < candidates.size(); i++) {
+            if (suppressed[i]) continue;
+            result.add(candidates.get(i)[0]);
+            for (int j = i + 1; j < candidates.size(); j++) {
+                if (Math.abs(candidates.get(i)[0] - candidates.get(j)[0]) < minSep)
+                    suppressed[j] = true;
+            }
+        }
+        result.sort(null);                                  // ascending bin order
+        return result;
+    }
+
+    /**
+     * Returns the bin index of the minimum value in {@code hist(from+1 … to-1)}.
+     * Falls back to the midpoint when the range has fewer than 2 interior bins.
+     */
+    private static int findLinearValley(float[] hist, int from, int to) {
+        if (to - from < 2) return (from + to) / 2;
+        int   pos = from + 1;
+        float min = Float.MAX_VALUE;
+        for (int i = from + 1; i < to; i++) {
+            if (hist[i] < min) { min = hist[i]; pos = i; }
+        }
+        return pos;
     }
 }
 

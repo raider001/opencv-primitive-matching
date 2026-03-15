@@ -1,5 +1,6 @@
 package org.example.matchers;
 import org.example.colour.ColourCluster;
+import org.example.colour.ExperimentalSceneColourClusters;
 import org.example.colour.SceneColourClusters;
 import org.opencv.core.*;
 import org.opencv.imgproc.Imgproc;
@@ -35,17 +36,33 @@ public final class SceneDescriptor {
         public final boolean brightAchromatic;
         /** True if this entry is the combined outer envelope of all chromatic clusters. */
         public final boolean envelope;
+        /**
+         * Saturation sub-cluster lower bound (inclusive, 0–255).
+         * 0 when no S sub-clustering was applied (full range).
+         */
+        public final int sLo;
+        /**
+         * Saturation sub-cluster upper bound (inclusive, 0–255).
+         * 255 when no S sub-clustering was applied (full range).
+         */
+        public final int sHi;
         ClusterContours(List<MatOfPoint> contours, double hue, boolean achromatic,
                         boolean brightAchromatic) {
-            this(contours, hue, achromatic, brightAchromatic, false);
+            this(contours, hue, achromatic, brightAchromatic, false, 0, 255);
         }
         ClusterContours(List<MatOfPoint> contours, double hue, boolean achromatic,
                         boolean brightAchromatic, boolean envelope) {
-            this.contours        = contours;
-            this.hue             = hue;
-            this.achromatic      = achromatic;
+            this(contours, hue, achromatic, brightAchromatic, envelope, 0, 255);
+        }
+        ClusterContours(List<MatOfPoint> contours, double hue, boolean achromatic,
+                        boolean brightAchromatic, boolean envelope, int sLo, int sHi) {
+            this.contours         = contours;
+            this.hue              = hue;
+            this.achromatic       = achromatic;
             this.brightAchromatic = brightAchromatic;
-            this.envelope        = envelope;
+            this.envelope         = envelope;
+            this.sLo              = sLo;
+            this.sHi              = sHi;
         }
     }
     private final List<ClusterContours> clusters;
@@ -80,15 +97,18 @@ public final class SceneDescriptor {
         double area = (double) bgrScene.rows() * bgrScene.cols();
         // Use extractFromBorderPixels so scene cluster discovery is edge-aligned —
         // consistent with how ref clusters are identified (both sides use border pixels).
+        // ExperimentalSceneColourClusters adds S sub-clustering (Otsu) so pixels that
+        // share a hue band but differ significantly in saturation (e.g. muted orange
+        // S≈137 vs vivid orange S=255) are placed in separate clusters.
         List<ColourCluster> rawClusters =
-                SceneColourClusters.extractFromBorderPixels(bgrScene);
+                ExperimentalSceneColourClusters.INSTANCE.extractFromBorderPixels(bgrScene);
         List<ClusterContours> result = new ArrayList<>(rawClusters.size());
 
         // Build combined chromatic mask using full (non-border) chromatic pixels —
         // needed for Fix B contamination check which counts filled chromatic pixels
         // inside a candidate bbox. Border-only pixels would be too sparse for that.
         Mat combinedChromatic = Mat.zeros(bgrScene.rows(), bgrScene.cols(), CvType.CV_8UC1);
-        List<ColourCluster> fullClusters = SceneColourClusters.extract(bgrScene);
+        List<ColourCluster> fullClusters = ExperimentalSceneColourClusters.INSTANCE.extract(bgrScene);
         for (ColourCluster cluster : fullClusters) {
             if (!cluster.achromatic) {
                 Core.bitwise_or(combinedChromatic, cluster.mask, combinedChromatic);
@@ -99,7 +119,7 @@ public final class SceneDescriptor {
         for (ColourCluster cluster : rawClusters) {
             List<MatOfPoint> contours = contoursFromMask(cluster.mask);
             result.add(new ClusterContours(contours, cluster.hue, cluster.achromatic,
-                    cluster.brightAchromatic));
+                    cluster.brightAchromatic, false, cluster.sLo, cluster.sHi));
             cluster.release();
         }
         return new SceneDescriptor(result, area, System.currentTimeMillis() - t0, combinedChromatic);
@@ -202,7 +222,7 @@ public final class SceneDescriptor {
      *   COMPOUND_BULLSEYE (rings)           → 3+ (multiple achromatic rings + bg)
      */
     public static int countAllClusters(Mat bgrImage) {
-        List<ColourCluster> clusters = SceneColourClusters.extract(bgrImage);
+        List<ColourCluster> clusters = ExperimentalSceneColourClusters.INSTANCE.extract(bgrImage);
         int count = 0;
         for (ColourCluster c : clusters) {
             if (org.opencv.core.Core.countNonZero(c.mask) >= SceneColourClusters.MIN_CONTOUR_AREA)

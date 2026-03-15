@@ -50,23 +50,42 @@ public class ColourCluster {
      */
     public final int hiBound;
 
+    /**
+     * Saturation lower bound (inclusive, 0–255) of the S sub-cluster window.
+     * {@code 0} when no saturation sub-clustering was applied (full range).
+     */
+    public final int sLo;
+
+    /**
+     * Saturation upper bound (inclusive, 0–255) of the S sub-cluster window.
+     * {@code 255} when no saturation sub-clustering was applied (full range).
+     */
+    public final int sHi;
+
+    /** Full constructor — used by saturation-sub-clustering extractors. */
     public ColourCluster(Mat mask, double hue, boolean achromatic, boolean brightAchromatic,
-                         int loBound, int hiBound) {
+                         int loBound, int hiBound, int sLo, int sHi) {
         this.mask             = mask;
         this.hue              = hue;
         this.achromatic       = achromatic;
         this.brightAchromatic = brightAchromatic;
         this.loBound          = loBound;
         this.hiBound          = hiBound;
+        this.sLo              = sLo;
+        this.sHi              = sHi;
+    }
+
+    /** Backward-compatible constructor — S range defaults to full span [0, 255]. */
+    public ColourCluster(Mat mask, double hue, boolean achromatic, boolean brightAchromatic,
+                         int loBound, int hiBound) {
+        this(mask, hue, achromatic, brightAchromatic, loBound, hiBound, 0, 255);
     }
 
     /** Convenience constructor for achromatic clusters (no meaningful hue bounds). */
     public ColourCluster(Mat mask, double hue, boolean achromatic, boolean brightAchromatic) {
-        this(mask, hue, achromatic, brightAchromatic, 0, 179);
+        this(mask, hue, achromatic, brightAchromatic, 0, 179, 0, 255);
     }
 
     /** Release the underlying native {@link Mat}. Must be called exactly once. */
     public void release() { mask.release(); }
 }
-
-

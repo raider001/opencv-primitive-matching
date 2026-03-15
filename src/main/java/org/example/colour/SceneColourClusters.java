@@ -29,7 +29,25 @@ import java.util.List;
 public final class SceneColourClusters {
     public static final int    MAX_CLUSTERS        = 12;
     public static final double HUE_TOLERANCE       = 14.0;
-    private static final int   PEAK_MIN_SEPARATION = 18;
+    /** Minimum hue-unit separation for two histogram peaks to be treated as distinct clusters.
+     *  Lowering this lets closer hue pairs (e.g. orange vs red) be detected separately. */
+    public static final int    PEAK_MIN_SEPARATION = 6;   // was 18
+    /**
+     * Hue-channel quantization step (OpenCV units 0–179) applied to the HSV image
+     * before histogram analysis.  Anti-aliased boundary pixels whose hue falls
+     * between two distinct colour regions snap to the nearer quantised value,
+     * removing inter-peak noise and producing sharper, taller histogram peaks.
+     * Only affects peak detection — final cluster masks are built from the original
+     * unmodified HSV so mask quality is unchanged.  Set to 0 to disable.
+     */
+    public static final int    POSTERIZE_STEP      = 2;
+    /**
+     * Maximum half-width (hue units) a cluster's mask may extend from its peak.
+     * Prevents the valley-based "back arc" from sweeping the entire hue wheel when
+     * only a few peaks are present (e.g. two peaks → one cluster would otherwise
+     * claim ~170 units on the far side).  Mirrors {@code ExperimentalSceneColourClusters#MAX_HUE_HALF_WIDTH}.
+     */
+    public static final int    MAX_HUE_HALF_WIDTH  = 20;
     public static final int    MIN_CONTOUR_AREA     = 64;
     private static final double MIN_SAT          = 35.0;
     private static final double MIN_VAL          = 25.0;
@@ -111,70 +129,97 @@ public final class SceneColourClusters {
     // =========================================================================
 
     public static List<ColourCluster> extractFromBorderPixels(Mat bgrScene) {
+        final int rows = bgrScene.rows(), cols = bgrScene.cols(), n = rows * cols;
+
+        // ── 1. BGR→HSV + hue channel (one cvtColor, no split) ────────────
         Mat hsv = new Mat();
         Imgproc.cvtColor(bgrScene, hsv, Imgproc.COLOR_BGR2HSV);
+        Mat hue = new Mat();
+        Core.extractChannel(hsv, hue, 0);
 
-        Mat chromaticMask = new Mat();
+        // ── 2. One-pass edge detection on chromatic regions ───────────────
+        Mat chromMask = new Mat();
         Core.inRange(hsv,
-                new Scalar(0,   MIN_SAT, MIN_VAL),
-                new Scalar(179, 255,     255),
-                chromaticMask);
-
-        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+                new Scalar(0, MIN_SAT, MIN_VAL), new Scalar(179, 255, 255), chromMask);
+        Mat k3 = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
         Mat borderMask = new Mat();
-        Imgproc.morphologyEx(chromaticMask, borderMask, Imgproc.MORPH_GRADIENT, kernel);
-        chromaticMask.release();
+        Imgproc.morphologyEx(chromMask, borderMask, Imgproc.MORPH_GRADIENT, k3);
+        chromMask.release();
+        zeroImageBorder(borderMask);
 
-        borderMask.row(0).setTo(Scalar.all(0));
-        borderMask.row(borderMask.rows() - 1).setTo(Scalar.all(0));
-        borderMask.col(0).setTo(Scalar.all(0));
-        borderMask.col(borderMask.cols() - 1).setTo(Scalar.all(0));
-
-        float[] hueHist   = buildHueHistogram(hsv, borderMask);
+        // ── 3. Bulk-read hue + border mask into Java in two JNI calls ─────
+        // All per-cluster work (histogram, assignment, mask building) is done
+        // in Java — no further inRange/LUT/countNonZero native calls needed.
+        byte[] allHue    = new byte[n];
+        byte[] borderBuf = new byte[n];
+        hue.get(0, 0, allHue);
+        borderMask.get(0, 0, borderBuf);
+        hue.release();
         borderMask.release();
 
-        // ── Anti-aliased cluster discovery ────────────────────────────────
-        // Smooth with radius 1 (tighter than the old radius-2), find peaks,
-        // then compute valley-based exclusive hue bounds for each cluster.
-        float[]       smoothed     = computeSmoothedHist(hueHist, 1);
-        List<Integer> peaks        = findPeaks(smoothed, MIN_PIXEL_COUNT);
-
-        List<ColourCluster> clusters = new ArrayList<>();
-
-        for (int pi = 0; pi < peaks.size(); pi++) {
-            if (clusters.size() >= MAX_CLUSTERS) break;
-            int peakHue = peaks.get(pi);
-            // Use the proven ±HUE_TOLERANCE window.  Valley-based exclusive bounds
-            // are computed and stored on the ColourCluster for diagnostics / future use,
-            // but the mask itself still uses the fixed-width window — switching to
-            // valley bounds caused unexplained score regressions on
-            // TRICOLOUR_TRIANGLE and BICOLOUR_RECT_HALVES in VectorMatchingTest.
-            Mat clusterMask = hueRangeMask(hsv, peakHue, HUE_TOLERANCE);
-            if (Core.countNonZero(clusterMask) < MIN_PIXEL_COUNT) {
-                clusterMask.release();
-                continue;
-            }
-            zeroImageBorder(clusterMask);
-            int[] vb = computeValleyBounds(smoothed, peaks)[pi];
-            clusters.add(new ColourCluster(clusterMask, peakHue, false, false, vb[0], vb[1]));
+        // ── 4. Java pass 1: build hue histogram from border pixels ────────
+        float[] hueHist = new float[180];
+        for (int i = 0; i < n; i++) {
+            if ((borderBuf[i] & 0xFF) != 0)
+                hueHist[allHue[i] & 0xFF]++;
         }
 
-        // Achromatic clusters (unchanged — border gradient applied here)
-        Mat brightFull = new Mat();
-        Core.inRange(hsv,
-                new Scalar(0,   0,       BRIGHT_VAL_THRESHOLD),
-                new Scalar(179, MIN_SAT, 255),
-                brightFull);
-        Mat darkFull = new Mat();
-        Core.inRange(hsv,
-                new Scalar(0,   0, 0),
-                new Scalar(179, 255, BRIGHT_VAL_THRESHOLD),
-                darkFull);
-        Mat brightBorder = new Mat();
-        Mat darkBorder   = new Mat();
-        Imgproc.morphologyEx(brightFull, brightBorder, Imgproc.MORPH_GRADIENT, kernel);
-        Imgproc.morphologyEx(darkFull,   darkBorder,   Imgproc.MORPH_GRADIENT, kernel);
-        kernel.release();
+        // ── 5. Peak detection + LUT (pure Java, O(180)) ───────────────────
+        float[]       smoothed     = computeSmoothedHist(hueHist, 1);
+        List<Integer> peaks        = findPeaks(smoothed, MIN_PIXEL_COUNT);
+        int[][]       valleyBounds = computeValleyBounds(smoothed, peaks);
+        int           nPeaks       = Math.min(peaks.size(), MAX_CLUSTERS);
+
+        int[][] vbs     = new int[nPeaks][2];
+        int[]   lut     = new int[256];          // hue byte → cluster label (1-based), 0 = none
+        for (int pi = 0; pi < nPeaks; pi++) {
+            int[] vb = clampHueBounds(valleyBounds[pi][0], valleyBounds[pi][1], peaks.get(pi));
+            vbs[pi] = vb;
+            int label = pi + 1;
+            if (vb[0] <= vb[1]) {
+                for (int h = vb[0]; h <= vb[1] && h < 180; h++) lut[h] = label;
+            } else {
+                for (int h = vb[0]; h < 180; h++) lut[h] = label;
+                for (int h = 0; h <= vb[1]; h++)  lut[h] = label;
+            }
+        }
+
+        // ── 6. Java pass 2: assign every border pixel to a cluster ────────
+        // All cluster masks are built simultaneously in one O(n) sweep.
+        byte[][] maskData    = new byte[nPeaks][n];
+        int[]    pixelCounts = new int[nPeaks];
+        for (int i = 0; i < n; i++) {
+            if ((borderBuf[i] & 0xFF) != 0) {
+                int label = lut[allHue[i] & 0xFF];
+                if (label > 0) {
+                    maskData[label - 1][i] = (byte) 255;
+                    pixelCounts[label - 1]++;
+                }
+            }
+        }
+
+        // ── 7. Write cluster masks — one Mat.put per cluster (plain memcpy) ─
+        List<ColourCluster> clusters = new ArrayList<>();
+        for (int pi = 0; pi < nPeaks; pi++) {
+            if (clusters.size() >= MAX_CLUSTERS) break;
+            if (pixelCounts[pi] < MIN_PIXEL_COUNT) continue;
+            Mat clusterMask = new Mat(rows, cols, CvType.CV_8UC1);
+            clusterMask.put(0, 0, maskData[pi]);
+            zeroImageBorder(clusterMask);
+            clusters.add(new ColourCluster(clusterMask, peaks.get(pi),
+                    false, false, vbs[pi][0], vbs[pi][1]));
+        }
+
+        // ── 8. Achromatic borders (still native — no Java equivalent) ─────
+        Mat brightFull = new Mat(), darkFull = new Mat();
+        Core.inRange(hsv, new Scalar(0, 0, BRIGHT_VAL_THRESHOLD),
+                new Scalar(179, MIN_SAT, 255), brightFull);
+        Core.inRange(hsv, new Scalar(0, 0, 0),
+                new Scalar(179, 255, BRIGHT_VAL_THRESHOLD), darkFull);
+        Mat brightBorder = new Mat(), darkBorder = new Mat();
+        Imgproc.morphologyEx(brightFull, brightBorder, Imgproc.MORPH_GRADIENT, k3);
+        Imgproc.morphologyEx(darkFull,   darkBorder,   Imgproc.MORPH_GRADIENT, k3);
+        k3.release();
         brightFull.release();
         darkFull.release();
 
@@ -204,6 +249,10 @@ public final class SceneColourClusters {
     public static List<ColourCluster> extract(Mat bgrScene) {
         Mat hsv = new Mat();
         Imgproc.cvtColor(bgrScene, hsv, Imgproc.COLOR_BGR2HSV);
+
+        // Posterize hue for cleaner histogram peak detection (masks use original hsv)
+        Mat hsvQ = POSTERIZE_STEP > 1 ? posterizeHue(hsv, POSTERIZE_STEP) : hsv;
+
         Mat brightAchromatic = new Mat();
         Core.inRange(hsv,
                 new Scalar(0,   0,       BRIGHT_VAL_THRESHOLD),
@@ -215,13 +264,14 @@ public final class SceneColourClusters {
                 new Scalar(179, 255, BRIGHT_VAL_THRESHOLD),
                 darkAchromatic);
         Mat chromaticMask = new Mat();
-        Core.inRange(hsv,
+        Core.inRange(hsvQ,
                 new Scalar(0,   MIN_SAT, MIN_VAL),
                 new Scalar(179, 255,     255),
                 chromaticMask);
 
         // ── Anti-aliased cluster discovery ────────────────────────────────
-        float[]       hueHist      = buildHueHistogram(hsv, chromaticMask);
+        float[]       hueHist      = buildHueHistogram(hsvQ, chromaticMask);
+        if (POSTERIZE_STEP > 1) hsvQ.release();
         chromaticMask.release();
         float[]       smoothed     = computeSmoothedHist(hueHist, 1);
         List<Integer> peaks        = findPeaks(smoothed, MIN_PIXEL_COUNT);
@@ -231,15 +281,14 @@ public final class SceneColourClusters {
         for (int pi = 0; pi < peaks.size(); pi++) {
             if (clusters.size() >= MAX_CLUSTERS) break;
             int peakHue = peaks.get(pi);
-            int lo = valleyBounds[pi][0];
-            int hi = valleyBounds[pi][1];
-            Mat clusterMask = hueRangeMaskByBounds(hsv, lo, hi);
+            int[] vb = clampHueBounds(valleyBounds[pi][0], valleyBounds[pi][1], peakHue);
+            Mat clusterMask = hueRangeMaskByBounds(hsv, vb[0], vb[1]);
             if (Core.countNonZero(clusterMask) < MIN_PIXEL_COUNT) {
                 clusterMask.release();
                 continue;
             }
             zeroImageBorder(clusterMask);
-            clusters.add(new ColourCluster(clusterMask, peakHue, false, false, lo, hi));
+            clusters.add(new ColourCluster(clusterMask, peakHue, false, false, vb[0], vb[1]));
         }
         if (Core.countNonZero(brightAchromatic) >= MIN_PIXEL_COUNT) {
             zeroImageBorder(brightAchromatic);
@@ -425,6 +474,51 @@ public final class SceneColourClusters {
             }
         }
         return bestPos;
+    }
+
+    /**
+     * Limits valley-derived bounds to at most {@link #MAX_HUE_HALF_WIDTH} hue units
+     * on either side of {@code peak}.  When two peaks are far apart the valley
+     * midpoint on the "back arc" would otherwise be ~90 units away, causing a
+     * cluster mask to span most of the hue wheel.  The cap keeps each cluster's
+     * mask compact while still respecting the actual valley for close neighbours.
+     */
+    private static int[] clampHueBounds(int lo, int hi, int peak) {
+        int distBefore = (peak - lo + 180) % 180;
+        int clampedLo  = distBefore > MAX_HUE_HALF_WIDTH
+                ? (peak - MAX_HUE_HALF_WIDTH + 180) % 180 : lo;
+        int distAfter  = (hi - peak + 180) % 180;
+        int clampedHi  = distAfter > MAX_HUE_HALF_WIDTH
+                ? (peak + MAX_HUE_HALF_WIDTH) % 180 : hi;
+        return new int[]{ clampedLo, clampedHi };
+    }
+
+    /**
+     * Returns a new HSV Mat where the H channel is quantised to multiples of
+     * {@code step} (S and V are unchanged).  Anti-aliased edge pixels whose hue
+     * sits between two colour regions snap to the nearer quantised band, removing
+     * the low-level noise that fills the valley between two histogram peaks.
+     * The caller is responsible for releasing the returned Mat.
+     */
+    private static Mat posterizeHue(Mat hsv, int step) {
+        byte[] lutData = new byte[256];
+        for (int i = 0; i < 256; i++)
+            lutData[i] = (byte) Math.min(179, (i / step) * step);
+        Mat lut = new Mat(1, 256, CvType.CV_8UC1);
+        lut.put(0, 0, lutData);
+
+        List<Mat> channels = new ArrayList<>();
+        Core.split(hsv, channels);
+        Mat hQ = new Mat();
+        Core.LUT(channels.get(0), lut, hQ);
+        lut.release();
+        channels.get(0).release();
+        channels.set(0, hQ);
+
+        Mat out = new Mat();
+        Core.merge(channels, out);
+        channels.forEach(Mat::release);
+        return out;
     }
 
     /**
