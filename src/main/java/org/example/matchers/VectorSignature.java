@@ -171,7 +171,7 @@ public final class VectorSignature {
 
         // ── Step 2: ApproxPolyDP reduction for polygon-based metrics (vertex
         // count, circularity, solidity, type classification, topology).
-        double strictEps = Math.max(0.02 * rawPerim, 2.0);
+        double strictEps = Math.min(Math.max(0.01 * rawPerim, 1.5), 6.0);
         MatOfPoint2f approxF = new MatOfPoint2f();
         Imgproc.approxPolyDP(new MatOfPoint2f(contour.toArray()), approxF, strictEps, true);
         Point[] approxPts = approxF.toArray();
@@ -280,7 +280,7 @@ public final class VectorSignature {
                 ? Double.NaN : area / imageArea;
 
         // Polygon approximation
-        double eps = Math.max(epsilon * perimeter, 2.0);
+        double eps = Math.min(Math.max(epsilon * perimeter, 2.0), 8.0);
         MatOfPoint2f contour2f = new MatOfPoint2f(contour.toArray());
         MatOfPoint2f approx    = new MatOfPoint2f();
         Imgproc.approxPolyDP(contour2f, approx, eps, true);
@@ -297,7 +297,7 @@ public final class VectorSignature {
         // hundreds of pixel-level stepping points that confuse the traversal.
         // We use the STRICT epsilon (0.02) regardless of the variant epsilon so the
         // descriptor always sees the true geometric corners.
-        double strictEps = Math.max(0.02 * perimeter, 2.0);
+        double strictEps = Math.min(Math.max(0.01 * perimeter, 1.5), 6.0);
         MatOfPoint2f strictApprox = new MatOfPoint2f();
         Imgproc.approxPolyDP(contour2f, strictApprox, strictEps, true);
         MatOfPoint strictContour = new MatOfPoint(strictApprox.toArray());
@@ -356,7 +356,7 @@ public final class VectorSignature {
         int counted = 0;
         for (MatOfPoint c : contours) {
             double perim = Imgproc.arcLength(new MatOfPoint2f(c.toArray()), true);
-            double eps   = Math.max(epsilon * perim, 2.0);
+            double eps   = Math.min(Math.max(epsilon * perim, 2.0), 8.0);
             MatOfPoint2f c2f    = new MatOfPoint2f(c.toArray());
             MatOfPoint2f approx = new MatOfPoint2f();
             Imgproc.approxPolyDP(c2f, approx, eps, true);
@@ -762,6 +762,8 @@ public final class VectorSignature {
                 type, vertexCount, circularity, solidity, concavityRatio, aspectRatio, componentCount, normalisedArea);
     }
 }
+
+
 
 
 

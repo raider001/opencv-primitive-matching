@@ -53,9 +53,15 @@ public final class VectorMatcher {
 
     // ── Layer 1 constants ─────────────────────────────────────────────────────
     /** Exponential decay rate for extra boundaries (scene has more than ref). */
-    private static final double CLUSTER_PENALTY_K      = 0.7;
-    /** Steeper decay rate for missing boundaries (scene has fewer than ref). */
-    private static final double CLUSTER_PENALTY_K_MISS = 1.5;
+    private static final double CLUSTER_PENALTY_K      = 0.10;
+    /**
+     * Decay rate for missing boundaries (scene has fewer than ref).
+     * Kept gentler because border-pixel extraction can split/merge one boundary
+     * differently between 128x128 refs and larger scene renders.
+     */
+    private static final double CLUSTER_PENALTY_K_MISS = 0.10;
+    /** Minimum Layer-1 score when only missing-boundary mismatch is present. */
+    private static final double MIN_COUNT_SCORE_MISS   = 0.45;
 
     // ── Layer 2 constants ─────────────────────────────────────────────────────
     /** Max centre-to-centre distance as a fraction of scene diagonal for expansion. */
@@ -64,10 +70,16 @@ public final class VectorMatcher {
     private static final double SECONDARY_WEIGHT = 0.30;
 
     // ── Deduplication constants ───────────────────────────────────────────────
-    /** Min bbox IoU to consider a bright/dark achromatic pair as same physical edge. */
-    private static final double DEDUP_IOU_MIN        = 0.50;
-    /** Min contourArea ratio (min/max) to confirm same physical edge (not inner/outer ring). */
-    private static final double DEDUP_AREA_RATIO_MIN = 0.90;
+    /**
+     * Min bbox IoU to treat two boundaries as the same physical edge.
+     * Kept high so inner/outer outline rings are not collapsed.
+     */
+    private static final double DEDUP_IOU_MIN        = 0.90;
+    /**
+     * Min contour-area ratio (min/max) for same-edge confirmation.
+     * Lower than 0.90 so anti-aliased filled polygons still deduplicate.
+     */
+    private static final double DEDUP_AREA_RATIO_MIN = 0.75;
 
     // ── Geometry constant ─────────────────────────────────────────────────────
     private static final double EPSILON = 0.04;   // single variant epsilon
@@ -342,9 +354,12 @@ public final class VectorMatcher {
             countScore = 1.0;
         } else {
             int diff = matchedCount - refCount;
-            countScore = diff > 0
-                    ? Math.exp(-CLUSTER_PENALTY_K * 2.0 * diff)        // extra — steep
-                    : Math.exp(-CLUSTER_PENALTY_K_MISS * Math.abs(diff)); // missing — steeper
+            if (diff > 0) {
+                countScore = Math.exp(-CLUSTER_PENALTY_K * diff);              // extra — over-segmentation
+            } else {
+                countScore = Math.exp(-CLUSTER_PENALTY_K_MISS * Math.abs(diff));
+                countScore = Math.max(countScore, MIN_COUNT_SCORE_MISS);
+            }
         }
 
         // ── Fix B: chromatic contamination (achromatic refs only) ─────────
@@ -406,12 +421,24 @@ public final class VectorMatcher {
 
         // ── Layer 3: primary boundary geometry ───────────────────────────
         double geomScore = 0.0;
-        SceneContourEntry primaryScene =
-                findMatchedEntryForRef(primaryRef, matched);
-        if (primaryScene != null) {
-            VectorSignature refSig   = primaryRef.bestSig(EPSILON);
-            VectorSignature sceneSig = primaryScene.sig;
-            geomScore = refSig.similarity(sceneSig);
+        VectorSignature refSig = primaryRef.bestSig(EPSILON);
+        SceneContourEntry primaryScene = null;
+        double bestGeom = -1.0;
+        for (SceneContourEntry e : matched) {
+            double sim = refSig.similarity(e.sig);
+            if (sim > bestGeom) {
+                bestGeom = sim;
+                primaryScene = e;
+            }
+        }
+        if (bestGeom >= 0.0) {
+            geomScore = bestGeom;
+        }
+
+        // If geometry and structural coherence are both near-perfect, do not let
+        // count-only over-segmentation suppress an otherwise clear true match.
+        if (geomScore >= 0.95 && matchScore >= 0.95) {
+            countScore = Math.max(countScore, 0.45);
         }
 
         double combined = countScore * W_COUNT
@@ -669,14 +696,15 @@ public final class VectorMatcher {
             VectorSignature best     = null;
             double          bestSol  = -1;
             for (MatOfPoint c : contours) {
-                // Pass imageArea so normalisedArea is set — enables the area-ratio gate in
-                // VectorSignature.similarity() to cap tiny background fragments (< 1/10 of
-                // the reference's normalised area) at score ≤ 0.25.
-                VectorSignature s = VectorSignature.buildFromContour(c, eps, imageArea);
+                // Keep ref-side normalisedArea as NaN. The normalised-area guards in
+                // VectorSignature are scene-side gates; filling both sides triggers an
+                // unintended 0.25 cap for valid matches because ref and scene canvases
+                // are different sizes (128x128 vs 640x480 in this suite).
+                VectorSignature s = VectorSignature.buildFromContour(c, eps, Double.NaN);
                 if (s.solidity > bestSol) { bestSol = s.solidity; best = s; }
             }
             cachedSig = (best != null) ? best
-                    : VectorSignature.build(Mat.zeros(1, 1, CvType.CV_8UC1), eps, imageArea);
+                    : VectorSignature.build(Mat.zeros(1, 1, CvType.CV_8UC1), eps, Double.NaN);
             return cachedSig;
         }
 

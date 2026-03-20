@@ -259,7 +259,7 @@ public class MatchReportLibrary {
      *
      * <h3>Detection tests</h3> (label does NOT contain {@code "→"})
      * <ul>
-     *   <li>PASS — score ≥ 60 % AND (IoU unavailable OR IoU ≥ 0.95)</li>
+     *   <li>PASS — IoU &gt; 0.9 AND IoU &lt; 1.1 AND score &gt; 70 %</li>
      *   <li>FAIL — everything else</li>
      * </ul>
      *
@@ -270,8 +270,21 @@ public class MatchReportLibrary {
      * </ul>
      */
     private boolean determinePassed(String label, double score, double iou) {
-        if (label.contains("→")) return score < 60.0;                    // rejection: no fire = pass
-        return score >= 60.0 && (Double.isNaN(iou) || iou >= 0.95);     // detection: score + location
+        if (label.contains("→")) return isRejectionPass(score);          // rejection: no fire = pass
+        return isDetectionPass(score, iou);                               // detection: score + location
+    }
+
+    /** Shared detection gate used by both HTML report rows and JUnit assertions. */
+    public static boolean isDetectionPass(double score, double iou) {
+        return !Double.isNaN(iou)
+                && iou > 0.90
+                && iou < 1.10
+                && score > 70.0;
+    }
+
+    /** Shared rejection gate used by both HTML report rows and JUnit assertions. */
+    public static boolean isRejectionPass(double score) {
+        return score < 60.0;
     }
 
     /**
@@ -451,7 +464,7 @@ public class MatchReportLibrary {
           .append("</div></div>")
           .append("<div class='legend-block'><div class='legend-title'>Row status</div>")
           .append("<div class='legend-row'>")
-          .append("<span class='legend-pill pass-pill'>green = passed (score ≥ 60 % &amp; IoU ≥ 0.95)</span>")
+          .append("<span class='legend-pill pass-pill'>green = passed (0.9 &lt; IoU &lt; 1.1 and score &gt; 70%)</span>")
           .append("<span class='legend-pill fail-pill'>red = failed</span>")
           .append("</div></div>")
           .append("</div>");
