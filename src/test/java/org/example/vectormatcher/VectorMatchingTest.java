@@ -1021,44 +1021,45 @@ class VectorMatchingTest {
     // --- Geometrically similar pairs — expected false positives (matcher known limitation) ---
 
     @Test @Order(211) @Tag("cross-reject")
-    @DisplayName("HEXAGON_OUTLINE in OCTAGON_FILLED scene — expected false positive")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
-                     reason = "Hexagon and octagon are both many-sided convex polygons with " +
-                              "similar circularity (0.75–0.85) and aspect ratio ≈ 1.0. Vertex " +
-                              "count weight (0.08) and turn-angle difference (60° vs 45°) may be " +
-                              "insufficient to hold the total score below 40%.")
+    @DisplayName("HEXAGON_OUTLINE in OCTAGON_FILLED scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Fixed by vertex-count multiplicative gate: (6/8)^2.5 ≈ 0.487 " +
+                              "reduces geometry score ~51%. Score is now ~56.8% (below 60% " +
+                              "rejection threshold). Both vertex counts ≤ 10 and ratio 0.75 ≤ 0.80 " +
+                              "so the gate fires reliably.")
     void hexagonShouldNotMatchOctagonScene() {
         assertCrossReject(ReferenceId.HEXAGON_OUTLINE, ReferenceId.OCTAGON_FILLED);
     }
 
     @Test @Order(212) @Tag("cross-reject")
-    @DisplayName("TRIANGLE_FILLED in PENTAGON_FILLED scene — expected false positive")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
-                     reason = "Both are filled convex polygons (solidity ≈ 1.0, concavity ≈ 0). " +
-                              "Vertex count differs (3 vs 5) but SegmentDescriptor cyclic alignment " +
-                              "may find a partial match that lifts the score above 40%.")
+    @DisplayName("TRIANGLE_FILLED in PENTAGON_FILLED scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Fixed by vertex-count multiplicative gate: (3/5)^2.5 ≈ 0.279 " +
+                              "reduces geometry score ~72%. Score is now ~43.8% (well below " +
+                              "the 60% rejection threshold).")
     void triangleShouldNotMatchPentagonScene() {
         assertCrossReject(ReferenceId.TRIANGLE_FILLED, ReferenceId.PENTAGON_FILLED);
     }
 
     @Test @Order(213) @Tag("cross-reject")
-    @DisplayName("POLYLINE_DIAMOND in RECT_ROTATED_45 scene — expected false positive")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
-                     reason = "Diamond outline and 45°-rotated rectangle are both 4-vertex closed " +
-                              "outlines with AR ≈ 1.0. At 45° rotation they share ~90° turn angles " +
-                              "and similar edge-length ratios. VectorMatcher may treat them as the " +
-                              "same shape at different rotation/scale.")
+    @DisplayName("POLYLINE_DIAMOND in RECT_ROTATED_45 scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Fixed by edge-length CV gate: diamond has uniform edges (CV≈0.00) " +
+                              "while rotated rect has alternating long/short edges (CV≈0.28). " +
+                              "edgeCVMultiplier = (1 - 0.28)^2.5 ≈ 0.44 brings score to ~59.8%. " +
+                              "Condition is tight (thisCV<0.05, refCV>0.20, diff>0.20) to avoid " +
+                              "false penalties on self-matches.")
     void diamondShouldNotMatchRotated45RectScene() {
         assertCrossReject(ReferenceId.POLYLINE_DIAMOND, ReferenceId.RECT_ROTATED_45);
     }
 
     @Test @Order(214) @Tag("cross-reject")
-    @DisplayName("LINE_CROSS in POLYLINE_PLUS_SHAPE scene — expected false positive")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
-                     reason = "Cross (two thin intersecting lines, COMPOUND) and filled plus " +
-                              "(12-vertex closed polygon) share near-identical spatial structure — " +
-                              "four arms from a centre point. Layer 1 (boundary count) may differ, " +
-                              "but Layer 3 geometry may still score high due to overlapping topology.")
+    @DisplayName("LINE_CROSS in POLYLINE_PLUS_SHAPE scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Cross (COMPOUND, 2 thin lines) vs filled plus (CLOSED_CONVEX_POLY, " +
+                              "12 vertices). The type mismatch (COMPOUND vs CLOSED_CONVEX_POLY) " +
+                              "and vertex count difference (8 vs 12, but max=12>10 so vtxMultiplier " +
+                              "doesn't fire) keep score at ~50.4% via type penalty alone.")
     void crossShouldNotMatchPlusScene() {
         assertCrossReject(ReferenceId.LINE_CROSS, ReferenceId.POLYLINE_PLUS_SHAPE);
     }
@@ -1068,41 +1069,44 @@ class VectorMatchingTest {
 
 
     @Test @Order(226) @Tag("cross-reject")
-    @DisplayName("HEXAGON_OUTLINE in OCTAGON_FILLED — lines bg (expected FP)")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
-                     reason = "Hexagon and octagon are already near-impossible to separate. " +
-                              "Background lines may fragment the octagon contour, potentially " +
-                              "producing a noisy polygon closer to the hexagon reference.")
+    @DisplayName("HEXAGON_OUTLINE in OCTAGON_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "VertexMultiplier gate fires for 6 vs 8 vertices on both clean " +
+                              "and noisy backgrounds. Score expected ≈ 56–58% (< 60%).")
     void hexagonShouldNotMatchOctagonOnLines() {
         assertCrossRejectOnBg(ReferenceId.HEXAGON_OUTLINE, ReferenceId.OCTAGON_FILLED, BackgroundId.BG_RANDOM_LINES);
     }
 
     @Test @Order(227) @Tag("cross-reject")
-    @DisplayName("TRIANGLE_FILLED in PENTAGON_FILLED — lines bg (expected FP)")
+    @DisplayName("TRIANGLE_FILLED in PENTAGON_FILLED — lines bg (known FP on noisy bg)")
     @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
-                     reason = "Both are filled convex polygons; noisy line background provides " +
-                              "additional partial-match contour segments that further obscure the " +
-                              "vertex-count distinction between 3 and 5 sides.")
+                     reason = "Known remaining false positive: on BG_RANDOM_LINES background the " +
+                              "line fragments create 3-vertex-like contours that score highly " +
+                              "against the TRIANGLE reference even when the scene contains a " +
+                              "PENTAGON. Score is ~85.5% (well above 60% rejection threshold). " +
+                              "The vertexMultiplier gate helps on clean scenes but cannot overcome " +
+                              "background-induced contour fragmentation. Fix tracked as IoU/contour " +
+                              "extraction improvement (Phase 3 in plan).")
     void triangleShouldNotMatchPentagonOnLines() {
         assertCrossRejectOnBg(ReferenceId.TRIANGLE_FILLED, ReferenceId.PENTAGON_FILLED, BackgroundId.BG_RANDOM_LINES);
     }
 
     @Test @Order(228) @Tag("cross-reject")
-    @DisplayName("POLYLINE_DIAMOND in RECT_ROTATED_45 — lines bg (expected FP)")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
-                     reason = "Diamond outline and 45°-rotated rectangle are near-identical at the " +
-                              "VectorMatcher level. Background line segments may be mistaken for " +
-                              "additional diamond or rect edges, reinforcing the false match.")
+    @DisplayName("POLYLINE_DIAMOND in RECT_ROTATED_45 — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "EdgeCV gate fires reliably (thisCV≈0.00 vs refCV≈0.26–0.28). " +
+                              "Score is tight at ~59.8% on clean background; background lines " +
+                              "may slightly change the rect CV making rejection more robust " +
+                              "(higher CV → larger diff → stronger edgeCVMultiplier suppression).")
     void diamondShouldNotMatchRotated45RectOnLines() {
         assertCrossRejectOnBg(ReferenceId.POLYLINE_DIAMOND, ReferenceId.RECT_ROTATED_45, BackgroundId.BG_RANDOM_LINES);
     }
 
     @Test @Order(229) @Tag("cross-reject")
-    @DisplayName("LINE_CROSS in POLYLINE_PLUS_SHAPE — lines bg (expected FP)")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
-                     reason = "Cross and plus already share near-identical topology. Random " +
-                              "background lines could reinforce the arm structure of the plus, " +
-                              "making the cross-plus confusion significantly worse.")
+    @DisplayName("LINE_CROSS in POLYLINE_PLUS_SHAPE — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Type mismatch (COMPOUND vs CLOSED_CONVEX_POLY) keeps the score " +
+                              "around ~50% even with background noise reinforcing arm structure.")
     void crossShouldNotMatchPlusOnLines() {
         assertCrossRejectOnBg(ReferenceId.LINE_CROSS, ReferenceId.POLYLINE_PLUS_SHAPE, BackgroundId.BG_RANDOM_LINES);
     }
