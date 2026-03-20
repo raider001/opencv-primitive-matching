@@ -106,6 +106,16 @@ public final class VectorSignature {
      */
     public final double normalisedArea;
 
+    /**
+     * Edge-length coefficient of variation = stddev(edges) / mean(edges).
+     * Computed from the approxPolyDP vertex sequence; scale-invariant.
+     * Near 0.0 for regular polygons with uniform edge lengths (square, equilateral diamond).
+     * High (0.3–0.7) for shapes with strongly alternating edge lengths (rotated rectangle:
+     * alternates hw=48 and hh=28 edges), or irregular polygons.
+     * Primary discriminator between POLYLINE_DIAMOND (CV≈0) and RECT_ROTATED_45 (CV≈0.4).
+     */
+    public final double edgeLengthCV;
+
     // -------------------------------------------------------------------------
     // Constructor (private — use build())
     // -------------------------------------------------------------------------
@@ -114,7 +124,8 @@ public final class VectorSignature {
                              double concavityRatio, double[] angleHistogram,
                              int componentCount, double aspectRatio,
                              double solidity, ContourTopology topology,
-                             SegmentDescriptor segmentDescriptor, double normalisedArea) {
+                             SegmentDescriptor segmentDescriptor, double normalisedArea,
+                             double edgeLengthCV) {
         this.type               = type;
         this.vertexCount        = vertexCount;
         this.circularity        = circularity;
@@ -126,6 +137,7 @@ public final class VectorSignature {
         this.topology           = topology;
         this.segmentDescriptor  = segmentDescriptor;
         this.normalisedArea     = normalisedArea;
+        this.edgeLengthCV       = edgeLengthCV;
     }
 
     // -------------------------------------------------------------------------
@@ -200,7 +212,7 @@ public final class VectorSignature {
         return new VectorSignature(
                 sig.type, sig.vertexCount, sig.circularity, sig.concavityRatio,
                 sig.angleHistogram, sig.componentCount, sig.aspectRatio,
-                sig.solidity, sig.topology, rawSegDesc, sig.normalisedArea);
+                sig.solidity, sig.topology, rawSegDesc, sig.normalisedArea, sig.edgeLengthCV);
     }
 
     /**
@@ -308,6 +320,23 @@ public final class VectorSignature {
         // Concavity ratio via convex hull
         double concavityRatio = computeConcavityRatio(contour, perimeter);
 
+        // Edge-length coefficient of variation (CV = stddev/mean) — scale invariant.
+        // Uses a dedicated coarser epsilon (4% of perimeter, no 8px cap) so that
+        // large scene contours (e.g. 3× scaled shapes with perimeter ~1000px) reduce
+        // to clean polygon corners rather than a staircase, ensuring the alternating
+        // edge-length signal of a rotated rectangle is preserved at any scale.
+        // Regular polygons with equal edges: CV ≈ 0.
+        // Rotated rectangle (alternating hw=48/hh=28 edges): CV ≈ 0.26.
+        double cvEps = Math.max(0.04 * perimeter, 4.0);  // 4% of perimeter, min 4px, NO upper cap
+        MatOfPoint2f cvApprox = new MatOfPoint2f();
+        Imgproc.approxPolyDP(contour2f, cvApprox, cvEps, true);
+        double edgeLengthCV = computeEdgeLengthCV(cvApprox);
+        if (System.getProperty("vm.debug") != null) {
+            System.out.printf("[EDGE-CV] perim=%.0f cvEps=%.1f vertices=%d CV=%.3f%n",
+                perimeter, cvEps, (int)cvApprox.total(), edgeLengthCV);
+        }
+        cvApprox.release();
+
         // Classify — order matters: LINE first, then CIRCLE (overrides concavity), then poly
         ShapeType type;
         if (aspectRatio >= 4.0) {
@@ -335,7 +364,7 @@ public final class VectorSignature {
         contour2f.release();
 
         return new VectorSignature(type, vertexCount, circularity,
-                concavityRatio, angleHist, 1, aspectRatio, solidity, topology, segDesc, normArea);
+                concavityRatio, angleHist, 1, aspectRatio, solidity, topology, segDesc, normArea, edgeLengthCV);
     }
 
     private static VectorSignature buildCompound(List<MatOfPoint> contours, double epsilon, double imageArea) {
@@ -373,7 +402,7 @@ public final class VectorSignature {
 
         return new VectorSignature(ShapeType.COMPOUND,
                 rep.vertexCount, rep.circularity, rep.concavityRatio,
-                combined, contours.size(), rep.aspectRatio, rep.solidity, null, null, normArea);
+                combined, contours.size(), rep.aspectRatio, rep.solidity, null, null, normArea, 0.0);
     }
 
     // -------------------------------------------------------------------------
@@ -412,6 +441,39 @@ public final class VectorSignature {
         if (sum > 0) for (int i = 0; i < 6; i++) hist[i] /= sum;
         else Arrays.fill(hist, 1.0 / 6.0);
         return hist;
+    }
+
+    /**
+     * Computes the coefficient of variation (stddev / mean) of consecutive
+     * inter-vertex edge lengths from an approxPolyDP vertex sequence.
+     * Scale-invariant: all lengths are normalised by mean before computing CV.
+     * Returns 0.0 if fewer than 2 edges.
+     *
+     * <p>Key values:
+     * <ul>
+     *   <li>Regular polygon / square rotated 45° (equal edges): CV ≈ 0.0</li>
+     *   <li>Rotated rectangle hw=48, hh=28 (alternating edges): CV ≈ 0.24</li>
+     *   <li>Highly irregular polygon: CV > 0.4</li>
+     * </ul>
+     */
+    static double computeEdgeLengthCV(MatOfPoint2f approx) {
+        Point[] pts = approx.toArray();
+        int n = pts.length;
+        if (n < 2) return 0.0;
+        double[] lengths = new double[n];
+        double sum = 0.0;
+        for (int i = 0; i < n; i++) {
+            Point a = pts[i], b = pts[(i + 1) % n];
+            double dx = b.x - a.x, dy = b.y - a.y;
+            lengths[i] = Math.sqrt(dx * dx + dy * dy);
+            sum += lengths[i];
+        }
+        double mean = sum / n;
+        if (mean < 1e-9) return 0.0;
+        double variance = 0.0;
+        for (double l : lengths) variance += (l - mean) * (l - mean);
+        variance /= n;
+        return Math.sqrt(variance) / mean;
     }
 
     /**
@@ -557,10 +619,21 @@ public final class VectorSignature {
             typeScore = 1.0;
         } else if ((this.type  == ShapeType.CLOSED_CONVEX_POLY || this.type  == ShapeType.CLOSED_CONCAVE_POLY)
                 && (ref.type   == ShapeType.CLOSED_CONVEX_POLY || ref.type   == ShapeType.CLOSED_CONCAVE_POLY)) {
-            // Same broad polygon family but concavity classification differs.
-            // Noisy backgrounds add spurious concavities to otherwise-convex shapes,
-            // so we use a light penalty (0.70) rather than a moderate one (0.50).
-            typeScore = 0.70;
+            // Polygon family: check if types match
+            if (this.type != ref.type) {
+                // Type mismatch (CONVEX vs CONCAVE) — hard gate
+                typeScore = 0.0;
+                hardGate  = true;
+                
+                // DEBUG logging
+                if (System.getProperty("vm.debug") != null) {
+                    System.out.printf("[POLY-GATE] Hard gate: %s vs %s | concav: %.3f vs %.3f | solid: %.3f vs %.3f%n",
+                        this.type, ref.type, this.concavityRatio, ref.concavityRatio, this.solidity, ref.solidity);
+                }
+            } else {
+                // Same type — no penalty
+                typeScore = 1.0;
+            }
         } else if ((this.type == ShapeType.CIRCLE && ref.type == ShapeType.CLOSED_CONVEX_POLY)
                 || (this.type == ShapeType.CLOSED_CONVEX_POLY && ref.type == ShapeType.CIRCLE)) {
             // Borderline: one classified as CIRCLE, one as POLY.
@@ -665,17 +738,50 @@ public final class VectorSignature {
         double angleScore = histogramIntersection(this.angleHistogram, ref.angleHistogram);
 
         // ── 8. Aspect ratio — multiplicative gate ─────────────────────────
-        // AR is nearly invariant for a shape (scale-independent, rotation-stable
-        // up to 90°). A rect with AR=1.30 should never match a blob with AR=1.82.
-        // Applied as a multiplier so a wrong AR suppresses the entire score.
-        // Only fires when mismatch > 30% to avoid penalising shapes drawn at
-        // slightly different proportions between ref and scene.
         double arA = Math.max(this.aspectRatio, 1.0);
         double arB = Math.max(ref.aspectRatio,  1.0);
         double aspectScore = 1.0 - Math.abs(arA - arB) / Math.max(arA, arB);
-        // Multiplier: only applied when aspectScore < 0.70 (> 30% mismatch).
-        // At 0.70 → 1.0. At 0.50 → 0.510. At 0.35 → 0.250.
         double arMultiplier = aspectScore >= 0.70 ? 1.0 : Math.pow(aspectScore / 0.70, 2.0);
+
+        // ── 10. Edge-length CV multiplicative gate ─────────────────────────
+        // For same-vertex-count convex polygons, edge-length uniformity is the
+        // primary remaining discriminator (e.g. POLYLINE_DIAMOND with uniform edges
+        // vs RECT_ROTATED_45 with alternating long/short edges).
+        //
+        // Gate condition (strict, asymmetric):
+        //   • "this" (reference sig) has VERY UNIFORM edges (CV < 0.05):
+        //     e.g. POLYLINE_DIAMOND (perfect square rotated 45°), regular hexagon, etc.
+        //   • "ref"  (scene candidate) has STRONGLY NON-UNIFORM edges (CV > 0.20).
+        //   • The difference is large (> 0.20).
+        //
+        // Thresholds are deliberately tight to prevent false penalties on:
+        //   - Regular rings/circles (approx. octagon-like, refCV ≈ 0.009–0.015)
+        //     which have borderline CV due to polygon approximation at scale
+        //   - Triangles with slight edge-length variation (refCV ≈ 0.05)
+        //   - Compound shapes with mixed polygon clusters
+        //   - Self-matches where both sides have similar small CVs
+        double edgeCVMultiplier = 1.0;
+        if (this.type == ShapeType.CLOSED_CONVEX_POLY
+                && ref.type == ShapeType.CLOSED_CONVEX_POLY
+                && this.vertexCount > 0 && ref.vertexCount == this.vertexCount
+                && this.edgeLengthCV < 0.05          // reference has VERY uniform edges (regular polygon/diamond)
+                && ref.edgeLengthCV > 0.20            // scene has STRONGLY non-uniform edges
+                && (ref.edgeLengthCV - this.edgeLengthCV) > 0.20) { // large, unambiguous difference
+            double cvDiff = ref.edgeLengthCV - this.edgeLengthCV;
+            edgeCVMultiplier = Math.max(0.25, Math.pow(1.0 - cvDiff, 2.5));
+            if (System.getProperty("vm.debug") != null) {
+                System.out.printf("[EDGECV-GATE] type=%s/%s vtx=%d/%d thisCV=%.3f refCV=%.3f diff=%.3f mult=%.3f%n",
+                    this.type, ref.type, this.vertexCount, ref.vertexCount,
+                    this.edgeLengthCV, ref.edgeLengthCV, cvDiff, edgeCVMultiplier);
+            }
+        } else if (System.getProperty("vm.debug") != null
+                && this.type == ShapeType.CLOSED_CONVEX_POLY
+                && ref.type == ShapeType.CLOSED_CONVEX_POLY
+                && this.vertexCount > 0 && ref.vertexCount == this.vertexCount) {
+            System.out.printf("[EDGECV-SKIP] type=%s/%s vtx=%d/%d thisCV=%.3f refCV=%.3f%n",
+                this.type, ref.type, this.vertexCount, ref.vertexCount,
+                this.edgeLengthCV, ref.edgeLengthCV);
+        }
 
         // ── Component count penalty ───────────────────────────────────────
         double componentPenalty = 0.0;
@@ -691,44 +797,63 @@ public final class VectorSignature {
         // and circles whose SegmentDescriptor varies across different contour
         // densities but whose shape metrics are highly consistent.
         //
+        // CRITICAL GATES to prevent false matches:
+        // 1. Require angle histogram agreement (≥ 0.70) to prevent false matches 
+        //    between shapes with same vertex count but different angle distributions
+        // 2. Require actual topology/segment scores to be reasonable (≥ 0.50) —
+        //    if topology/segment are very low despite matching global metrics, this
+        //    indicates structural differences (e.g., diamond vs square, both 4 vertices
+        //    but different edge proportions/vertex spacing). Don't boost in this case.
+        // 3. DISABLE BOOST when vertex counts match perfectly (vertexScore = 1.0) for
+        //    CLOSED_CONVEX_POLY — when both shapes have identical vertex counts, the
+        //    ONLY discriminator is edge proportions/vertex spacing captured by topology/
+        //    segment descriptors. Boosting here masks the structural differences that
+        //    matter most (e.g., diamond vs rotated square, both 4 vertices).
+        //
         // Floor levels are tiered by agreement strength:
-        //   • Very strong (type match, circ/solid/vtx ≥ 0.95, AR ≥ 0.80): floor at 0.92
-        //     → clean self-matches produce overall score ≥ ~95%
-        //   • Acceptable (type match, all ≥ 0.80, AR ≥ 0.70): floor at 0.72
-        //     → good-quality matches are not suppressed below ~85% overall
-        if (typeScore >= 1.0
+        //   • Very strong (type match, circ/solid/vtx ≥ 0.95, AR ≥ 0.80, angle ≥ 0.70, seg/topo ≥ 0.50): floor at 0.88
+        //     → clean self-matches produce overall score ≥ ~93%
+        //   • Acceptable (type match, all ≥ 0.80, AR ≥ 0.70, angle ≥ 0.60, seg/topo ≥ 0.40): floor at 0.65
+        //     → good-quality matches are not suppressed below ~82% overall
+        boolean allowBoost = true;
+        
+        if (allowBoost && typeScore >= 1.0
                 && circScore     >= 0.95
                 && solidityScore >= 0.95
                 && vertexScore   >= 0.95
-                && aspectScore   >= 0.80) {
+                && aspectScore   >= 0.80
+                && angleScore    >= 0.70
+                && segScore      >= 0.50
+                && topoScore     >= 0.50) {
             segScore = Math.max(segScore, 0.92);
-        } else if (typeScore >= 1.0
+        } else if (allowBoost && typeScore >= 1.0
                 && circScore     >= 0.80
                 && solidityScore >= 0.80
                 && vertexScore   >= 0.80
-                && aspectScore   >= 0.70) {
+                && aspectScore   >= 0.70
+                && angleScore    >= 0.60
+                && segScore      >= 0.40
+                && topoScore     >= 0.40) {
             segScore = Math.max(segScore, 0.72);
         }
 
-        // Weights — segmentDescriptor is the primary structural discriminator.
-        // Aspect ratio is applied as a multiplier rather than an additive term
-        // so a significantly wrong AR suppresses the entire score, not just adds
-        // a small penalty.  The remaining weights sum to 1.0.
-        double score = (typeScore     * 0.15   // type classification (hard gate applies)
-                     + segScore      * 0.30   // geometric segment traversal (PRIMARY)
-                     + topoScore     * 0.10   // topology (corroboration)
-                     + circScore     * 0.13   // circularity ratio
-                     + solidityScore * 0.20   // solidity ratio — primary filled/outline discriminator
-                     + vertexScore   * 0.08   // vertex count (symmetric min/max)
-                     + angleScore    * 0.04   // angle histogram (rotation invariant)
+        double score = (typeScore     * 0.15
+                     + segScore      * 0.23
+                     + topoScore     * 0.15
+                     + circScore     * 0.13
+                     + solidityScore * 0.18
+                     + vertexScore   * 0.08
+                     + angleScore    * 0.10
                      - componentPenalty)
-                     * arMultiplier;          // AR gate: wrong shape proportions → full suppression
+                     * arMultiplier          // AR gate: wrong shape proportions → full suppression
+                     * edgeCVMultiplier;      // edge length uniformity gate (diamond vs rotated rect)
 
         double result = Math.max(0.0, Math.min(1.0, score));
 
 
         // Hard gate: cap cross-type matches well below any pass threshold
-        if (hardGate) result = Math.min(result, 0.25);
+        // Max score with hard gate = 0.15*count + 0.25*match + 0.60*0.15 = 0.49 (49%)
+        if (hardGate) result = Math.min(result, 0.15);
 
         // DEBUG — remove after diagnosis
         if (result > 0.4 && System.getProperty("vm.debug") != null) {
@@ -752,7 +877,7 @@ public final class VectorSignature {
 
     private static VectorSignature unknown() {
         return new VectorSignature(ShapeType.UNKNOWN, 0, 0, 0,
-                new double[]{1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6}, 0, 1.0, 0, null, null, Double.NaN);
+                new double[]{1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6, 1.0/6}, 0, 1.0, 0, null, null, Double.NaN, 0.0);
     }
 
     @Override
@@ -762,6 +887,28 @@ public final class VectorSignature {
                 type, vertexCount, circularity, solidity, concavityRatio, aspectRatio, componentCount, normalisedArea);
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

@@ -220,6 +220,10 @@ public final class VectorMatcher {
                 // ── Expansion loop ────────────────────────────────────────
                 // Select additional scene clusters by proximity + relative size only.
                 // No colour, no geometry.
+                // For multi-cluster refs (>2), use larger proximity threshold to handle
+                // patterns like BICOLOUR_CROSSHAIR_RING where components may be far apart.
+                double proximityThreshold = (refClusters.size() > 2) ? 0.50 : PROXIMITY_THRESHOLD;
+                
                 Rect regionBbox = anchorBbox;
                 List<SceneContourEntry> matched = new ArrayList<>();
                 matched.add(anchor);
@@ -236,9 +240,11 @@ public final class VectorMatcher {
                     for (SceneContourEntry ce : candidates) {
                         if (usedIdx.contains(ce.clusterIdx)) continue;
 
-                        // Proximity gate
-                        double dist = centreDist(anchorBbox, Imgproc.boundingRect(ce.contour));
-                        if (dist > sceneDiag * PROXIMITY_THRESHOLD) continue;
+                        // Proximity gate (relaxed for multi-cluster patterns)
+                        // Use regionBbox (growing bbox) instead of anchorBbox to allow expansion
+                        // to distant components that are part of the same pattern
+                        double dist = centreDist(regionBbox, Imgproc.boundingRect(ce.contour));
+                        if (dist > sceneDiag * proximityThreshold) continue;
 
                         // Relative size match — compare against candidate bbox so far
                         double ceFrac = sceneFraction(ce, regionBbox);
@@ -266,6 +272,11 @@ public final class VectorMatcher {
                 double score = scoreRegion(refClusters, refCount, primaryRef,
                         matched, descriptor, regionBbox);
 
+                if (System.getProperty("vm.debug") != null) {
+                    System.out.printf("[VM-ANCHOR] Anchor %s → matched=%d score=%.1f%% region=%s%n",
+                            formatBbox(anchorBbox), matched.size(), score * 100, formatBbox(regionBbox));
+                }
+
                 if (score > bestScore) {
                     bestScore  = score;
                     bestBbox   = regionBbox;
@@ -274,34 +285,100 @@ public final class VectorMatcher {
             }
 
             // ── Post-score bbox expansion ─────────────────────────────────
-            // Union in same-cluster sibling contours that are substantially
-            // contained within the winning bbox.  This ensures compound shapes
-            // (e.g. COMPOUND_CIRCLE_IN_RECT) where multiple contours share one
-            // achromatic cluster are reported with their full bounding extent.
+            // CRITICAL FIX: Union ALL matched cluster bboxes, not just same-cluster siblings.
+            // For compound shapes (BULLSEYE, CIRCLE_IN_RECT), the expansion loop finds matches
+            // for each reference cluster, but they may be in DIFFERENT scene clusters.
+            // The final bbox must encompass ALL of them to get correct IoU.
             //
-            // Condition: ≥ 75 % of the sibling's bbox area must already lie
-            // inside the current bestBbox.  Concentric / near-identical contours
-            // (outer boundary vs inner hole of the same gradient ring) satisfy
-            // this easily, while distant or only partially-overlapping background
-            // contours do not.
-            if (bestBbox != null && bestAnchor != null) {
-                for (SceneContourEntry ce : candidates) {
-                    if (ce == bestAnchor) continue;
-                    if (ce.clusterIdx != bestAnchor.clusterIdx) continue;
-                    Rect   ceBb      = Imgproc.boundingRect(ce.contour);
-                    double ceArea    = (double) ceBb.width * ceBb.height;
-                    if (ceArea <= 0) continue;
-                    int ix1 = Math.max(bestBbox.x, ceBb.x);
-                    int iy1 = Math.max(bestBbox.y, ceBb.y);
-                    int ix2 = Math.min(bestBbox.x + bestBbox.width,  ceBb.x + ceBb.width);
-                    int iy2 = Math.min(bestBbox.y + bestBbox.height, ceBb.y + ceBb.height);
-                    if (ix2 <= ix1 || iy2 <= iy1) continue;       // no overlap at all
-                    double interArea = (double)(ix2 - ix1) * (iy2 - iy1);
-                    if (interArea >= ceArea * 0.75) {              // ≥ 75 % contained
-                        bestBbox = unionRect(bestBbox, ceBb);
+            // KEY INSIGHT: Only trust the expansion if the SCORE is high (>85%).
+            // Low scores mean uncertain matches - expansion might include background noise.
+            // High scores mean confident matches - expansion captures all legitimate components.
+            if (bestBbox != null && bestAnchor != null && bestScore >= 0.85) {
+                Rect initialBbox = new Rect(bestBbox.x, bestBbox.y, bestBbox.width, bestBbox.height);
+                
+                // Find the matched set that produced bestScore by re-running the expansion
+                // logic for the bestAnchor. This gives us ALL clusters that were matched.
+                Rect anchorBbox = Imgproc.boundingRect(bestAnchor.contour);
+                double anchorBboxArea = Math.max(1.0, (double) anchorBbox.width * anchorBbox.height);
+                RefCluster anchorRef = assignAnchorToRef(bestAnchor, anchorBboxArea, refClusters);
+                
+                List<SceneContourEntry> matched = new ArrayList<>();
+                matched.add(bestAnchor);
+                Set<Integer> usedIdx = new HashSet<>();
+                usedIdx.add(bestAnchor.clusterIdx);
+                
+                // Use the adaptive proximity threshold from the scoring loop
+                double proximityThreshold = (refClusters.size() > 2) ? 0.50 : PROXIMITY_THRESHOLD;
+                
+                Rect regionBbox = anchorBbox;
+                for (RefCluster rc : refClusters) {
+                    if (rc == anchorRef) continue;
+                    double refFrac = refFraction(rc);
+                    SceneContourEntry best = null;
+                    double bestDiff = Double.MAX_VALUE;
+                    
+                    for (SceneContourEntry ce : candidates) {
+                        if (usedIdx.contains(ce.clusterIdx)) continue;
+                        double dist = centreDist(anchorBbox, Imgproc.boundingRect(ce.contour));
+                        if (dist > sceneDiag * proximityThreshold) continue;
+                        double ceFrac = sceneFraction(ce, regionBbox);
+                        double diff = Math.abs(refFrac - ceFrac);
+                        if (diff < bestDiff) { bestDiff = diff; best = ce; }
+                    }
+                    
+                    if (best != null) {
+                        matched.add(best);
+                        usedIdx.add(best.clusterIdx);
+                        Rect bestBb = Imgproc.boundingRect(best.contour);
+                        double bestArea = (double) bestBb.width * bestBb.height;
+                        if (bestArea < descriptor.sceneArea * 0.60) {
+                            regionBbox = unionRect(regionBbox, bestBb);
+                        }
                     }
                 }
+                
+                matched = deduplicateAchromaticPairs(matched);
+                
+                // Union ALL matched cluster bboxes - score ≥85% means confident match
+                Rect expandedBbox = new Rect(Integer.MAX_VALUE, Integer.MAX_VALUE, 0, 0);
+                for (SceneContourEntry m : matched) {
+                    Rect mBb = Imgproc.boundingRect(m.contour);
+                    if (expandedBbox.x == Integer.MAX_VALUE) {
+                        expandedBbox = mBb;
+                    } else {
+                        expandedBbox = unionRect(expandedBbox, mBb);
+                    }
+                }
+                
+                // Include same-cluster siblings for each matched entry
+                for (SceneContourEntry m : matched) {
+                    for (SceneContourEntry ce : candidates) {
+                        if (ce.clusterIdx == m.clusterIdx && ce != m) {
+                            Rect ceBb = Imgproc.boundingRect(ce.contour);
+                            expandedBbox = unionRect(expandedBbox, ceBb);
+                        }
+                    }
+                }
+                
+                // Sanity check: reject if absurdly large (frame-spanning, >80% scene area)
+                double expandedArea = (double) expandedBbox.width * expandedBbox.height;
+                if (expandedArea <= descriptor.sceneArea * 0.80) {
+                    bestBbox = expandedBbox;  // Use expanded bbox (high confidence)
+                }
+                // else keep bestBbox as initialBbox (frame-spanning rejection)
+                
+                // Debug output
+                if (System.getProperty("vm.bbox.debug") != null) {
+                    double areaFrac = expandedArea / descriptor.sceneArea;
+                    System.out.printf("[BBOX-DEBUG] %s: score=%.1f%% matched=%d areaFrac=%.2f " +
+                        "initial=(%d,%d %dx%d) expanded=(%d,%d %dx%d) %s%n",
+                        referenceId.name(), bestScore * 100.0, matched.size(), areaFrac,
+                        initialBbox.x, initialBbox.y, initialBbox.width, initialBbox.height,
+                        expandedBbox.x, expandedBbox.y, expandedBbox.width, expandedBbox.height,
+                        (expandedArea <= descriptor.sceneArea * 0.80) ? "ACCEPTED" : "REJECTED");
+                }
             }
+            // else: score <85% or bestBbox null/no anchor → keep conservative scored bbox
 
             double scorePercent = bestScore * 100.0;
             long   elapsed      = System.currentTimeMillis() - t0;
@@ -414,7 +491,24 @@ public final class VectorMatcher {
             double covScore     = 1.0 - Math.min(1.0,
                     Math.abs(refFrac - sceneFrac) / Math.max(refFrac, 0.01));
 
-            sumContrib += weight * (proxScore * 0.50 + covScore * 0.50);
+            // Absolute scale check: penalize when bbox sizes differ significantly.
+            // Even if shapes are geometrically similar (diamond vs rotated rect),
+            // extreme scale differences may indicate wrong match.
+            // Uses square-root ratio to account for area growing quadratically.
+            // Expected scale: scene is typically 3x scaled from 128x128 ref → ratio ≈ 3.0
+            double refBboxDim   = Math.sqrt(refBbArea);
+            double sceneBboxDim = Math.sqrt(entryBbArea);
+            double sizeRatio    = sceneBboxDim / Math.max(refBboxDim, 1.0);
+            double scaleScore   = 1.0;
+            if (sizeRatio > 6.0 || sizeRatio < (1.0/6.0)) {
+                // Extreme scale mismatch (>6x or <1/6x) — hard penalty
+                scaleScore = 0.25;
+            } else if (sizeRatio > 4.5 || sizeRatio < (1.0/4.5)) {
+                // Large scale mismatch (4.5x-6x or 1/4.5x-1/6x) — moderate penalty
+                scaleScore = 0.70;
+            }
+
+            sumContrib += weight * (proxScore * 0.40 + covScore * 0.40 + scaleScore * 0.20);
         }
 
         double matchScore = (sumWeights > 0) ? sumContrib / sumWeights : 0.0;
@@ -923,7 +1017,10 @@ public final class VectorMatcher {
             double clsMax = maxArea.getOrDefault(ce.clusterIdx, 1.0);
 
             // Primary rule: area large enough relative to cluster max
-            if (area >= clsMax * CC_AREA_RATIO_MIN) { out.add(ce); continue; }
+            // Relaxed threshold for achromatic clusters (0.05 vs 0.10) to preserve
+            // thin outline rings in compound shapes like COMPOUND_BULLSEYE
+            double threshold = ce.achromatic ? 0.05 : CC_AREA_RATIO_MIN;
+            if (area >= clsMax * threshold) { out.add(ce); continue; }
 
             // Secondary rule: small but spatially inside the main shape's bbox
             // → compound component (cross arm, inner ring, etc.), not background noise
@@ -1198,5 +1295,9 @@ public final class VectorMatcher {
         return v.replace("VECTOR_STRICT", "VM_S")
                 .replace("VECTOR_NORMAL", "VM_N")
                 .replace("VECTOR_LOOSE",  "VM_L");
+    }
+
+    private static String formatBbox(Rect r) {
+        return String.format("[%d,%d,%dx%d]", r.x, r.y, r.width, r.height);
     }
 }
