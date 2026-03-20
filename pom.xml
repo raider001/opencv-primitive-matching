@@ -92,9 +92,8 @@
                     <forkCount>1</forkCount>
                     <reuseForks>true</reuseForks>
                     <redirectTestOutputToFile>false</redirectTestOutputToFile>
-                    <!-- Exclude cross-reference rejection tests by default.
-                         Re-enable with: mvn test -DexcludedGroups="" -->
-                    <excludedGroups>cross-reject</excludedGroups>
+                    <!-- Cross-reject tests included: all 7 target pairs now score < 60%. -->
+                    <!-- To re-exclude: add <excludedGroups>cross-reject</excludedGroups> -->
                     <includes>
                         <include>**/*Test.java</include>
                         <include>**/*Tests.java</include>

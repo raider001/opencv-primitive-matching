@@ -92,6 +92,17 @@ public final class VectorMatcher {
      */
     private static final double CC_AREA_RATIO_MIN = 0.10;
     /**
+     * Minimum contour area as a fraction of the GLOBAL largest contour across
+     * all clusters (Stage 3 filter).  Drops tiny background elements — e.g.
+     * random background circles (20–60 px, ~2–5% of scene target area) —
+     * that would otherwise outscore the actual target shape in Layer 2/3 and
+     * produce wrong-location detections.
+     *
+     * Set to 8%: inner rings of COMPOUND_BULLSEYE (~20–25% of outer) are kept;
+     * background 30 px circles (~2–4% of a 150 px target) are dropped.
+     */
+    private static final double MIN_GLOBAL_AREA_RATIO = 0.08;
+    /**
      * Number of top candidates (by raw contour area) to re-extract with
      * morphological opening during reference-adaptive erosion (Stage 2).
      */
@@ -179,6 +190,21 @@ public final class VectorMatcher {
             // cluster's largest contour.  Handles disconnected same-colour background
             // fragments without requiring any reference geometry knowledge.
             candidates = applyConnectedComponentFilter(candidates);
+            if (candidates.isEmpty()) {
+                return zeroResult(variant, referenceId, scene, descriptor, t0);
+            }
+
+            // ── Stage 1b: Global minimum-size filter ───────────────────────────
+            // Drops candidates whose contour area is below MIN_GLOBAL_AREA_RATIO of
+            // the scene-wide largest contour (across all clusters).  This eliminates
+            // tiny background elements — random circles (20–60 px), short line
+            // segments — that survive the per-cluster CC filter but would still
+            // outscore the actual target in Layer 2/3 due to incidentally matching
+            // geometry (a 30 px circle classified as CLOSED_CONVEX_POLY with
+            // 8 vertices scores ~97 % against an octagon reference).
+            // Inner components of compound shapes (cross inside circle, inner bullseye
+            // rings) are retained because they are ≥ 15–25 % of the outer contour.
+            candidates = applyGlobalSizeFilter(candidates);
             if (candidates.isEmpty()) {
                 return zeroResult(variant, referenceId, scene, descriptor, t0);
             }
@@ -350,16 +376,24 @@ public final class VectorMatcher {
                     }
                 }
                 
-                // Include same-cluster siblings for each matched entry
-                for (SceneContourEntry m : matched) {
-                    for (SceneContourEntry ce : candidates) {
-                        if (ce.clusterIdx == m.clusterIdx && ce != m) {
-                            Rect ceBb = Imgproc.boundingRect(ce.contour);
-                            expandedBbox = unionRect(expandedBbox, ceBb);
-                        }
-                    }
-                }
-                
+                // Include same-cluster siblings that are spatially related to the
+                // matched region — concentric ring layers (bullseye, circle+ring) or
+                // components that physically overlap the current bbox.
+                // Excludes background circles / line segments that share the achromatic
+                // cluster but are far away from the detected shape.
+                //
+                // Criteria (either suffices):
+                //  1. Concentric: sibling centre ≤ 35 % of its own diagonal from the
+                //     current expandedBbox centre → outer rings of bullseye / ring layers.
+                //  2. Overlapping: sibling bbox intersects the current expandedBbox
+                //     → adjacent shape parts, thick outlines, enclosed components.
+                //
+                // Guard: sibling contour area must be ≥ 10 % of the current
+                // expandedBbox area so that tiny noise fragments (background circles,
+                // short line stubs) that happen to overlap are still excluded.
+                expandedBbox = unionConcentricAndOverlappingSiblings(
+                        expandedBbox, matched, candidates);
+
                 // Sanity check: reject if absurdly large (frame-spanning, >80% scene area)
                 double expandedArea = (double) expandedBbox.width * expandedBbox.height;
                 if (expandedArea <= descriptor.sceneArea * 0.80) {
@@ -1051,6 +1085,97 @@ public final class VectorMatcher {
      */
     private static int computeErosionDepth(RefCluster primaryRef) {
         return 0;
+    }
+
+    /**
+     * Stage 1b — Global minimum-size filter.
+     *
+     * <p>Drops any candidate whose contour area is below
+     * {@value #MIN_GLOBAL_AREA_RATIO} × the area of the globally largest
+     * contour (across all clusters).  This eliminates small background elements
+     * — random circles (20–60 px) and short line segments — that survive the
+     * per-cluster connected-component filter but would still outscore the actual
+     * target shape by incidentally matching its geometry at a tiny scale.
+     *
+     * <p>Inner components of compound shapes (inner cross of
+     * COMPOUND_CROSS_IN_CIRCLE, inner rings of COMPOUND_BULLSEYE) are
+     * safely retained because their areas are typically ≥ 15–25 % of the
+     * outer/primary contour.
+     */
+    private static List<SceneContourEntry> applyGlobalSizeFilter(
+            List<SceneContourEntry> candidates) {
+        if (candidates.size() <= 1) return candidates;
+        double maxArea = 0.0;
+        for (SceneContourEntry ce : candidates) {
+            double a = Imgproc.contourArea(ce.contour);
+            if (a > maxArea) maxArea = a;
+        }
+        if (maxArea <= 0.0) return candidates;
+        final double minArea = maxArea * MIN_GLOBAL_AREA_RATIO;
+        List<SceneContourEntry> out = new ArrayList<>();
+        for (SceneContourEntry ce : candidates) {
+            if (Imgproc.contourArea(ce.contour) >= minArea) out.add(ce);
+        }
+        return out.isEmpty() ? candidates : out;  // never leave caller empty-handed
+    }
+
+    /**
+     * Unions same-cluster siblings of each matched entry into {@code expandedBbox}
+     * when the sibling is spatially related to the current result region:
+     *
+     * <ul>
+     *   <li><b>Concentric:</b> sibling centre is within 35 % of the sibling's
+     *       own diagonal from the expandedBbox centre.  This captures outer
+     *       ring layers of COMPOUND_BULLSEYE and BICOLOUR_CIRCLE_RING.</li>
+     *   <li><b>Overlapping:</b> sibling bbox intersects the current expandedBbox.
+     *       This captures adjacent shape components and enclosed pieces.</li>
+     * </ul>
+     *
+     * <p>Area guard: the sibling's contour area must be ≥ 10 % of the current
+     * expandedBbox area.  This prevents tiny background circles or line stubs that
+     * happen to overlap from inflating the bbox.
+     *
+     * <p>Note: the loop iterates to a fixed point — new unions may expose
+     * additional concentric siblings — up to a maximum of 4 passes.
+     */
+    private static Rect unionConcentricAndOverlappingSiblings(
+            Rect expandedBbox,
+            List<SceneContourEntry> matched,
+            List<SceneContourEntry> candidates) {
+
+        for (int pass = 0; pass < 4; pass++) {
+            Rect before = expandedBbox;
+            for (SceneContourEntry m : matched) {
+                for (SceneContourEntry ce : candidates) {
+                    if (ce.clusterIdx != m.clusterIdx || ce == m) continue;
+
+                    Rect   ceBb         = Imgproc.boundingRect(ce.contour);
+                    double ceArea       = Imgproc.contourArea(ce.contour);
+                    double expandedArea = (double) expandedBbox.width * expandedBbox.height;
+
+                    // Guard: must be substantial relative to current bbox
+                    if (ceArea < expandedArea * 0.10) continue;
+
+                    // Criterion 1 — concentric: same spatial centre, different radius
+                    double ceDiag   = Math.sqrt((double) ceBb.width  * ceBb.width
+                                              + (double) ceBb.height * ceBb.height);
+                    double centDist = centreDist(expandedBbox, ceBb);
+                    boolean concentric = centDist <= ceDiag * 0.35;
+
+                    // Criterion 2 — overlapping: shares any area with current bbox
+                    boolean overlapping = rectsIntersect(expandedBbox, ceBb);
+
+                    if (concentric || overlapping) {
+                        expandedBbox = unionRect(expandedBbox, ceBb);
+                    }
+                }
+            }
+            // Stop early if nothing changed in this pass
+            if (expandedBbox.x == before.x && expandedBbox.y == before.y
+                    && expandedBbox.width == before.width
+                    && expandedBbox.height == before.height) break;
+        }
+        return expandedBbox;
     }
 
     /**
