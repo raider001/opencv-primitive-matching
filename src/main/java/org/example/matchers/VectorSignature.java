@@ -209,8 +209,20 @@ public final class VectorSignature {
         VectorSignature sig = build(crop, epsilon, imageArea);
         crop.release();
 
+        // ── Step 5: Re-derive type from the raw SegmentDescriptor so that
+        // circles/ellipses are classified as CIRCLE consistently with the
+        // reference path.  The crop-based type may be CLOSED_CONVEX_POLY
+        // because rendering the approxPolyDP polygon into a crop and then
+        // re-extracting contours creates a polygon (not a smooth curve).
+        ShapeType finalType = sig.type;
+        if (sig.circularity >= 0.85
+                && rawSegDesc != null
+                && rawSegDesc.isClosedCurve) {
+            finalType = ShapeType.CIRCLE;
+        }
+
         return new VectorSignature(
-                sig.type, sig.vertexCount, sig.circularity, sig.concavityRatio,
+                finalType, sig.vertexCount, sig.circularity, sig.concavityRatio,
                 sig.angleHistogram, sig.componentCount, sig.aspectRatio,
                 sig.solidity, sig.topology, rawSegDesc, sig.normalisedArea, sig.edgeLengthCV);
     }
@@ -304,18 +316,23 @@ public final class VectorSignature {
         // Contour topology — legacy connected edge structure
         ContourTopology topology = ContourTopology.build(approx, perimeter);
 
-        // Segment descriptor — built from the approxPolyDP-reduced contour so that
-        // we start from clean corners (4 for a rect, 3 for a triangle) rather than
-        // hundreds of pixel-level stepping points that confuse the traversal.
-        // We use the STRICT epsilon (0.02) regardless of the variant epsilon so the
-        // descriptor always sees the true geometric corners.
-        double strictEps = Math.min(Math.max(0.01 * perimeter, 1.5), 6.0);
-        MatOfPoint2f strictApprox = new MatOfPoint2f();
-        Imgproc.approxPolyDP(contour2f, strictApprox, strictEps, true);
-        MatOfPoint strictContour = new MatOfPoint(strictApprox.toArray());
-        SegmentDescriptor segDesc = SegmentDescriptor.build(strictContour, perimeter);
-        strictApprox.release();
-        strictContour.release();
+        // Segment descriptor — built from the RAW findContours contour (not
+        // approxPolyDP).  This is consistent with the scene path in
+        // buildFromContour(), which also uses the raw contour.
+        //
+        // CHAIN_APPROX_SIMPLE already compresses straight edges to just their
+        // endpoints (4 points for a rect, 3 for a triangle, etc.).  The
+        // SegmentDescriptor densifies sparse contours (spacing > 4px) so
+        // polygons still get correctly segmented into STRAIGHT runs.
+        //
+        // Critically, circles and ellipses arrive as dense pixel-level contours
+        // (spacing ≈ 1px), so the SegmentDescriptor correctly identifies them
+        // as continuous curved loops (isClosedCurve = true).  The old approach
+        // of using approxPolyDP here collapsed circles to polygons, producing
+        // isClosedCurve = false — which caused a hard 0.0 from
+        // SegmentDescriptor.similarity() when compared against the raw-contour
+        // scene path (isClosedCurve = true).
+        SegmentDescriptor segDesc = SegmentDescriptor.build(contour, perimeter);
 
         // Concavity ratio via convex hull
         double concavityRatio = computeConcavityRatio(contour, perimeter);
@@ -637,17 +654,18 @@ public final class VectorSignature {
         } else if ((this.type == ShapeType.CIRCLE && ref.type == ShapeType.CLOSED_CONVEX_POLY)
                 || (this.type == ShapeType.CLOSED_CONVEX_POLY && ref.type == ShapeType.CIRCLE)) {
             // Borderline: one classified as CIRCLE, one as POLY.
-            // Only allow partial credit if BOTH of the following hold:
-            //   (a) the circular side has borderline circularity (< 0.95) — i.e. it is
-            //       really a high-vertex polygon (octagon, hexagon) that straddles the
-            //       CIRCLE/POLY boundary at this scale.
-            //   (b) the polygon side has many vertices (≥ 6) — low-vertex shapes
-            //       (triangle=3, rect=4, pentagon=5) cannot legitimately be confused
-            //       with a circle. Background random circles must not match these.
-            double circSide = (this.type == ShapeType.CIRCLE) ? this.circularity : ref.circularity;
-            int    polySide = (this.type == ShapeType.CLOSED_CONVEX_POLY) ? this.vertexCount : ref.vertexCount;
-            if (circSide < 0.95 && polySide >= 6) {
-                // Borderline high-vertex polygon — partial penalty only
+            double circSide     = (this.type == ShapeType.CIRCLE) ? this.circularity : ref.circularity;
+            double polySideCirc = (this.type == ShapeType.CLOSED_CONVEX_POLY) ? this.circularity : ref.circularity;
+            int    polySide     = (this.type == ShapeType.CLOSED_CONVEX_POLY) ? this.vertexCount : ref.vertexCount;
+
+            if (polySideCirc > 0.82 && circSide > 0.82) {
+                // Both sides are highly circular.  The POLY side is most likely a true
+                // circle whose contour was broken by noise arms (random-lines background)
+                // or by CHAIN_APPROX_SIMPLE compression artifacts.  Treat as near-match.
+                typeScore = 0.85;
+            } else if (circSide < 0.95 && polySide >= 6) {
+                // Borderline high-vertex polygon (octagon/hexagon) that straddles the
+                // CIRCLE/POLY boundary at this scale — partial penalty only.
                 typeScore = 0.4;
             } else {
                 // Low-vertex polygon (triangle/rect/pentagon) or truly circular — hard gate
@@ -724,6 +742,30 @@ public final class VectorSignature {
             segScore = this.segmentDescriptor.similarity(ref.segmentDescriptor);
         } else {
             segScore = 0.0;
+        }
+
+        // ── 5b. CIRCLE-type segScore fallback ──────────────────────────────
+        // For CIRCLE shapes, SegmentDescriptor is unreliable because
+        // CHAIN_APPROX_SIMPLE compresses circle contours differently at
+        // different scales.  A smaller circle stays dense (isClosedCurve=true),
+        // while a larger circle gets compressed to polygon-like vertices that
+        // trigger densification → straight segments → isClosedCurve=false.
+        // The mismatch causes a hard 0.0 from SegmentDescriptor.similarity().
+        //
+        // Also applies when one side is CIRCLE and the other is
+        // CLOSED_CONVEX_POLY with high circularity (> 0.82) — this occurs when
+        // noise arms from background lines break the contour's closed-curve
+        // property, downgrading the type to POLY despite the shape being circular.
+        //
+        // When both shapes are highly circular, circularity agreement IS the
+        // primary structural signal — use it as a floor for segScore.
+        double rawSegScore = segScore;  // save before fallback for coherence gate below
+        boolean bothCircleLike =
+                (this.type == ShapeType.CIRCLE && ref.type == ShapeType.CIRCLE)
+             || ((this.type == ShapeType.CIRCLE || ref.type == ShapeType.CIRCLE)
+                    && this.circularity > 0.82 && ref.circularity > 0.82);
+        if (bothCircleLike && segScore < 0.10) {
+            segScore = Math.max(segScore, circScore);
         }
 
         // ── 6. Topology — legacy connected edge structure ─────────────────
@@ -830,30 +872,35 @@ public final class VectorSignature {
 
         // ── Near-circular coherence ─────────────────────────────────────
         // When BOTH shapes are near-circular (circ > 0.82) and their scale-invariant
-        // global metrics agree almost perfectly, but seg/topo/angle are all zero,
-        // the failure is a polygon-approximation artifact, not a true structural
-        // difference.  The 8 px epsilon cap in approxPolyDP makes the vertex count
-        // scale-dependent: a circle ring at 128 px gets 8 vertices; the same ring
-        // at 384 px (3×) gets 16.  With mismatched vertex counts the cyclic
-        // alignment in SegmentDescriptor / ContourTopology cannot align, so they
-        // return 0, and the angle histograms land in different bins.
+        // global metrics agree almost perfectly, but seg/topo/angle are all zero or
+        // near zero, the failure is a polygon-approximation or contour-compression
+        // artifact, not a true structural difference.
         //
-        // Safety gates that prevent false activation:
-        //   • circScore ≥ 0.98 — circularity must match within 0.02.
-        //     Hexagon (0.907) vs octagon (0.948) → circScore = 0.959 < 0.98 → blocked.
+        // This handles two cases:
+        //   (a) Self-match scale artifacts — the 8 px epsilon cap in approxPolyDP
+        //       makes vertex count scale-dependent.
+        //   (b) Noise-contaminated circles — background lines break the contour's
+        //       closed-curve property, the SegmentDescriptor sees STRAIGHT segments,
+        //       and topo/angle also fail due to vertex misalignment.
+        //
+        // Safety gates:
+        //   • circScore ≥ 0.95 — circularity must match within 0.05.
+        //     Hexagon (0.907) vs octagon (0.948) → circScore = 0.959 ≈ 0.96 → passes.
+        //     BUT hexagon topo is typically > 0.01 (6 vs 8 regular edges → partial
+        //     alignment), so the topoScore < 0.01 gate blocks it.
         //   • solidityScore ≥ 0.90 — fill ratio must also agree.
-        //   • segScore < 0.01 AND topoScore < 0.01 — BOTH structural comparisons
-        //     must have completely failed, confirming vertex alignment is impossible.
-        //   • typeScore ≥ 1.0 — same ShapeType classification on both sides.
-        //
-        // The floor values (0.90 / 0.85) mirror the first-tier coherence boost
-        // below and produce an overall geometry score of ~0.95 for a self-match.
+        //   • segScore already ≤ circScore (from fallback 5b) — if both are CIRCLE×CIRCLE,
+        //     segScore is floored to circScore, so this block only adds topo/angle/vtx.
+        //   • typeScore ≥ 0.85 — allows CIRCLE×CLOSED_CONVEX_POLY with high circularity
+        //     (scored 0.85 in the type comparison) to benefit from coherence.
+        //   • topoScore < 0.01 — the topology must have completely failed, confirming
+        //     vertex alignment is genuinely impossible (not just partially degraded).
         boolean bothNearCircular = this.circularity > 0.82 && ref.circularity > 0.82;
-        if (bothNearCircular && typeScore >= 1.0
-                && circScore      >= 0.98
+        if (bothNearCircular && typeScore >= 0.85
+                && circScore      >= 0.95
                 && solidityScore  >= 0.90
                 && aspectScore    >= 0.90
-                && segScore       < 0.01
+                && rawSegScore    < 0.01      // use RAW seg (before CIRCLE fallback)
                 && topoScore      < 0.01) {
             segScore    = Math.max(segScore,    0.90);
             topoScore   = Math.max(topoScore,   0.90);

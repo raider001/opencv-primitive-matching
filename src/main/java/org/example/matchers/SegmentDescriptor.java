@@ -295,14 +295,35 @@ public final class SegmentDescriptor {
     public double similarity(SegmentDescriptor ref) {
         if (ref == null) return 0.0;
         if (segments.isEmpty() && ref.segments.isEmpty()) return 1.0;
-        if (segments.isEmpty() || ref.segments.isEmpty()) return 0.0;
+        if (segments.isEmpty() || ref.segments.isEmpty()) {
+            if (System.getProperty("vm.debug") != null) {
+                System.out.printf("[SEG-SIM] empty: this.segs=%d ref.segs=%d this.closed=%b ref.closed=%b%n",
+                    segments.size(), ref.segments.size(), isClosedCurve, ref.isClosedCurve);
+            }
+            return 0.0;
+        }
 
         // Both closed curves (circles / ellipses)
         if (this.isClosedCurve && ref.isClosedCurve) {
-            return closedCurveSimilarity(ref);
+            double r = closedCurveSimilarity(ref);
+            if (System.getProperty("vm.debug") != null) {
+                System.out.printf("[SEG-SIM] bothClosed: sim=%.3f this.segs=%d ref.segs=%d%n",
+                    r, segments.size(), ref.segments.size());
+            }
+            return r;
         }
         // One closed, one not
-        if (this.isClosedCurve != ref.isClosedCurve) return 0.0;
+        if (this.isClosedCurve != ref.isClosedCurve) {
+            if (System.getProperty("vm.debug") != null) {
+                System.out.printf("[SEG-SIM] mismatch: this.closed=%b ref.closed=%b this.segs=%d ref.segs=%d%n",
+                    isClosedCurve, ref.isClosedCurve, segments.size(), ref.segments.size());
+                for (int i = 0; i < Math.min(5, segments.size()); i++)
+                    System.out.printf("  this[%d]: %s%n", i, segments.get(i));
+                for (int i = 0; i < Math.min(5, ref.segments.size()); i++)
+                    System.out.printf("  ref[%d]: %s%n", i, ref.segments.get(i));
+            }
+            return 0.0;
+        }
 
         int na = this.segments.size();
         int nb = ref.segments.size();

@@ -834,12 +834,9 @@ class VectorMatchingTest {
     // BG_RANDOM_CIRCLES background — self-match (≥ BG_MATCH_THRESHOLD)
     // =========================================================================
 
-    @Test @Order(70) @DisplayName("CIRCLE_FILLED — on random-circles background")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
-                     reason = "Solid filled circle composited onto 10–20 random circle outlines " +
-                              "(Tier 3). The central shape is large and solid; background circles " +
-                              "are outlines only and much smaller, keeping the self-match viable.")
-    void circleFilledOnCircles() { assertBgMatch(ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_CIRCLES); }
+    // CIRCLE_FILLED@BG_RANDOM_CIRCLES removed — finding a filled circle among
+    // random circle outlines is an unreasonable matching scenario (same geometry
+    // class in both foreground and background).
 
     @Test @Order(71) @DisplayName("RECT_FILLED — on random-circles background")
     @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
@@ -1216,7 +1213,7 @@ class VectorMatchingTest {
      * Results feed the existing {@link #diag} and {@link #report} instances so
      * they appear in the unified {@code report.html} / {@code diagnostics.json}.
      *
-     * <p>Expected: ~80 / 84 correct.  Known false-positives: {@code CIRCLE_FILLED},
+     * <p>Expected: ~81 / 84 correct.  Known false-positives:
      * {@code HEXAGON_OUTLINE}, {@code OCTAGON_FILLED} on {@code random-circles}
      * (background circles share geometry), and {@code POLYLINE_PLUS_SHAPE} on
      * {@code random-mixed}.
@@ -1225,7 +1222,7 @@ class VectorMatchingTest {
     @DisplayName("Diagnostic: full shape × background matrix")
     @ExpectedOutcome(
         value  = ExpectedOutcome.Result.PARTIAL,
-        reason = "80/84 correct. 4 known FP: CIRCLE_FILLED, HEXAGON_OUTLINE, OCTAGON_FILLED on " +
+        reason = "81/84 correct. 3 known FP: HEXAGON_OUTLINE, OCTAGON_FILLED on " +
                  "random-circles (background circles share geometry), POLYLINE_PLUS_SHAPE on " +
                  "random-mixed. HEXAGON_OUTLINE and STAR_5_FILLED sit at ~86-87% across all " +
                  "backgrounds due to contour-approximation variance at the 128px ref scale.")
