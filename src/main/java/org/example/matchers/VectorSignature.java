@@ -743,6 +743,44 @@ public final class VectorSignature {
         double aspectScore = 1.0 - Math.abs(arA - arB) / Math.max(arA, arB);
         double arMultiplier = aspectScore >= 0.70 ? 1.0 : Math.pow(aspectScore / 0.70, 2.0);
 
+        // ── 9. Vertex count multiplicative gate ──────────────────────────
+        // When two CLOSED_CONVEX_POLY shapes have different vertex counts the
+        // mismatch is structurally significant (hexagon ≠ octagon, triangle ≠ pentagon).
+        // The additive vertexScore (0.08 weight) is too weak to overcome high scores
+        // in other features — a strong multiplicative gate is needed.
+        //
+        // Uses the symmetric min/max ratio raised to the power 2.5 so that:
+        //   • 6 vs 8 (hexagon/octagon):   (6/8)^2.5 ≈ 0.487 → reduces score by ~51%
+        //   • 3 vs 5 (triangle/pentagon): (3/5)^2.5 ≈ 0.279 → reduces score by ~72%
+        //   • Same counts (self-match):   (n/n)^2.5 = 1.0   → no penalty
+        //
+        // Only applies to CLOSED_CONVEX_POLY pairs — circles, lines and open curves
+        // have vertex counts that vary with approximation noise and must not be penalised.
+        double vertexMultiplier = 1.0;
+        if (this.type == ShapeType.CLOSED_CONVEX_POLY && ref.type == ShapeType.CLOSED_CONVEX_POLY
+                && this.vertexCount > 0 && ref.vertexCount > 0
+                && this.vertexCount != ref.vertexCount
+                // Guard 1: only canonical small polygons — ellipses/circles approximated as
+                // 12–20-vertex polygons have inherent approximation noise across scale/threshold
+                // changes; applying the penalty there breaks legitimate self-matches.
+                && Math.max(this.vertexCount, ref.vertexCount) <= 10
+                // Guard 2: require a meaningful relative gap (> 20%).  This protects against
+                // 1-vertex polygon-approximation noise (hexagon detected as 7-gon: 6/7 = 0.857
+                // which is > 0.80 → no penalty).  True polygon-order differences like
+                // hexagon(6) vs octagon(8) produce ratio 0.75 which is ≤ 0.80.
+                ) {
+            double vtxRatio = (double) Math.min(this.vertexCount, ref.vertexCount)
+                            / (double) Math.max(this.vertexCount, ref.vertexCount);
+            if (vtxRatio <= 0.80) {
+                vertexMultiplier = Math.pow(vtxRatio, 2.5);
+                if (System.getProperty("vm.debug") != null) {
+                    System.out.printf("[VTXMULT-GATE] type=%s/%s vtx=%d/%d ratio=%.3f mult=%.3f%n",
+                        this.type, ref.type, this.vertexCount, ref.vertexCount,
+                        vtxRatio, vertexMultiplier);
+                }
+            }
+        }
+
         // ── 10. Edge-length CV multiplicative gate ─────────────────────────
         // For same-vertex-count convex polygons, edge-length uniformity is the
         // primary remaining discriminator (e.g. POLYLINE_DIAMOND with uniform edges
@@ -846,7 +884,8 @@ public final class VectorSignature {
                      + angleScore    * 0.10
                      - componentPenalty)
                      * arMultiplier          // AR gate: wrong shape proportions → full suppression
-                     * edgeCVMultiplier;      // edge length uniformity gate (diamond vs rotated rect)
+                     * vertexMultiplier      // vertex count gate: diff polygon orders → suppression
+                     * edgeCVMultiplier;     // edge length uniformity gate (diamond vs rotated rect)
 
         double result = Math.max(0.0, Math.min(1.0, score));
 
@@ -887,6 +926,9 @@ public final class VectorSignature {
                 type, vertexCount, circularity, solidity, concavityRatio, aspectRatio, componentCount, normalisedArea);
     }
 }
+
+
+
 
 
 
