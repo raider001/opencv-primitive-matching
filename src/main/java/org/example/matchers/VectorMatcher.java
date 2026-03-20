@@ -311,38 +311,27 @@ public final class VectorMatcher {
             }
 
             // ── Post-score bbox expansion ─────────────────────────────────
-            // CRITICAL FIX: Union ALL matched cluster bboxes, not just same-cluster siblings.
-            // For compound shapes (BULLSEYE, CIRCLE_IN_RECT), the expansion loop finds matches
-            // for each reference cluster, but they may be in DIFFERENT scene clusters.
-            // The final bbox must encompass ALL of them to get correct IoU.
-            //
-            // KEY INSIGHT: Only trust the expansion if the SCORE is high (>85%).
-            // Low scores mean uncertain matches - expansion might include background noise.
-            // High scores mean confident matches - expansion captures all legitimate components.
+            // Only expand when the match is confident (score ≥ 85%).
             if (bestBbox != null && bestAnchor != null && bestScore >= 0.85) {
                 Rect initialBbox = new Rect(bestBbox.x, bestBbox.y, bestBbox.width, bestBbox.height);
-                
-                // Find the matched set that produced bestScore by re-running the expansion
-                // logic for the bestAnchor. This gives us ALL clusters that were matched.
+
+                // ── Step A: Re-build the matched set for bestAnchor ──────────
                 Rect anchorBbox = Imgproc.boundingRect(bestAnchor.contour);
                 double anchorBboxArea = Math.max(1.0, (double) anchorBbox.width * anchorBbox.height);
                 RefCluster anchorRef = assignAnchorToRef(bestAnchor, anchorBboxArea, refClusters);
-                
+
                 List<SceneContourEntry> matched = new ArrayList<>();
                 matched.add(bestAnchor);
                 Set<Integer> usedIdx = new HashSet<>();
                 usedIdx.add(bestAnchor.clusterIdx);
-                
-                // Use the adaptive proximity threshold from the scoring loop
+
                 double proximityThreshold = (refClusters.size() > 2) ? 0.50 : PROXIMITY_THRESHOLD;
-                
                 Rect regionBbox = anchorBbox;
                 for (RefCluster rc : refClusters) {
                     if (rc == anchorRef) continue;
                     double refFrac = refFraction(rc);
                     SceneContourEntry best = null;
                     double bestDiff = Double.MAX_VALUE;
-                    
                     for (SceneContourEntry ce : candidates) {
                         if (usedIdx.contains(ce.clusterIdx)) continue;
                         double dist = centreDist(anchorBbox, Imgproc.boundingRect(ce.contour));
@@ -351,68 +340,78 @@ public final class VectorMatcher {
                         double diff = Math.abs(refFrac - ceFrac);
                         if (diff < bestDiff) { bestDiff = diff; best = ce; }
                     }
-                    
                     if (best != null) {
                         matched.add(best);
                         usedIdx.add(best.clusterIdx);
                         Rect bestBb = Imgproc.boundingRect(best.contour);
-                        double bestArea = (double) bestBb.width * bestBb.height;
-                        if (bestArea < descriptor.sceneArea * 0.60) {
+                        if ((double) bestBb.width * bestBb.height < descriptor.sceneArea * 0.60)
                             regionBbox = unionRect(regionBbox, bestBb);
-                        }
                     }
                 }
-                
                 matched = deduplicateAchromaticPairs(matched);
-                
-                // Union ALL matched cluster bboxes - score ≥85% means confident match
-                Rect expandedBbox = new Rect(Integer.MAX_VALUE, Integer.MAX_VALUE, 0, 0);
+
+                // ── Step B: Compute reference full extent and scene scale ─────
+                // Full reference extent = union of every cluster's primary bbox.
+                // For a simple shape this is just its own bbox; for BULLSEYE it
+                // covers all concentric rings.
+                Rect refFullBbox = primaryBbox(refClusters.get(0));
+                for (RefCluster rc : refClusters) {
+                    refFullBbox = unionRect(refFullBbox, primaryBbox(rc));
+                }
+
+                // Estimate scene-to-reference scale from anchor bbox diagonal vs.
+                // the anchor's assigned ref cluster primary bbox diagonal.
+                // Clamped to [1.0, 8.0] to handle degenerate edge cases.
+                Rect   anchorRefPrimary = primaryBbox(anchorRef);
+                double anchorRefDiag   = Math.hypot(anchorRefPrimary.width, anchorRefPrimary.height);
+                double anchorDiag      = Math.hypot(anchorBbox.width, anchorBbox.height);
+                double estimatedScale  = (anchorRefDiag > 4.0)
+                        ? Math.min(8.0, Math.max(1.0, anchorDiag / anchorRefDiag))
+                        : 3.0;  // fallback for very small ref contours
+
+                // Max allowed bbox: reference full extent scaled to scene size,
+                // plus 15 % tolerance to absorb rounding and slight misalignment.
+                double maxAllowedW    = refFullBbox.width  * estimatedScale * 1.15;
+                double maxAllowedH    = refFullBbox.height * estimatedScale * 1.15;
+                double maxAllowedArea = maxAllowedW * maxAllowedH;
+
+                // ── Step C: Union co-located matched contours ─────────────────
+                // Only include matched contours whose centre is within 50 % of the
+                // anchor diagonal AND whose union would not exceed maxAllowedArea.
+                Rect expandedBbox = new Rect(anchorBbox.x, anchorBbox.y,
+                        anchorBbox.width, anchorBbox.height);
                 for (SceneContourEntry m : matched) {
+                    if (m == bestAnchor) continue;
                     Rect mBb = Imgproc.boundingRect(m.contour);
-                    if (expandedBbox.x == Integer.MAX_VALUE) {
-                        expandedBbox = mBb;
-                    } else {
-                        expandedBbox = unionRect(expandedBbox, mBb);
+                    double dist = centreDist(anchorBbox, mBb);
+                    if (dist <= anchorDiag * 0.50) {
+                        Rect candidate = unionRect(expandedBbox, mBb);
+                        if ((double) candidate.width * candidate.height <= maxAllowedArea)
+                            expandedBbox = candidate;
                     }
                 }
-                
-                // Include same-cluster siblings that are spatially related to the
-                // matched region — concentric ring layers (bullseye, circle+ring) or
-                // components that physically overlap the current bbox.
-                // Excludes background circles / line segments that share the achromatic
-                // cluster but are far away from the detected shape.
-                //
-                // Criteria (either suffices):
-                //  1. Concentric: sibling centre ≤ 35 % of its own diagonal from the
-                //     current expandedBbox centre → outer rings of bullseye / ring layers.
-                //  2. Overlapping: sibling bbox intersects the current expandedBbox
-                //     → adjacent shape parts, thick outlines, enclosed components.
-                //
-                // Guard: sibling contour area must be ≥ 10 % of the current
-                // expandedBbox area so that tiny noise fragments (background circles,
-                // short line stubs) that happen to overlap are still excluded.
-                expandedBbox = unionConcentricAndOverlappingSiblings(
-                        expandedBbox, matched, candidates);
 
-                // Sanity check: reject if absurdly large (frame-spanning, >80% scene area)
+                // ── Step D: Sibling expansion, capped at maxAllowedArea ───────
+                expandedBbox = unionConcentricAndOverlappingSiblings(
+                        expandedBbox, matched, candidates, maxAllowedArea);
+
+                // Sanity check: reject if frame-spanning (> 80 % scene area)
                 double expandedArea = (double) expandedBbox.width * expandedBbox.height;
                 if (expandedArea <= descriptor.sceneArea * 0.80) {
-                    bestBbox = expandedBbox;  // Use expanded bbox (high confidence)
+                    bestBbox = expandedBbox;
                 }
-                // else keep bestBbox as initialBbox (frame-spanning rejection)
-                
-                // Debug output
+
                 if (System.getProperty("vm.bbox.debug") != null) {
-                    double areaFrac = expandedArea / descriptor.sceneArea;
-                    System.out.printf("[BBOX-DEBUG] %s: score=%.1f%% matched=%d areaFrac=%.2f " +
-                        "initial=(%d,%d %dx%d) expanded=(%d,%d %dx%d) %s%n",
-                        referenceId.name(), bestScore * 100.0, matched.size(), areaFrac,
+                    System.out.printf("[BBOX-DEBUG] %s: score=%.1f%% scale=%.2f refExt=%dx%d " +
+                        "maxAllowed=%.0fpx² initial=(%d,%d %dx%d) expanded=(%d,%d %dx%d) %s%n",
+                        referenceId.name(), bestScore * 100.0, estimatedScale,
+                        refFullBbox.width, refFullBbox.height, maxAllowedArea,
                         initialBbox.x, initialBbox.y, initialBbox.width, initialBbox.height,
                         expandedBbox.x, expandedBbox.y, expandedBbox.width, expandedBbox.height,
                         (expandedArea <= descriptor.sceneArea * 0.80) ? "ACCEPTED" : "REJECTED");
                 }
             }
-            // else: score <85% or bestBbox null/no anchor → keep conservative scored bbox
+            // else: low-confidence match → keep conservative scored bbox
 
             double scorePercent = bestScore * 100.0;
             long   elapsed      = System.currentTimeMillis() - t0;
@@ -1124,24 +1123,22 @@ public final class VectorMatcher {
      * when the sibling is spatially related to the current result region:
      *
      * <ul>
-     *   <li><b>Concentric:</b> sibling centre is within 35 % of the sibling's
-     *       own diagonal from the expandedBbox centre.  This captures outer
-     *       ring layers of COMPOUND_BULLSEYE and BICOLOUR_CIRCLE_RING.</li>
-     *   <li><b>Overlapping:</b> sibling bbox intersects the current expandedBbox.
-     *       This captures adjacent shape components and enclosed pieces.</li>
+     *   <li><b>Concentric:</b> sibling centre is within 35 % of the sibling's own
+     *       diagonal from the expandedBbox centre (concentric rings, bullseye).</li>
+     *   <li><b>Overlapping:</b> sibling bbox intersects the current expandedBbox
+     *       (adjacent components, enclosed pieces).</li>
      * </ul>
      *
-     * <p>Area guard: the sibling's contour area must be ≥ 10 % of the current
-     * expandedBbox area.  This prevents tiny background circles or line stubs that
-     * happen to overlap from inflating the bbox.
-     *
-     * <p>Note: the loop iterates to a fixed point — new unions may expose
-     * additional concentric siblings — up to a maximum of 4 passes.
+     * <p>Hard cap: the resulting bbox area must not exceed {@code maxAllowedArea},
+     * which is computed from the reference full extent × estimated scene scale × 1.15.
+     * This prevents absorption of background circles whose combined bbox would
+     * exceed what the actual reference shape could ever occupy in the scene.
      */
     private static Rect unionConcentricAndOverlappingSiblings(
             Rect expandedBbox,
             List<SceneContourEntry> matched,
-            List<SceneContourEntry> candidates) {
+            List<SceneContourEntry> candidates,
+            double maxAllowedArea) {
 
         for (int pass = 0; pass < 4; pass++) {
             Rect before = expandedBbox;
@@ -1153,24 +1150,28 @@ public final class VectorMatcher {
                     double ceArea       = Imgproc.contourArea(ce.contour);
                     double expandedArea = (double) expandedBbox.width * expandedBbox.height;
 
-                    // Guard: must be substantial relative to current bbox
+                    // Already at cap — no point continuing
+                    if (expandedArea >= maxAllowedArea) break;
+
+                    // Guard: sibling must be substantial relative to current bbox
                     if (ceArea < expandedArea * 0.10) continue;
 
-                    // Criterion 1 — concentric: same spatial centre, different radius
-                    double ceDiag   = Math.sqrt((double) ceBb.width  * ceBb.width
-                                              + (double) ceBb.height * ceBb.height);
-                    double centDist = centreDist(expandedBbox, ceBb);
-                    boolean concentric = centDist <= ceDiag * 0.35;
+                    // Criterion 1 — concentric
+                    double ceDiag      = Math.hypot(ceBb.width, ceBb.height);
+                    boolean concentric = centreDist(expandedBbox, ceBb) <= ceDiag * 0.35;
 
-                    // Criterion 2 — overlapping: shares any area with current bbox
+                    // Criterion 2 — overlapping
                     boolean overlapping = rectsIntersect(expandedBbox, ceBb);
 
                     if (concentric || overlapping) {
-                        expandedBbox = unionRect(expandedBbox, ceBb);
+                        Rect candidate     = unionRect(expandedBbox, ceBb);
+                        double candidateArea = (double) candidate.width * candidate.height;
+                        if (candidateArea <= maxAllowedArea) {
+                            expandedBbox = candidate;
+                        }
                     }
                 }
             }
-            // Stop early if nothing changed in this pass
             if (expandedBbox.x == before.x && expandedBbox.y == before.y
                     && expandedBbox.width == before.width
                     && expandedBbox.height == before.height) break;

@@ -210,12 +210,17 @@ public final class VectorSignature {
         crop.release();
 
         // ── Step 5: Re-derive type from the raw SegmentDescriptor so that
-        // circles/ellipses are classified as CIRCLE consistently with the
-        // reference path.  The crop-based type may be CLOSED_CONVEX_POLY
-        // because rendering the approxPolyDP polygon into a crop and then
-        // re-extracting contours creates a polygon (not a smooth curve).
+        // filled circles/ellipses are classified as CIRCLE.  The crop-based type
+        // may be CLOSED_CONVEX_POLY because rendering the approxPolyDP polygon
+        // into a crop and re-extracting contours creates a polygon, not a curve.
+        //
+        // Solidity guard (> 0.80): only FILLED shapes get the CIRCLE override.
+        // Circle outlines / rings (solidity ~0.15) and background circle outlines
+        // must stay CLOSED_CONVEX_POLY so they don't falsely match against circular
+        // references on random-circles backgrounds.
         ShapeType finalType = sig.type;
         if (sig.circularity >= 0.85
+                && sig.solidity > 0.80
                 && rawSegDesc != null
                 && rawSegDesc.isClosedCurve) {
             finalType = ShapeType.CIRCLE;
