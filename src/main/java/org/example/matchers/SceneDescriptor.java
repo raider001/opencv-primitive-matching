@@ -93,36 +93,44 @@ public final class SceneDescriptor {
      *   3. Contours below MIN_CONTOUR_AREA are discarded as noise.
      */
     public static SceneDescriptor build(Mat bgrScene) {
-        long t0    = System.currentTimeMillis();
+        long buildCost    = System.currentTimeMillis();
         double area = (double) bgrScene.rows() * bgrScene.cols();
         // Use extractFromBorderPixels so scene cluster discovery is edge-aligned —
         // consistent with how ref clusters are identified (both sides use border pixels).
         // ExperimentalSceneColourClusters adds S sub-clustering (Otsu) so pixels that
         // share a hue band but differ significantly in saturation (e.g. muted orange
         // S≈137 vs vivid orange S=255) are placed in separate clusters.
+
+        long extractClsCost = System.currentTimeMillis();
         List<ColourCluster> rawClusters =
                 ExperimentalSceneColourClusters.INSTANCE.extractFromBorderPixels(bgrScene);
         List<ClusterContours> result = new ArrayList<>(rawClusters.size());
+        System.out.printf("Extracted %d clusters in %dms\n", rawClusters.size(), System.currentTimeMillis() - extractClsCost);
 
-        // Build combined chromatic mask using full (non-border) chromatic pixels —
-        // needed for Fix B contamination check which counts filled chromatic pixels
-        // inside a candidate bbox. Border-only pixels would be too sparse for that.
+        // Build combined chromatic mask from rawClusters — no second extract() pass needed.
+        // extractFromBorderPixels uses borderData only for hue histogram detection; the pixel
+        // classification loop (step 7 of buildClustersOnePass) always scans all interior pixels,
+        // so cluster masks already carry full-pixel coverage identical to what extract() produces.
+        long chromaticClsCost = System.currentTimeMillis();
         Mat combinedChromatic = Mat.zeros(bgrScene.rows(), bgrScene.cols(), CvType.CV_8UC1);
-        List<ColourCluster> fullClusters = ExperimentalSceneColourClusters.INSTANCE.extract(bgrScene);
-        for (ColourCluster cluster : fullClusters) {
+        for (ColourCluster cluster : rawClusters) {
             if (!cluster.achromatic) {
                 Core.bitwise_or(combinedChromatic, cluster.mask, combinedChromatic);
             }
-            cluster.release();
         }
+        System.out.printf("Built combined chromatic mask in %dms\n", System.currentTimeMillis() - chromaticClsCost);
 
+        long contoursCost = System.currentTimeMillis();
         for (ColourCluster cluster : rawClusters) {
             List<MatOfPoint> contours = contoursFromMask(cluster.mask);
             result.add(new ClusterContours(contours, cluster.hue, cluster.achromatic,
                     cluster.brightAchromatic, false, cluster.sLo, cluster.sHi));
             cluster.release();
         }
-        return new SceneDescriptor(result, area, System.currentTimeMillis() - t0, combinedChromatic);
+
+        System.out.printf("Built %d clusters in %dms\n", result.size(), System.currentTimeMillis() - contoursCost);
+
+        return new SceneDescriptor(result, area, System.currentTimeMillis() - buildCost, combinedChromatic);
     }
 
     /**
@@ -164,24 +172,39 @@ public final class SceneDescriptor {
         // Deduplicate: RETR_LIST returns both inner and outer traces of the same
         // stroked shape. Drop any contour whose centre and area are within
         // tolerance of an already-kept contour.
-        List<MatOfPoint> deduped = new ArrayList<>();
-        for (MatOfPoint c : contours) {
-            Rect   bb    = Imgproc.boundingRect(c);
-            double cx    = bb.x + bb.width  / 2.0;
-            double cy    = bb.y + bb.height / 2.0;
-            double area  = Imgproc.contourArea(c);
-            boolean dup  = false;
-            for (MatOfPoint kept : deduped) {
-                Rect   kb    = Imgproc.boundingRect(kept);
-                double kcx   = kb.x + kb.width  / 2.0;
-                double kcy   = kb.y + kb.height / 2.0;
-                double kArea = Imgproc.contourArea(kept);
-                double distFrac = Math.hypot(cx - kcx, cy - kcy)
-                        / Math.max(1, Math.max(kb.width, kb.height));
-                double areaFrac = Math.abs(area - kArea) / Math.max(1, kArea);
+        //
+        // Pre-cache {bb, cx, cy, area} for every contour in one O(k) JNI pass so
+        // the inner O(k²) comparison loop is pure Java arithmetic with zero JNI calls.
+        int k = contours.size();
+        Rect[]   bbs   = new Rect  [k];
+        double[] cxs   = new double[k];
+        double[] cys   = new double[k];
+        double[] areas = new double[k];
+        for (int i = 0; i < k; i++) {
+            Rect bb   = Imgproc.boundingRect(contours.get(i));
+            bbs  [i]  = bb;
+            cxs  [i]  = bb.x + bb.width  / 2.0;
+            cys  [i]  = bb.y + bb.height / 2.0;
+            areas[i]  = Imgproc.contourArea(contours.get(i));
+        }
+
+        List<MatOfPoint> deduped    = new ArrayList<>();
+        int[]            keptIdx    = new int[k];
+        int              keptCount  = 0;
+
+        for (int i = 0; i < k; i++) {
+            boolean dup = false;
+            for (int j = 0; j < keptCount; j++) {
+                int ki = keptIdx[j];
+                double distFrac = Math.hypot(cxs[i] - cxs[ki], cys[i] - cys[ki])
+                        / Math.max(1, Math.max(bbs[ki].width, bbs[ki].height));
+                double areaFrac = Math.abs(areas[i] - areas[ki]) / Math.max(1, areas[ki]);
                 if (distFrac < 0.05 && areaFrac < 0.10) { dup = true; break; }
             }
-            if (!dup) deduped.add(c);
+            if (!dup) {
+                deduped.add(contours.get(i));
+                keptIdx[keptCount++] = i;
+            }
         }
         return deduped;
     }
