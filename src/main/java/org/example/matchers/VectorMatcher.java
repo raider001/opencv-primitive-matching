@@ -234,6 +234,11 @@ public final class VectorMatcher {
             Rect   bestBbox   = null;
             SceneContourEntry bestAnchor = null;
 
+            // Track all scored anchors for post-loop re-selection
+            List<double[]>          anchorScores = new ArrayList<>();
+            List<Rect>              anchorBboxes = new ArrayList<>();
+            List<SceneContourEntry> anchorEntries = new ArrayList<>();
+
             for (SceneContourEntry anchor : candidates) {
                 Rect anchorBbox = Imgproc.boundingRect(anchor.contour);
 
@@ -303,10 +308,36 @@ public final class VectorMatcher {
                             formatBbox(anchorBbox), matched.size(), score * 100, formatBbox(regionBbox));
                 }
 
+                anchorScores.add(new double[]{score, Imgproc.contourArea(anchor.contour)});
+                anchorBboxes.add(regionBbox);
+                anchorEntries.add(anchor);
+
                 if (score > bestScore) {
                     bestScore  = score;
                     bestBbox   = regionBbox;
                     bestAnchor = anchor;
+                }
+            }
+
+            // ── Anchor re-selection: prefer largest contour among near-best ──
+            // When the scene contains background elements geometrically similar to
+            // the reference (e.g. background circles vs octagon/pentagon), a small
+            // background contour can outscore the actual target by a few percent.
+            // The target shape at 3× scale is always among the largest contours.
+            // Among candidates scoring within 90% of the best, prefer the one
+            // with the largest contour area.  This is purely geometry-driven.
+            if (bestScore >= 0.60) {
+                double reselThreshold = bestScore * 0.90;
+                double reselBestArea  = -1;
+                for (int ri = 0; ri < anchorScores.size(); ri++) {
+                    double rScore = anchorScores.get(ri)[0];
+                    double rArea  = anchorScores.get(ri)[1];
+                    if (rScore >= reselThreshold && rArea > reselBestArea) {
+                        reselBestArea = rArea;
+                        bestScore     = rScore;
+                        bestBbox      = anchorBboxes.get(ri);
+                        bestAnchor    = anchorEntries.get(ri);
+                    }
                 }
             }
 
@@ -429,15 +460,49 @@ public final class VectorMatcher {
                     int cy = anchorBbox.y + anchorBbox.height / 2;
                     expandedBbox = new Rect(cx - tw / 2, cy - th / 2, tw, th);
                 }
-                // Union with each other matched contour (already scored) using the
-                // generous 15 % matchedUnionArea limit.
+                // Union with each other matched contour (already scored) using a
+                // cap that depends on whether the reference has TWO DISTINCTLY
+                // DIFFERENT chromatic clusters (a genuine bicolour shape):
+                //
+                //   • Two+ clusters with clearly different hues (bicolour): use
+                //     matchedUnionArea (15 %).  The second colour half is a legitimate
+                //     spatial extension.
+                //
+                //   • Otherwise (single-colour, achromatic, or red-hue-wrapped):
+                //     use anchorTrimArea (5 %).  The second matched entry is the dark
+                //     border side of the same contour or a spurious background blob.
+                //
+                // Hue distance threshold: 20 degrees on the [0,180) OpenCV scale,
+                // accounting for the 0/179 wrap-around (red appears at both ends).
+                boolean hasDistinctChromaticHues = false;
+                List<RefCluster> chromatics = refClusters.stream()
+                        .filter(rc -> !rc.achromatic)
+                        .toList();
+                outer:
+                for (int ci = 0; ci < chromatics.size(); ci++) {
+                    for (int cj = ci + 1; cj < chromatics.size(); cj++) {
+                        double diff = Math.abs(chromatics.get(ci).hue - chromatics.get(cj).hue);
+                        if (Math.min(diff, 180.0 - diff) > 20.0) {
+                            hasDistinctChromaticHues = true;
+                            break outer;
+                        }
+                    }
+                }
+                double stepCCap = hasDistinctChromaticHues ? matchedUnionArea : anchorTrimArea;
+                if (System.getProperty("vm.bbox.debug") != null) {
+                    System.out.printf("[STEP-C] %s chromaticClusters=%d hues=%s distinctHues=%b stepCCap=%.0f%n",
+                        referenceId.name(), chromatics.size(),
+                        chromatics.stream().map(rc -> String.format("%.1f", rc.hue)).toList(),
+                        hasDistinctChromaticHues, stepCCap);
+                }
+
                 for (SceneContourEntry m : matched) {
                     if (m == bestAnchor) continue;
                     Rect mBb = Imgproc.boundingRect(m.contour);
                     double dist = centreDist(anchorBbox, mBb);
                     if (dist <= anchorDiag * 0.50) {
                         Rect candidate = unionRect(expandedBbox, mBb);
-                        if ((double) candidate.width * candidate.height <= matchedUnionArea)
+                        if ((double) candidate.width * candidate.height <= stepCCap)
                             expandedBbox = candidate;
                     }
                 }
