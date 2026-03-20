@@ -316,23 +316,24 @@ public final class VectorSignature {
         // Contour topology — legacy connected edge structure
         ContourTopology topology = ContourTopology.build(approx, perimeter);
 
-        // Segment descriptor — built from the RAW findContours contour (not
-        // approxPolyDP).  This is consistent with the scene path in
-        // buildFromContour(), which also uses the raw contour.
+        // Segment descriptor — built from the approxPolyDP-reduced contour so that
+        // we start from clean corners (4 for a rect, 3 for a triangle) rather than
+        // hundreds of pixel-level stepping points that confuse the traversal.
+        // We use the STRICT epsilon (0.02) regardless of the variant epsilon so the
+        // descriptor always sees the true geometric corners.
         //
-        // CHAIN_APPROX_SIMPLE already compresses straight edges to just their
-        // endpoints (4 points for a rect, 3 for a triangle, etc.).  The
-        // SegmentDescriptor densifies sparse contours (spacing > 4px) so
-        // polygons still get correctly segmented into STRAIGHT runs.
-        //
-        // Critically, circles and ellipses arrive as dense pixel-level contours
-        // (spacing ≈ 1px), so the SegmentDescriptor correctly identifies them
-        // as continuous curved loops (isClosedCurve = true).  The old approach
-        // of using approxPolyDP here collapsed circles to polygons, producing
-        // isClosedCurve = false — which caused a hard 0.0 from
-        // SegmentDescriptor.similarity() when compared against the raw-contour
-        // scene path (isClosedCurve = true).
-        SegmentDescriptor segDesc = SegmentDescriptor.build(contour, perimeter);
+        // NOTE: For circles, this produces isClosedCurve=false (polygon approximation
+        // turns circles into straight-sided polygons).  The scene path in
+        // buildFromContour() uses the raw contour which produces isClosedCurve=true.
+        // This mismatch is handled at the scoring level in computeRawSimilarity()
+        // via the "CIRCLE-type segScore fallback" and "near-circular coherence" blocks.
+        double strictEps = Math.min(Math.max(0.01 * perimeter, 1.5), 6.0);
+        MatOfPoint2f strictApprox = new MatOfPoint2f();
+        Imgproc.approxPolyDP(contour2f, strictApprox, strictEps, true);
+        MatOfPoint strictContour = new MatOfPoint(strictApprox.toArray());
+        SegmentDescriptor segDesc = SegmentDescriptor.build(strictContour, perimeter);
+        strictApprox.release();
+        strictContour.release();
 
         // Concavity ratio via convex hull
         double concavityRatio = computeConcavityRatio(contour, perimeter);
