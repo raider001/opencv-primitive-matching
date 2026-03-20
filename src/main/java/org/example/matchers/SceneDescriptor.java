@@ -102,22 +102,21 @@ public final class SceneDescriptor {
         // S≈137 vs vivid orange S=255) are placed in separate clusters.
 
         long extractClsCost = System.currentTimeMillis();
+        // Pre-allocate chromaticOut — Step 7 of buildClustersOnePass will write
+        // 255 for every chromatic pixel, letting us build combinedChromaticMask
+        // with one Mat.put() instead of N bitwise_or JNI calls (Item 12).
+        int sceneN = bgrScene.rows() * bgrScene.cols();
+        byte[] chromaticOut = new byte[sceneN];
         List<ColourCluster> rawClusters =
-                ExperimentalSceneColourClusters.INSTANCE.extractFromBorderPixels(bgrScene);
+                ExperimentalSceneColourClusters.INSTANCE.extractFromBorderPixels(bgrScene, chromaticOut);
         List<ClusterContours> result = new ArrayList<>(rawClusters.size());
         System.out.printf("Extracted %d clusters in %dms\n", rawClusters.size(), System.currentTimeMillis() - extractClsCost);
 
-        // Build combined chromatic mask from rawClusters — no second extract() pass needed.
-        // extractFromBorderPixels uses borderData only for hue histogram detection; the pixel
-        // classification loop (step 7 of buildClustersOnePass) always scans all interior pixels,
-        // so cluster masks already carry full-pixel coverage identical to what extract() produces.
+        // Build combinedChromaticMask from chromaticOut — populated during Step 7.
+        // One Mat.put() replaces N Core.bitwise_or() JNI calls.
         long chromaticClsCost = System.currentTimeMillis();
-        Mat combinedChromatic = Mat.zeros(bgrScene.rows(), bgrScene.cols(), CvType.CV_8UC1);
-        for (ColourCluster cluster : rawClusters) {
-            if (!cluster.achromatic) {
-                Core.bitwise_or(combinedChromatic, cluster.mask, combinedChromatic);
-            }
-        }
+        Mat combinedChromatic = new Mat(bgrScene.rows(), bgrScene.cols(), CvType.CV_8UC1);
+        combinedChromatic.put(0, 0, chromaticOut);
         System.out.printf("Built combined chromatic mask in %dms\n", System.currentTimeMillis() - chromaticClsCost);
 
         long contoursCost = System.currentTimeMillis();
@@ -142,57 +141,62 @@ public final class SceneDescriptor {
     public static List<MatOfPoint> contoursFromMask(Mat mask) {
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
-        // Zero the 1px border on a clone so any contour that literally touches
-        // the image edge is disconnected — but thin interior strokes are untouched.
-        // (Morphological erosion would destroy 2px-thick lines such as crosshairs.)
-        Mat bordered = mask.clone();
-        bordered.row(0).setTo(Scalar.all(0));
-        bordered.row(bordered.rows() - 1).setTo(Scalar.all(0));
-        bordered.col(0).setTo(Scalar.all(0));
-        bordered.col(bordered.cols() - 1).setTo(Scalar.all(0));
+        // Zero the 1px border in-place so any contour that literally touches the
+        // image edge is disconnected — but thin interior strokes are untouched.
+        // Save only the 4 border strips (width + height bytes total) instead of
+        // cloning the whole W×H mask, then restore them after findContours so the
+        // caller's Mat is left unchanged.
+        Mat top    = mask.row(0).clone();
+        Mat bottom = mask.row(mask.rows() - 1).clone();
+        Mat left   = mask.col(0).clone();
+        Mat right  = mask.col(mask.cols() - 1).clone();
+        mask.row(0).setTo(Scalar.all(0));
+        mask.row(mask.rows() - 1).setTo(Scalar.all(0));
+        mask.col(0).setTo(Scalar.all(0));
+        mask.col(mask.cols() - 1).setTo(Scalar.all(0));
         // RETR_LIST finds ALL contours including inner ones (COMPOUND shapes).
-        Imgproc.findContours(bordered, contours, hierarchy,
+        Imgproc.findContours(mask, contours, hierarchy,
                 Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE);
         hierarchy.release();
-        bordered.release();
-        contours.removeIf(c -> Imgproc.contourArea(c) < MIN_AREA);
-
-        // Remove frame-spanning border contours: these are background-cluster
-        // artefacts where the colour cluster fills the whole image and findContours
-        // traces a rectangle just inside the zeroed 1px border.  A real shape will
-        // never touch all four edges simultaneously.
+        // Restore border strips so the caller's mask is unmodified.
+        top.copyTo(mask.row(0));
+        bottom.copyTo(mask.row(mask.rows() - 1));
+        left.copyTo(mask.col(0));
+        right.copyTo(mask.col(mask.cols() - 1));
+        top.release(); bottom.release(); left.release(); right.release();
+        // Single forward pass: compute area + boundingRect once per contour (one JNI
+        // call each), apply area filter and frame-spanning filter inline, fill the
+        // pre-cache arrays — zero additional JNI calls in the dedup step.
         int W = mask.cols(), H = mask.rows();
-        contours.removeIf(c -> {
-            Rect bb = Imgproc.boundingRect(c);
-            return bb.x <= 2 && bb.y <= 2
-                    && (bb.x + bb.width)  >= W - 2
-                    && (bb.y + bb.height) >= H - 2;
-        });
+        int raw = contours.size();
+        Rect[]       bbs   = new Rect      [raw];
+        double[]     cxs   = new double    [raw];
+        double[]     cys   = new double    [raw];
+        double[]     areas = new double    [raw];
+        MatOfPoint[] mops  = new MatOfPoint[raw];
+        int kept = 0;
 
-        // Deduplicate: RETR_LIST returns both inner and outer traces of the same
-        // stroked shape. Drop any contour whose centre and area are within
-        // tolerance of an already-kept contour.
-        //
-        // Pre-cache {bb, cx, cy, area} for every contour in one O(k) JNI pass so
-        // the inner O(k²) comparison loop is pure Java arithmetic with zero JNI calls.
-        int k = contours.size();
-        Rect[]   bbs   = new Rect  [k];
-        double[] cxs   = new double[k];
-        double[] cys   = new double[k];
-        double[] areas = new double[k];
-        for (int i = 0; i < k; i++) {
-            Rect bb   = Imgproc.boundingRect(contours.get(i));
-            bbs  [i]  = bb;
-            cxs  [i]  = bb.x + bb.width  / 2.0;
-            cys  [i]  = bb.y + bb.height / 2.0;
-            areas[i]  = Imgproc.contourArea(contours.get(i));
+        for (MatOfPoint c : contours) {
+            double area = Imgproc.contourArea(c);
+            if (area < MIN_AREA) continue;
+            Rect bb = Imgproc.boundingRect(c);
+            if (bb.x <= 2 && bb.y <= 2
+                    && (bb.x + bb.width)  >= W - 2
+                    && (bb.y + bb.height) >= H - 2) continue;
+            bbs  [kept] = bb;
+            cxs  [kept] = bb.x + bb.width  / 2.0;
+            cys  [kept] = bb.y + bb.height / 2.0;
+            areas[kept] = area;
+            mops [kept] = c;
+            kept++;
         }
 
-        List<MatOfPoint> deduped    = new ArrayList<>();
-        int[]            keptIdx    = new int[k];
-        int              keptCount  = 0;
+        // Dedup — pure Java, zero JNI (all values already cached above)
+        List<MatOfPoint> deduped   = new ArrayList<>();
+        int[]            keptIdx   = new int[kept];
+        int              keptCount = 0;
 
-        for (int i = 0; i < k; i++) {
+        for (int i = 0; i < kept; i++) {
             boolean dup = false;
             for (int j = 0; j < keptCount; j++) {
                 int ki = keptIdx[j];
@@ -202,7 +206,7 @@ public final class SceneDescriptor {
                 if (distFrac < 0.05 && areaFrac < 0.10) { dup = true; break; }
             }
             if (!dup) {
-                deduped.add(contours.get(i));
+                deduped.add(mops[i]);
                 keptIdx[keptCount++] = i;
             }
         }

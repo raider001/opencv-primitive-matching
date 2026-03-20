@@ -365,8 +365,8 @@ public class MatchDiagnosticLibrary {
 
     public static Mat buildShapeMat(ReferenceId id) {
         return switch (id) {
-            case CIRCLE_FILLED        -> circle(320, 240, 60);
-            case RECT_FILLED          -> rect(230, 160, 410, 320);
+            case CIRCLE_FILLED        -> circle();
+            case RECT_FILLED          -> rect();
             case TRIANGLE_FILLED      -> triangle();
             case HEXAGON_OUTLINE      -> hexagon();
             case PENTAGON_FILLED      -> pentagon();
@@ -383,60 +383,75 @@ public class MatchDiagnosticLibrary {
         };
     }
 
-    private static Mat circle(int cx, int cy, int r) {
+    // ── Shape-mat helpers — all sized to match ReferenceImageFactory proportions ──
+    // ReferenceImageFactory uses SIZE=128.  Shapes here are centred at (320,240)
+    // and scaled ×3 from the 128×128 reference so the actual composited shape has
+    // the same segment-length ratios as the reference, making it score higher than
+    // background elements whose proportions differ.
+
+    private static Mat circle() {
+        // Ref: circle(64,64, SIZE/2-8=56).  ×3 → radius=168.
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        Imgproc.circle(m, new Point(cx, cy), r, new Scalar(255,255,255), -1);
+        Imgproc.circle(m, new Point(320, 240), 168, new Scalar(255,255,255), -1);
         return m;
     }
-    private static Mat rect(int x1, int y1, int x2, int y2) {
+    private static Mat rect() {
+        // Ref: rect((12,24)→(115,103)) = 103×79 (AR=1.304).  ×3 → 309×237.
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        Imgproc.rectangle(m, new Point(x1,y1), new Point(x2,y2), new Scalar(255,255,255), -1);
+        Imgproc.rectangle(m, new Point(166, 122), new Point(475, 359), new Scalar(255,255,255), -1);
         return m;
     }
     private static Mat triangle() {
+        // Ref: trianglePoints(pad=10) → tip(64,10) br(118,118) bl(10,118).
+        // Relative to centre (64,64): tip(0,-54) br(54,54) bl(-54,54).  ×3.5 centred at (320,240).
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Imgproc.fillPoly(m, List.of(new MatOfPoint(
-            new Point(320,130), new Point(180,350), new Point(460,350))),
+            new Point(320, 51), new Point(509, 429), new Point(131, 429))),
             new Scalar(255,255,255));
         return m;
     }
     private static Mat hexagon() {
+        // Ref: drawRegularPolygon(6, r=54, start=-90°).  ×3 → r=162.
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Point[] pts = new Point[6];
         for (int i = 0; i < 6; i++) {
-            double a = Math.toRadians(60*i-30);
-            pts[i] = new Point(320+80*Math.cos(a), 240+80*Math.sin(a));
+            double a = Math.toRadians(-90 + 60.0 * i);
+            pts[i] = new Point(320 + 162 * Math.cos(a), 240 + 162 * Math.sin(a));
         }
-        Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255,255,255));
+        Imgproc.polylines(m, List.of(new MatOfPoint(pts)), true, new Scalar(255,255,255), 3);
         return m;
     }
     private static Mat pentagon() {
+        // Ref: drawRegularPolygon(5, r=54, filled, start=-90°).  ×3 → r=162.
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Point[] pts = new Point[5];
         for (int i = 0; i < 5; i++) {
-            double a = Math.toRadians(72*i-90);
-            pts[i] = new Point(320+90*Math.cos(a), 240+90*Math.sin(a));
+            double a = Math.toRadians(-90 + 72.0 * i);
+            pts[i] = new Point(320 + 162 * Math.cos(a), 240 + 162 * Math.sin(a));
         }
         Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255,255,255));
         return m;
     }
     private static Mat star() {
+        // Ref: drawStar(5, outerR=54, innerR=54×0.4=21.6, filled, start=-90°).  ×3.
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Point[] pts = new Point[10];
         for (int i = 0; i < 10; i++) {
-            double a = Math.toRadians(36*i-90);
-            int r = (i%2==0) ? 100 : 40;
-            pts[i] = new Point(320+r*Math.cos(a), 240+r*Math.sin(a));
+            double a = Math.toRadians(-90 + 36.0 * i);
+            double r = (i % 2 == 0) ? 162 : 65;
+            pts[i] = new Point(320 + r * Math.cos(a), 240 + r * Math.sin(a));
         }
         Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255,255,255));
         return m;
     }
     private static Mat diamond() {
+        // Ref: drawDiamond(cx=64, r=54) — equal diagonals (square diamond).
+        // Relative to (64,64): top(0,-54) right(54,0) bot(0,54) left(-54,0).  ×3.
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        Imgproc.fillPoly(m, List.of(new MatOfPoint(
-            new Point(320,110), new Point(470,240),
-            new Point(320,370), new Point(170,240))),
-            new Scalar(255,255,255));
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+            new Point(320,  78), new Point(482, 240),
+            new Point(320, 402), new Point(158, 240))),
+            true, new Scalar(255, 255, 255), 3);
         return m;
     }
     private static Mat arrow() {
@@ -453,16 +468,19 @@ public class MatchDiagnosticLibrary {
         return m;
     }
     private static Mat ellipse() {
+        // Ref: ELLIPSE_H → ellipse(cx, Size(SIZE/2-8, SIZE/4-4)) = Size(56,28) outline.  ×3 → axes (168,84).
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
-        Imgproc.ellipse(m, new Point(320,240), new Size(140,70), 0, 0, 360, new Scalar(255,255,255), -1);
+        Imgproc.ellipse(m, new Point(320, 240), new Size(168, 84), 0, 0, 360,
+                new Scalar(255, 255, 255), -1);
         return m;
     }
     private static Mat octagon() {
+        // Ref: drawRegularPolygon(8, r=54, filled, start=-90+22.5=-67.5°).  ×3 → r=162.
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Point[] pts = new Point[8];
         for (int i = 0; i < 8; i++) {
-            double a = Math.toRadians(45*i-22.5);
-            pts[i] = new Point(320+85*Math.cos(a), 240+85*Math.sin(a));
+            double a = Math.toRadians(-90 + 45.0 * i);
+            pts[i] = new Point(320 + 162 * Math.cos(a), 240 + 162 * Math.sin(a));
         }
         Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255,255,255));
         return m;
@@ -483,10 +501,12 @@ public class MatchDiagnosticLibrary {
         return m;
     }
     private static Mat concaveArrowhead() {
+        // Ref: drawArrowHead → tip(64,10) br(114,114) notch(64,92) bl(14,114).
+        // Relative to centre (64,64): tip(0,-54) br(50,50) notch(0,28) bl(-50,50).  ×3.5.
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
         Imgproc.fillPoly(m, List.of(new MatOfPoint(
-            new Point(320,110), new Point(460,370),
-            new Point(320,290), new Point(180,370))),
+            new Point(320,  51), new Point(495, 415),
+            new Point(320, 338), new Point(145, 415))),
             new Scalar(255,255,255));
         return m;
     }
@@ -528,6 +548,76 @@ public class MatchDiagnosticLibrary {
         for (ColourCluster c : refClusters) c.release();
 
         return allScoredBboxes(scene, refSigs);
+    }
+
+    // ── Fast-path recorder — uses pre-computed results ────────────────────────
+
+    /**
+     * Records a diagnostic row from <em>pre-computed</em> matcher results.
+     * Does NOT rebuild the scene or re-run the matcher — avoids the scene
+     * inconsistency that arises when {@link #evaluate} is called with only
+     * a {@link BackgroundId} and {@link ReferenceId} (which causes it to
+     * independently rebuild the scene via {@link #buildShapeMat}).
+     *
+     * @param bgId          background identifier
+     * @param bgLabel       human-readable label for the background / test stage
+     * @param refId         reference shape that was matched
+     * @param results       pre-computed {@link VectorMatcher#match} results
+     * @param gt            ground-truth bounding rect derived from a clean (black-BG)
+     *                      version of the scene; may be {@code null} for negative scenes
+     * @param passThreshold min score (%) to count as a detection
+     * @param targetScore   score (%) above which a correct hit is "good"
+     * @param goodIou       perfect-match IoU value (1.0 with coverage-scaled formula)
+     * @return the recorded {@link DiagRow}
+     */
+    public DiagRow recordResult(BackgroundId bgId, String bgLabel, ReferenceId refId,
+                                List<AnalysisResult> results, Rect gt,
+                                double passThreshold, double targetScore, double goodIou) {
+        AnalysisResult result = results.stream()
+                .filter(r -> r.methodName().equals(VectorVariant.VECTOR_NORMAL.variantName()))
+                .findFirst().orElse(results.isEmpty() ? null : results.get(0));
+
+        double scorePercent = result != null ? result.matchScorePercent() : 0.0;
+        Rect   bestBbox     = result != null ? result.boundingRect()      : null;
+
+        double  iouVal        = Double.NaN;
+        boolean falsePositive = false;
+        boolean badIou        = false;
+        boolean correctHit    = false;
+        boolean missed        = false;
+
+        final double iouThreshold = goodIou * 0.95;
+        final double fpGate       = 60.0;
+
+        if (gt != null) {
+            if (bestBbox != null) {
+                iouVal        = iou(bestBbox, gt);
+                falsePositive = (scorePercent >= fpGate)        && (iouVal < 0.3);
+                badIou        = (scorePercent >= passThreshold) && (iouVal >= 0.3) && (iouVal < iouThreshold);
+                correctHit    = (scorePercent >= passThreshold) && (iouVal >= iouThreshold);
+            }
+            if (scorePercent < passThreshold) missed = true;
+        } else {
+            falsePositive = (scorePercent >= fpGate);
+        }
+        boolean lowScore = correctHit && (scorePercent < targetScore);
+
+        DiagRow row = new DiagRow(
+            bgLabel, refId != null ? refId.name() : "?",
+            scorePercent, iouVal,
+            falsePositive, badIou, correctHit, lowScore, missed,
+            gt != null ? gt.x      : -1, gt != null ? gt.y       : -1,
+            gt != null ? gt.width  : -1, gt != null ? gt.height  : -1,
+            bestBbox != null ? bestBbox.x      : -1, bestBbox != null ? bestBbox.y       : -1,
+            bestBbox != null ? bestBbox.width  : -1, bestBbox != null ? bestBbox.height  : -1,
+            "n/a", "n/a",   // refSig / detSig — not recomputed in fast path
+            0.0, 0.0, 0.0,  // circScore / solidScore / totalSim
+            -1, -1,         // refVertices / detVertices
+            "n/a", "n/a",   // refType / detType
+            List.of()       // otherHits
+        );
+        rows.add(row);
+        return row;
     }
 
     /** Full version — scores against a list of ref signatures (one per colour cluster). */

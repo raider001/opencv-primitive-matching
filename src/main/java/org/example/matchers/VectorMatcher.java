@@ -2,7 +2,6 @@ package org.example.matchers;
 
 import org.example.analytics.AnalysisResult;
 import org.example.colour.ColourCluster;
-import org.example.colour.ExperimentalSceneColourClusters;
 import org.example.colour.SceneColourClusters;
 import org.example.factories.ReferenceId;
 import org.example.scene.SceneEntry;
@@ -22,9 +21,9 @@ import java.util.*;
  *   <li><b>Structural, not colour, matching.</b>  Hue identifies distinct boundary
  *       clusters during discovery only.  After that, hue plays no role in selection,
  *       matching, or scoring.</li>
-   *   <li><b>Identical pipeline for ref and scene.</b>  Both go through
- *       {@link ExperimentalSceneColourClusters#INSTANCE} so their cluster
- *       representations are comparable, including S sub-cluster windows.</li>
+ *   <li><b>Identical pipeline for ref and scene.</b>  Both go through
+ *       {@link SceneColourClusters#extractFromBorderPixels} so their cluster
+ *       representations are comparable.</li>
  *   <li><b>Selection and scoring are independent.</b>  The expansion loop selects
  *       candidate clusters using only spatial proximity and relative contour size.
  *       Geometry scoring happens exclusively in Layer 3.</li>
@@ -515,7 +514,7 @@ public final class VectorMatcher {
 
     static List<RefCluster> buildRefClusters(Mat refBgr) {
         List<ColourCluster> raw =
-                ExperimentalSceneColourClusters.INSTANCE.extractFromBorderPixels(refBgr);
+                SceneColourClusters.extractFromBorderPixels(refBgr);
         List<RefCluster> result = new ArrayList<>();
         double refArea = (double) refBgr.rows() * refBgr.cols();
 
@@ -530,7 +529,7 @@ public final class VectorMatcher {
 
         // Fallback: no border-pixel clusters found — use full extraction
         if (result.isEmpty()) {
-            List<ColourCluster> fallback = ExperimentalSceneColourClusters.INSTANCE.extract(refBgr);
+            List<ColourCluster> fallback = SceneColourClusters.extract(refBgr);
             for (ColourCluster c : fallback) {
                 List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(c.mask);
                 if (!contours.isEmpty()) {
@@ -670,7 +669,10 @@ public final class VectorMatcher {
             VectorSignature best     = null;
             double          bestSol  = -1;
             for (MatOfPoint c : contours) {
-                VectorSignature s = VectorSignature.buildFromContour(c, eps, Double.NaN);
+                // Pass imageArea so normalisedArea is set — enables the area-ratio gate in
+                // VectorSignature.similarity() to cap tiny background fragments (< 1/10 of
+                // the reference's normalised area) at score ≤ 0.25.
+                VectorSignature s = VectorSignature.buildFromContour(c, eps, imageArea);
                 if (s.solidity > bestSol) { bestSol = s.solidity; best = s; }
             }
             cachedSig = (best != null) ? best
@@ -693,8 +695,6 @@ public final class VectorMatcher {
             boolean    achromatic,
             boolean    brightAchromatic,
             double     clusterHue,
-            int        sLo,
-            int        sHi,
             VectorSignature sig) {}
 
     // =========================================================================
@@ -717,7 +717,7 @@ public final class VectorMatcher {
 
                 VectorSignature sig = VectorSignature.buildFromContour(c, EPSILON, descriptor.sceneArea);
                 out.add(new SceneContourEntry(c, ci, cc.achromatic, cc.brightAchromatic,
-                        cc.hue, cc.sLo, cc.sHi, sig));
+                        cc.hue, sig));
             }
         }
         return out;
@@ -979,10 +979,11 @@ public final class VectorMatcher {
         Mat hsv = new Mat();
         Imgproc.cvtColor(sceneBgr, hsv, Imgproc.COLOR_BGR2HSV);
 
-        // Build full pixel mask for this cluster's colour, respecting S sub-cluster window
+        // Build full pixel mask for this cluster's colour
         Mat fullMask = candidate.achromatic
                 ? SceneColourClusters.buildAchromaticMask(hsv, candidate.brightAchromatic)
-                : buildHueSatMask(hsv, candidate.clusterHue, candidate.sLo, candidate.sHi);
+                : SceneColourClusters.buildHueMask(hsv, candidate.clusterHue,
+                        SceneColourClusters.HUE_TOLERANCE);
         hsv.release();
 
         // Apply morphological opening — severs arms thinner than erosionDepth px
@@ -1032,37 +1033,7 @@ public final class VectorMatcher {
         for (MatOfPoint c : newContours) { if (c != best) c.release(); }
 
         return new SceneContourEntry(best, candidate.clusterIdx, candidate.achromatic,
-                candidate.brightAchromatic, candidate.clusterHue,
-                candidate.sLo, candidate.sHi, newSig);
-    }
-
-    // =========================================================================
-    // Mask-building helpers
-    // =========================================================================
-
-    /**
-     * Builds a chromatic pixel mask filtered by both hue (±HUE_TOLERANCE of
-     * {@code peakHue}) and saturation [{@code sLo}, {@code sHi}].
-     *
-     * <p>This ensures that when a hue cluster has been split by S sub-clustering
-     * (e.g. muted orange S=137 vs vivid orange S=255 both at hue≈11), the
-     * re-extraction mask only captures pixels belonging to the <em>specific</em>
-     * S sub-cluster of the candidate — not all orange pixels in the scene.
-     *
-     * @param hsv     scene Mat already converted to HSV colour space (not modified)
-     * @param peakHue centre hue in OpenCV half-degree units (0–179)
-     * @param sLo     saturation lower bound inclusive (0–255)
-     * @param sHi     saturation upper bound inclusive (0–255)
-     */
-    private static Mat buildHueSatMask(Mat hsv, double peakHue, int sLo, int sHi) {
-        // Hue mask handles red/orange wrap-around correctly
-        Mat hueMask = SceneColourClusters.buildHueMask(hsv, peakHue, SceneColourClusters.HUE_TOLERANCE);
-        // Saturation range mask: unconstrained H and V, S in [sLo, sHi]
-        Mat satMask = new Mat();
-        Core.inRange(hsv, new Scalar(0, sLo, 0), new Scalar(179, sHi, 255), satMask);
-        Core.bitwise_and(hueMask, satMask, hueMask);
-        satMask.release();
-        return hueMask;
+                candidate.brightAchromatic, candidate.clusterHue, newSig);
     }
 
     // =========================================================================

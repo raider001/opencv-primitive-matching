@@ -457,8 +457,28 @@ public class MatchReportLibrary {
           .append("</div>");
 
         for (Map.Entry<String, List<ReportRow>> e : byStage.entrySet()) {
-            sb.append("<section><h2>").append(esc(e.getKey())).append("</h2>");
-            for (ReportRow r : e.getValue()) {
+            List<ReportRow> stageRows = e.getValue();
+            long stageTotal  = stageRows.size();
+            long stagePassed = stageRows.stream().filter(ReportRow::passed).count();
+            long stageFailed = stageTotal - stagePassed;
+            int barW = (int) Math.max(1, Math.min(100, stageTotal == 0 ? 0 : stagePassed * 100 / stageTotal));
+
+            sb.append("<section>")
+              .append("<details class='stage-details'>")
+              .append("<summary class='stage-summary'>")
+              .append("<span class='stage-chevron'></span>")
+              .append("<span class='stage-name'>").append(esc(e.getKey())).append("</span>")
+              .append("<span class='stage-stats'>")
+              .append("<span class='stat-pass'>✔ ").append(stagePassed).append(" passed</span>")
+              .append("<span class='stat-sep'>·</span>")
+              .append("<span class='stat-fail'>✘ ").append(stageFailed).append(" failed</span>")
+              .append("<span class='stat-sep'>·</span>")
+              .append("<span class='stat-total'>").append(stageTotal).append(" total</span>")
+              .append("</span>")
+              .append("<div class='stage-bar-bg'><div class='stage-bar-fill' style='width:").append(barW).append("%'></div></div>")
+              .append("</summary>")
+              .append("<div class='stage-rows'>");
+            for (ReportRow r : stageRows) {
                 // Row is green (pass) or red (fail) — purely score + IoU
                 String cls = r.passed() ? "row pass" : "row fail";
                 sb.append("<div class='").append(cls).append("'>")
@@ -504,7 +524,7 @@ public class MatchReportLibrary {
                   .append(bar(r.score()))
                   .append("</div></div></div>");
             }
-            sb.append("</section>");
+            sb.append("</div></details></section>");
         }
 
         sb.append("<div id='lb' class='lb-overlay' onclick='closeLb()'>")
@@ -627,7 +647,6 @@ public class MatchReportLibrary {
         .pass-pill{border-left-color:#238636;background:#0d2619;color:#56d364}
         .fail-pill{border-left-color:#da3633;background:#2b0c0c;color:#f85149}
         section{padding:0 24px 16px}
-        h2{color:#79c0ff;font-size:1rem;margin:14px 0 10px;padding-bottom:4px;border-bottom:1px solid #21262d}
         .row{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
         .row.pass{border-left:3px solid #238636}
         .row.fail{border-left:3px solid #da3633}
@@ -664,6 +683,24 @@ public class MatchReportLibrary {
         .lb-close:hover{color:#c9d1d9}
         .lb-img{display:block;max-width:100%;max-height:80vh;border-radius:4px}
         .lb-caption{font-size:.78rem;color:#8b949e;margin-top:8px;text-align:center}
+        /* ── Collapsible stage sections ──────────────────────────────────── */
+        .stage-details{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:12px}
+        .stage-summary{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;list-style:none;user-select:none;border-radius:8px}
+        .stage-summary::-webkit-details-marker{display:none}
+        .stage-summary:hover{background:#21262d}
+        .stage-details[open]>.stage-summary{border-bottom:1px solid #30363d;border-radius:8px 8px 0 0}
+        .stage-chevron{width:14px;height:14px;flex-shrink:0;border:2px solid #8b949e;border-radius:3px;position:relative;transition:transform .15s}
+        .stage-chevron::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-60%) rotate(45deg);width:5px;height:5px;border-right:2px solid #8b949e;border-bottom:2px solid #8b949e}
+        .stage-details[open]>.stage-summary .stage-chevron::after{transform:translate(-50%,-40%) rotate(-135deg)}
+        .stage-name{color:#79c0ff;font-size:.95rem;font-weight:700;white-space:nowrap}
+        .stage-stats{display:flex;align-items:center;gap:7px;font-size:.75rem;margin-left:4px}
+        .stat-pass{color:#56d364;font-weight:600}
+        .stat-fail{color:#f85149;font-weight:600}
+        .stat-total{color:#8b949e}
+        .stat-sep{color:#484f58}
+        .stage-bar-bg{flex:1;height:6px;background:#21262d;border-radius:3px;overflow:hidden;min-width:60px;margin-left:8px}
+        .stage-bar-fill{height:100%;background:#238636;border-radius:3px;transition:width .3s}
+        .stage-rows{padding:8px 12px 12px}
         """;
 }
 

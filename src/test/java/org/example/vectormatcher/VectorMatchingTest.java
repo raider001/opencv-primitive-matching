@@ -2,10 +2,15 @@ package org.example.vectormatcher;
 
 import org.example.OpenCvLoader;
 import org.example.analytics.AnalysisResult;
+import org.example.colour.ColourCluster;
+import org.example.colour.SceneColourClusters;
 import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
 import org.example.factories.ReferenceImageFactory;
+import org.example.matchers.SceneDescriptor;
 import org.example.matchers.VectorMatcher;
+import org.example.matchers.VectorSignature;
+import org.example.matchers.VectorVariant;
 import org.example.scene.SceneCategory;
 import org.example.scene.SceneEntry;
 import org.example.utilities.ExpectedOutcome;
@@ -13,6 +18,7 @@ import org.example.utilities.MatchDiagnosticLibrary;
 import org.example.utilities.MatchReportLibrary;
 import org.junit.jupiter.api.*;
 import org.opencv.core.*;
+import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
 
 import org.example.factories.BackgroundFactory;
@@ -48,6 +54,37 @@ class VectorMatchingTest {
      * random-lines background scores ~69 % and BICOLOUR_RECT_HALVES ~63 %.
      */
     private static final double BG_MATCH_THRESHOLD = 60.0;
+
+    // ── Diagnostic constants (merged from VectorMatcherDiagnosticTest) ────────
+    private static final double DIAG_PASS_THRESH = 40.0;
+    private static final double DIAG_TARGET      = 90.0;
+    /** Coverage-scaled perfect-match IoU = 1.0. Pass margin = 0.95 → threshold = 0.95. */
+    private static final double DIAG_GOOD_IOU    = 1.0;
+    private static final double DIAG_IOU_MARGIN  = 0.95;
+    private static final double DIAG_FP_GATE     = 60.0;
+
+    /** All 14 single-colour shapes exercised by the diagnostic matrix. */
+    private static final ReferenceId[] ALL_SHAPES = {
+        ReferenceId.CIRCLE_FILLED,   ReferenceId.RECT_FILLED,      ReferenceId.TRIANGLE_FILLED,
+        ReferenceId.HEXAGON_OUTLINE, ReferenceId.PENTAGON_FILLED,  ReferenceId.STAR_5_FILLED,
+        ReferenceId.POLYLINE_DIAMOND, ReferenceId.POLYLINE_ARROW_RIGHT, ReferenceId.ELLIPSE_H,
+        ReferenceId.OCTAGON_FILLED,  ReferenceId.POLYLINE_PLUS_SHAPE,
+        ReferenceId.CONCAVE_ARROW_HEAD, ReferenceId.LINE_CROSS,   ReferenceId.RECT_ROTATED_45,
+    };
+
+    private static final int[] ROTATION_ANGLES = {0, 15, 30, 45, 90, 135, 180};
+
+    /** Background specifications used in the full diagnostic matrix. */
+    private enum BgSpec {
+        SOLID_WHITE (BackgroundId.BG_SOLID_WHITE,       "solid-white"),
+        NOISE_LIGHT (BackgroundId.BG_NOISE_LIGHT,       "noise-light"),
+        GRADIENT_H  (BackgroundId.BG_GRADIENT_H_COLOUR, "gradient-colour"),
+        RAND_CIRCLES(BackgroundId.BG_RANDOM_CIRCLES,    "random-circles"),
+        RAND_LINES  (BackgroundId.BG_RANDOM_LINES,      "random-lines"),
+        RAND_MIXED  (BackgroundId.BG_RANDOM_MIXED,      "random-mixed");
+        final BackgroundId id; final String label;
+        BgSpec(BackgroundId id, String label) { this.id = id; this.label = label; }
+    }
 
     private final MatchReportLibrary     report = new MatchReportLibrary();
     private final MatchDiagnosticLibrary diag   = new MatchDiagnosticLibrary();
@@ -283,11 +320,13 @@ class VectorMatchingTest {
      * records the result, releases resources, and asserts ≥ MATCH_THRESHOLD.
      */
     private void assertSelfMatch(ReferenceId refId, Mat sceneMat) {
-        Mat ref = ReferenceImageFactory.build(refId);
+        // Self-match scenes are always white shape on black — GT derivation is exact.
+        Rect gt  = MatchDiagnosticLibrary.groundTruthRect(sceneMat);
+        Mat ref  = ReferenceImageFactory.build(refId);
         try {
             MatchRun run = runMatcher(refId, ref, sceneMat);
             double score = record("Self-match", refId.name(), refId.name(),
-                    refId.name() + " (own)", sceneMat, run);
+                    refId.name() + " (own)", sceneMat, run, gt);
             assertTrue(score >= MATCH_THRESHOLD,
                     refId.name() + " self-match got " + String.format("%.1f", score) + "% (need ≥ " + MATCH_THRESHOLD + "%)");
         } finally {
@@ -317,18 +356,22 @@ class VectorMatchingTest {
     }
 
     private double record(String stage, String testId, String shapeName,
-                          String sceneDesc, Mat sceneMat, MatchRun run) {
-        return record(stage, testId, shapeName, sceneDesc, sceneMat, run, BackgroundId.BG_SOLID_BLACK);
+                          String sceneDesc, Mat sceneMat, MatchRun run, Rect gt) {
+        return record(stage, testId, shapeName, sceneDesc, sceneMat, run,
+                      BackgroundId.BG_SOLID_BLACK, gt);
     }
 
     private double record(String stage, String testId, String shapeName,
-                          String sceneDesc, Mat sceneMat, MatchRun run, BackgroundId bgId) {
-        double score = report.record(stage, testId, shapeName, sceneDesc, sceneMat,
+                          String sceneDesc, Mat sceneMat, MatchRun run,
+                          BackgroundId bgId, Rect gt) {
+        double score = report.record(stage, testId, shapeName, sceneDesc, sceneMat, gt,
                 new MatchReportLibrary.MatchRun(run.results(), run.descriptorMs()));
-        diag.evaluate(
-                bgId, sceneDesc,
-                run.results().isEmpty() ? null : run.results().getFirst().referenceId(),
-                40.0, 75.0, 0.5, OUTPUT);
+        if (!run.results().isEmpty()) {
+            diag.recordResult(bgId, sceneDesc,
+                    run.results().getFirst().referenceId(),
+                    run.results(), gt,
+                    DIAG_PASS_THRESH, DIAG_TARGET, DIAG_GOOD_IOU);
+        }
         return score;
     }
 
@@ -343,13 +386,18 @@ class VectorMatchingTest {
      */
     private void assertBgMatch(ReferenceId refId, BackgroundId bgId) {
         Mat sceneMat = shapeOnBackground(refId, bgId);
+        // Derive GT from the same shape placed on a solid-black canvas so that
+        // background pixels (luma > 5) cannot inflate the bounding-rect threshold.
+        Mat cleanMat = shapeOnBackground(refId, BackgroundId.BG_SOLID_BLACK);
+        Rect gt = MatchDiagnosticLibrary.groundTruthRect(cleanMat);
+        cleanMat.release();
         Mat ref = ReferenceImageFactory.build(refId);
         try {
             MatchRun run = runMatcher(refId, ref, sceneMat, bgId);
             String stage = bgId.name() + " self-match";
             double score = record(stage, refId.name() + "@" + bgId.name(),
                     refId.name(), refId.name() + " on " + bgId.name(),
-                    sceneMat, run, bgId);
+                    sceneMat, run, bgId, gt);
             assertTrue(score >= BG_MATCH_THRESHOLD,
                     refId.name() + " on " + bgId.name() + " got "
                             + String.format("%.1f", score) + "% (need ≥ " + BG_MATCH_THRESHOLD + "%)");
@@ -1281,5 +1329,484 @@ class VectorMatchingTest {
             queryMat.release();
             sceneMat.release();
         }
+    }
+
+    // =========================================================================
+    // Diagnostic matrix  (merged from VectorMatcherDiagnosticTest)
+    // =========================================================================
+
+    /**
+     * Full shape × background diagnostic matrix.
+     *
+     * <p>Runs every shape in {@link #ALL_SHAPES} against all six {@link BgSpec}
+     * backgrounds.  Score and IoU are both derived from the <em>same</em> single
+     * matcher run — no separate {@code diag.evaluate()} rebuild.
+     * Results feed the existing {@link #diag} and {@link #report} instances so
+     * they appear in the unified {@code report.html} / {@code diagnostics.json}.
+     *
+     * <p>Expected: ~80 / 84 correct.  Known false-positives: {@code CIRCLE_FILLED},
+     * {@code HEXAGON_OUTLINE}, {@code OCTAGON_FILLED} on {@code random-circles}
+     * (background circles share geometry), and {@code POLYLINE_PLUS_SHAPE} on
+     * {@code random-mixed}.
+     */
+    @Test @Order(300)
+    @DisplayName("Diagnostic: full shape × background matrix")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PARTIAL,
+        reason = "80/84 correct. 4 known FP: CIRCLE_FILLED, HEXAGON_OUTLINE, OCTAGON_FILLED on " +
+                 "random-circles (background circles share geometry), POLYLINE_PLUS_SHAPE on " +
+                 "random-mixed. HEXAGON_OUTLINE and STAR_5_FILLED sit at ~86-87% across all " +
+                 "backgrounds due to contour-approximation variance at the 128px ref scale.")
+    void runDiagnosticMatrix() {
+        for (BgSpec bg : BgSpec.values()) {
+            for (ReferenceId refId : ALL_SHAPES) {
+                Mat shapeMat = MatchDiagnosticLibrary.buildShapeMat(refId);
+                Rect gt      = MatchDiagnosticLibrary.groundTruthRect(shapeMat);
+                Mat  scene   = MatchDiagnosticLibrary.compositeOnBackground(shapeMat, bg.id);
+                Mat  ref     = ReferenceImageFactory.build(refId);
+                SceneEntry se = new SceneEntry(refId, SceneCategory.A_CLEAN,
+                        bg.label, bg.id, Collections.emptyList(), scene);
+                List<AnalysisResult> results = VectorMatcher.match(
+                        refId, ref, se, Collections.emptySet(), OUTPUT);
+                // Record into report with correct GT (not auto-derived from composite scene)
+                report.record(bg.label, bg.label + "/" + refId.name(), refId.name(),
+                        bg.label, scene, gt, results, 0L);
+                // Record diagnostic row with same results + GT — no second matcher run
+                diag.recordResult(bg.id, bg.label, refId, results, gt,
+                        DIAG_PASS_THRESH, DIAG_TARGET, DIAG_GOOD_IOU);
+                se.release(); shapeMat.release(); ref.release(); scene.release();
+            }
+        }
+    }
+
+    // ── Focused probes ────────────────────────────────────────────────────────
+
+    @Test @Order(301)
+    @DisplayName("Diagnostic focused: RECT_FILLED on random-circles")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PASS,
+        reason = "RECT_FILLED scores ~97% on random-circles: solidity=1.0 and 4-vertex " +
+                 "polygon signature is geometrically incompatible with circular background " +
+                 "elements; AR multiplier and type gate prevent false matches.")
+    void focusedRectOnRandomCircles() {
+        runFocused(ReferenceId.RECT_FILLED, BackgroundId.BG_RANDOM_CIRCLES, "random-circles");
+    }
+
+    @Test @Order(310)
+    @DisplayName("Diagnostic focused: BICOLOUR_RECT_HALVES on own scene")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PARTIAL,
+        reason = "Self-match scores ~83% due to multi-cluster assignment variance: the two " +
+                 "colour halves are similar in size, so the anchor-to-ref assignment can swap " +
+                 "them, lowering Layer 2 coherence.")
+    void focusedBicolourRectHalves() { runFocusedMultiColour(ReferenceId.BICOLOUR_RECT_HALVES); }
+
+    @Test @Order(311)
+    @DisplayName("Diagnostic focused: TRICOLOUR_TRIANGLE on own scene")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PARTIAL,
+        reason = "Three-cluster shape: Layer 1 count-match penalty increases with cluster " +
+                 "count, and wedge areas are equal-sized so assignment order is ambiguous. " +
+                 "Score typically 85-90%.")
+    void focusedTricolourTriangle() { runFocusedMultiColour(ReferenceId.TRICOLOUR_TRIANGLE); }
+
+    @Test @Order(312)
+    @DisplayName("Diagnostic focused: BICOLOUR_CIRCLE_RING on own scene")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PASS,
+        reason = "Inner circle fully enclosed by outer ring: strong spatial proximity cue " +
+                 "for Layer 2, and both clusters have near-perfect circular geometry.")
+    void focusedBicolourCircleRing() { runFocusedMultiColour(ReferenceId.BICOLOUR_CIRCLE_RING); }
+
+    @Test @Order(313)
+    @DisplayName("Diagnostic focused: BICOLOUR_CROSSHAIR_RING on own scene")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PARTIAL,
+        reason = "Score ~89.7% — marginally below the 90% target. Crosshair cluster is " +
+                 "COMPOUND type and its SegmentDescriptor has higher variance across scales.")
+    void focusedBicolourCrosshairRing() { runFocusedMultiColour(ReferenceId.BICOLOUR_CROSSHAIR_RING); }
+
+    @Test @Order(314)
+    @DisplayName("Diagnostic focused: COMPOUND_CROSS_IN_CIRCLE on own scene")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PASS,
+        reason = "Both circle and cross components present in the same achromatic cluster. " +
+                 "COMPOUND type matches on both sides; dominant (circle) boundary gives high " +
+                 "Layer 3 geometry score.")
+    void focusedCompoundCrossInCircle() { runFocusedMultiColour(ReferenceId.COMPOUND_CROSS_IN_CIRCLE); }
+
+    @Test @Order(315)
+    @DisplayName("Diagnostic focused: BICOLOUR_CHEVRON_FILLED on own scene")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PARTIAL,
+        reason = "Score ~84%: concave chevron geometry has higher SegmentDescriptor variance " +
+                 "than convex shapes, and two equal-size colour halves cause occasional cluster " +
+                 "swap in Layer 2 assignment.")
+    void focusedBicolourChevronFilled() { runFocusedMultiColour(ReferenceId.BICOLOUR_CHEVRON_FILLED); }
+
+    // ── Signature comparison diagnostics ─────────────────────────────────────
+
+    @Test @Order(320)
+    @DisplayName("Diag: DIAMOND signature vs diamond scene and circle scene")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.DIAGNOSTIC,
+        reason = "Prints VectorSignature fields and cross-similarity scores to stdout. " +
+                 "Expected: diamond-vs-diamond >> diamond-vs-circle, confirming AR multiplier " +
+                 "and type hard-gate prevent false matches.")
+    void diagDiamondSignatures() {
+        double eps = VectorVariant.VECTOR_NORMAL.epsilonFactor();
+        Mat ref       = ReferenceImageFactory.build(ReferenceId.POLYLINE_DIAMOND);
+        Mat diamScene = diagBuildDiamond();
+        Mat circScene = diagBuildCircle();
+        List<VectorSignature> refSigs = VectorMatcher.buildRefSignatures(ref, eps);
+        System.out.printf("%nREF sigs (%d):%n", refSigs.size());
+        for (VectorSignature rs : refSigs)
+            System.out.printf("  ref: %s v=%d circ=%.3f solid=%.3f ar=%.3f%n",
+                rs.type, rs.vertexCount, rs.circularity, rs.solidity, rs.aspectRatio);
+        for (String label : new String[]{"diamond","circle"}) {
+            Mat scene = label.equals("diamond") ? diamScene : circScene;
+            double sa = (double) scene.rows() * scene.cols();
+            SceneDescriptor desc = SceneDescriptor.build(scene);
+            System.out.printf("%n--- %s scene ---%n", label);
+            for (SceneDescriptor.ClusterContours cc : desc.clusters()) {
+                for (MatOfPoint c : cc.contours) {
+                    Rect bb = Imgproc.boundingRect(c);
+                    VectorSignature vs = VectorSignature.buildFromContour(c, eps, sa);
+                    double bestSim = refSigs.stream().mapToDouble(r -> r.similarity(vs)).max().orElse(0);
+                    System.out.printf("  (%d,%d %dx%d) type=%s v=%d circ=%.3f solid=%.3f ar=%.3f sim=%.3f%n",
+                        bb.x, bb.y, bb.width, bb.height,
+                        vs.type, vs.vertexCount, vs.circularity, vs.solidity, vs.aspectRatio, bestSim);
+                }
+            }
+            desc.release();
+        }
+        ref.release(); diamScene.release(); circScene.release();
+    }
+
+    @Test @Order(321)
+    @DisplayName("Diag: ARROW signature vs arrow scene and rect scene")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.DIAGNOSTIC,
+        reason = "Prints VectorSignature fields to stdout. Expected: arrow-vs-arrow >> " +
+                 "arrow-vs-rect, confirming the concavity ratio discriminator works correctly.")
+    void diagArrowSignatures() {
+        double eps = VectorVariant.VECTOR_NORMAL.epsilonFactor();
+        Mat ref        = ReferenceImageFactory.build(ReferenceId.POLYLINE_ARROW_RIGHT);
+        Mat arrowScene = diagBuildArrow();
+        Mat rectScene  = diagBuildRect();
+        List<VectorSignature> refSigs = VectorMatcher.buildRefSignatures(ref, eps);
+        System.out.printf("%nREF sigs (%d):%n", refSigs.size());
+        for (VectorSignature rs : refSigs)
+            System.out.printf("  ref: %s v=%d circ=%.3f solid=%.3f ar=%.3f%n",
+                rs.type, rs.vertexCount, rs.circularity, rs.solidity, rs.aspectRatio);
+        for (String label : new String[]{"arrow","rect"}) {
+            Mat scene = label.equals("arrow") ? arrowScene : rectScene;
+            double sa = (double) scene.rows() * scene.cols();
+            SceneDescriptor desc = SceneDescriptor.build(scene);
+            System.out.printf("%n--- %s scene ---%n", label);
+            for (SceneDescriptor.ClusterContours cc : desc.clusters()) {
+                for (MatOfPoint c : cc.contours) {
+                    Rect bb = Imgproc.boundingRect(c);
+                    VectorSignature vs = VectorSignature.buildFromContour(c, eps, sa);
+                    double bestSim = refSigs.stream().mapToDouble(r -> r.similarity(vs)).max().orElse(0);
+                    System.out.printf("  (%d,%d %dx%d) type=%s v=%d circ=%.3f solid=%.3f ar=%.3f sim=%.3f%n",
+                        bb.x, bb.y, bb.width, bb.height,
+                        vs.type, vs.vertexCount, vs.circularity, vs.solidity, vs.aspectRatio, bestSim);
+                }
+            }
+            desc.release();
+        }
+        ref.release(); arrowScene.release(); rectScene.release();
+    }
+
+    // ── Rotation robustness ───────────────────────────────────────────────────
+
+    /**
+     * Rotation robustness: every shape in {@link #ALL_SHAPES} at
+     * 0°, 15°, 30°, 45°, 90°, 135°, 180° on a solid-black background.
+     *
+     * <p>Pass criterion: IoU ≥ {@code DIAG_GOOD_IOU × DIAG_IOU_MARGIN} (= 0.95).
+     * No score-threshold gate — the IoU check is the primary signal.
+     *
+     * <p>Annotated PNGs are saved to
+     * {@code test_output/vector_matching/annotated/VECTOR_NORMAL/}.
+     *
+     * <p>Expected: ~65/98 (66%) pass.  Symmetric shapes (circle, pentagon,
+     * octagon, triangle, arrow, cross) pass at all angles.  AR-sensitive shapes
+     * (ELLIPSE_H, RECT_FILLED, RECT_ROTATED_45, POLYLINE_DIAMOND) legitimately
+     * fail at diagonal rotations because the bounding-box AR changes.
+     * POLYLINE_PLUS_SHAPE drops at 15°/30°.  HEXAGON_OUTLINE and STAR_5_FILLED
+     * are below the ceiling at all angles — pre-existing limitation.
+     */
+    @Test @Order(330)
+    @DisplayName("Rotation robustness: all shapes × 0°/15°/30°/45°/90°/135°/180° on black")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PARTIAL,
+        reason = "~65/98 (66%) pass. Symmetric shapes pass all angles. AR-sensitive shapes " +
+                 "(ELLIPSE_H, RECT_FILLED, RECT_ROTATED_45, POLYLINE_DIAMOND) legitimately " +
+                 "fail at diagonal rotations. POLYLINE_PLUS_SHAPE drops at 15°/30°. " +
+                 "HEXAGON_OUTLINE and STAR_5_FILLED below ceiling at all angles.")
+    void runRotationRobustness() {
+        System.out.printf("%n=== ROTATION ROBUSTNESS (black background, IoU threshold %.2f) ===%n",
+                DIAG_GOOD_IOU * DIAG_IOU_MARGIN);
+        String hdr = String.format("%-26s", "Shape");
+        for (int a : ROTATION_ANGLES) hdr += String.format(" %6s", a + "°");
+        System.out.println(hdr);
+        System.out.println("─".repeat(26 + ROTATION_ANGLES.length * 7));
+
+        int passCount = 0, totalCount = 0;
+
+        for (ReferenceId refId : ALL_SHAPES) {
+            Mat ref = ReferenceImageFactory.build(refId);
+            StringBuilder row = new StringBuilder(String.format("%-26s", refId.name()));
+
+            for (int angle : ROTATION_ANGLES) {
+                Mat shapeMat = MatchDiagnosticLibrary.buildShapeMat(refId);
+                Mat scene    = diagRotateScene(shapeMat, angle);
+                shapeMat.release();
+
+                Rect gt = MatchDiagnosticLibrary.groundTruthRect(scene);
+
+                String label = "rot" + angle + "deg_black";
+                SceneEntry se = new SceneEntry(refId, SceneCategory.B_TRANSFORMED,
+                        label, BackgroundId.BG_SOLID_BLACK, Collections.emptyList(), scene);
+
+                Set<String> save = Set.of(VectorVariant.VECTOR_NORMAL.variantName());
+                List<AnalysisResult> results = VectorMatcher.match(refId, ref, se, save, OUTPUT);
+
+                AnalysisResult best = results.stream()
+                        .filter(r -> r.methodName().equals(VectorVariant.VECTOR_NORMAL.variantName()))
+                        .findFirst().orElse(results.isEmpty() ? null : results.get(0));
+
+                double score  = best != null ? best.matchScorePercent() : 0.0;
+                Rect   bbox   = best != null ? best.boundingRect()      : null;
+                double iouVal = (bbox != null && gt != null)
+                        ? MatchDiagnosticLibrary.iou(bbox, gt) : Double.NaN;
+
+                boolean pass = (gt != null)
+                        ? (!Double.isNaN(iouVal) && iouVal >= DIAG_GOOD_IOU * DIAG_IOU_MARGIN)
+                        : (score < DIAG_FP_GATE);
+                row.append(String.format(" %5.1f%s", score, pass ? "✓" : "✗"));
+
+                // Record with correct explicit GT — consistent score + IoU in report
+                report.record(label, label + "/" + refId.name(), refId.name(),
+                        label, scene, gt, results, 0L);
+                diag.recordResult(BackgroundId.BG_SOLID_BLACK, label, refId, results, gt,
+                        DIAG_PASS_THRESH, DIAG_TARGET, DIAG_GOOD_IOU);
+
+                if (pass) passCount++;
+                totalCount++;
+
+                se.release();
+                scene.release();
+            }
+
+            ref.release();
+            System.out.println(row);
+        }
+
+        System.out.println("─".repeat(26 + ROTATION_ANGLES.length * 7));
+        System.out.printf("Pass: %d / %d  (%.0f%%)%n%n", passCount, totalCount,
+                100.0 * passCount / totalCount);
+    }
+
+    // =========================================================================
+    // Helpers — focused probe runners (merged from VectorMatcherDiagnosticTest)
+    // =========================================================================
+
+    /**
+     * Runs a focused single-shape probe on the given background, printing per-contour
+     * similarity scores and recording the result in both report and diagnostics.
+     * The GT is derived from a clean (black-BG) shape so background pixels don't inflate it.
+     */
+    private void runFocused(ReferenceId refId, BackgroundId bgId, String bgLabel) {
+        Mat shapeMat = MatchDiagnosticLibrary.buildShapeMat(refId);
+        Mat ref      = ReferenceImageFactory.build(refId);
+        Rect gt      = MatchDiagnosticLibrary.groundTruthRect(shapeMat);
+        Mat  scene   = MatchDiagnosticLibrary.compositeOnBackground(shapeMat, bgId);
+
+        SceneEntry se = new SceneEntry(refId, SceneCategory.A_CLEAN,
+                bgLabel, bgId, Collections.emptyList(), scene);
+        List<AnalysisResult> results = VectorMatcher.match(
+                refId, ref, se, Collections.emptySet(), OUTPUT);
+
+        AnalysisResult nr = results.stream()
+                .filter(r -> r.methodName().equals(VectorVariant.VECTOR_NORMAL.variantName()))
+                .findFirst().orElse(null);
+        double score = nr != null ? nr.matchScorePercent() : 0;
+        Rect   bbox  = nr != null ? nr.boundingRect() : null;
+        double iouV  = bbox != null && gt != null ? MatchDiagnosticLibrary.iou(bbox, gt) : Double.NaN;
+
+        System.out.printf("%n=== FOCUSED: %s on %s ===%n", refId.name(), bgLabel);
+        System.out.printf("score=%.1f%%  iou=%.3f  -> %s%n%n", score, iouV,
+            iouV >= DIAG_GOOD_IOU * DIAG_IOU_MARGIN ? "CORRECT HIT"
+                : iouV >= 0.5                       ? "BAD IoU"
+                :                                     "FALSE POSITIVE");
+
+        double eps = VectorVariant.VECTOR_NORMAL.epsilonFactor();
+        double sa  = (double) scene.rows() * scene.cols();
+        VectorSignature refSig = VectorMatcher.buildRefSignature(ref, eps);
+        List<SceneDescriptor.ClusterContours> clusters = se.descriptor().clusters();
+        System.out.printf("Clusters: %d%n", clusters.size());
+        for (int ci = 0; ci < clusters.size(); ci++) {
+            SceneDescriptor.ClusterContours cc = clusters.get(ci);
+            double maxA = cc.contours.stream()
+                    .mapToDouble(c -> { Rect r = Imgproc.boundingRect(c); return (double)r.width*r.height; })
+                    .max().orElse(1);
+            long sigN = cc.contours.stream()
+                    .filter(c -> { Rect r = Imgproc.boundingRect(c); return (double)r.width*r.height >= maxA*0.20; })
+                    .count();
+            double pen = sigN > 1 ? 1.0/(Math.log(sigN+1)/Math.log(2)) : 1.0;
+            System.out.printf("  Cluster %d  hue=%.0f  achromatic=%b  n=%d  penalty=%.3f%n",
+                ci, cc.hue, cc.achromatic, cc.contours.size(), pen);
+            for (int ki = 0; ki < cc.contours.size(); ki++) {
+                MatOfPoint c = cc.contours.get(ki);
+                Rect bb = Imgproc.boundingRect(c);
+                VectorSignature s = VectorSignature.buildFromContour(c, eps, sa);
+                double raw = refSig.similarity(s);
+                double iouC = gt != null ? MatchDiagnosticLibrary.iou(bb, gt) : Double.NaN;
+                System.out.printf("    [%d]%s (%d,%d %dx%d) raw=%.3f pen=%.3f %s v=%d iou=%.2f%n",
+                    ki, bbox != null && bbox.equals(bb) ? " ***WINNER***" : "",
+                    bb.x, bb.y, bb.width, bb.height,
+                    raw, raw*pen, s.type.name(), s.vertexCount, iouC);
+            }
+        }
+
+        report.record(bgLabel, bgLabel+"/"+refId.name(), refId.name(), bgLabel,
+                scene, gt, results, 0L);
+        diag.recordResult(bgId, bgLabel, refId, results, gt,
+                DIAG_PASS_THRESH, DIAG_TARGET, DIAG_GOOD_IOU);
+
+        se.release(); shapeMat.release(); ref.release(); scene.release();
+    }
+
+    /** Runs a focused multi-colour self-match probe (3× scaled ref on black canvas). */
+    private void runFocusedMultiColour(ReferenceId refId) {
+        Mat ref   = ReferenceImageFactory.build(refId);
+        Mat scene = diagBuildMultiColourScene(refId);
+
+        // Save upscaled scene to disk for inspection
+        Path sceneOut = OUTPUT.resolve("debug_scene_" + refId.name() + ".png");
+        Mat sceneBig = new Mat();
+        Imgproc.resize(scene, sceneBig, new Size(scene.cols() * 4, scene.rows() * 4),
+                0, 0, Imgproc.INTER_NEAREST);
+        Imgcodecs.imwrite(sceneOut.toString(), sceneBig);
+        sceneBig.release();
+
+        System.out.printf("%n=== REF CLUSTERS: %s ===%n", refId.name());
+        List<ColourCluster> refClusters = SceneColourClusters.extract(ref);
+        for (int i = 0; i < refClusters.size(); i++) {
+            ColourCluster c = refClusters.get(i);
+            List<MatOfPoint> cnts = SceneDescriptor.contoursFromMask(c.mask);
+            System.out.printf("  ref cluster %d: hue=%.0f achromatic=%b px=%d contours=%d%n",
+                i, c.hue, c.achromatic, org.opencv.core.Core.countNonZero(c.mask), cnts.size());
+            for (MatOfPoint cnt : cnts) {
+                Rect bb = Imgproc.boundingRect(cnt);
+                System.out.printf("    contour (%d,%d %dx%d) area=%.0f%n",
+                    bb.x, bb.y, bb.width, bb.height, Imgproc.contourArea(cnt));
+            }
+            c.release();
+        }
+
+        System.out.printf("%n=== SCENE CLUSTERS: %s ===%n", refId.name());
+        SceneEntry se = new SceneEntry(refId, SceneCategory.A_CLEAN,
+                "own-scene", null, Collections.emptyList(), scene);
+        List<SceneDescriptor.ClusterContours> clusters = se.descriptor().clusters();
+        double eps = VectorVariant.VECTOR_NORMAL.epsilonFactor();
+        double sa  = (double) scene.rows() * scene.cols();
+        List<VectorSignature> refSigs = VectorMatcher.buildRefSignatures(ref, eps);
+        System.out.printf("  refSigs count: %d%n", refSigs.size());
+        for (int ci = 0; ci < clusters.size(); ci++) {
+            SceneDescriptor.ClusterContours cc = clusters.get(ci);
+            System.out.printf("  scene cluster %d: hue=%.0f achromatic=%b contours=%d%n",
+                ci, cc.hue, cc.achromatic, cc.contours.size());
+            for (MatOfPoint cnt : cc.contours) {
+                Rect bb = Imgproc.boundingRect(cnt);
+                VectorSignature vs = VectorSignature.buildFromContour(cnt, eps, sa);
+                double bestSim = refSigs.stream().mapToDouble(r -> r.similarity(vs)).max().orElse(0);
+                System.out.printf("    contour (%d,%d %dx%d) bestSim=%.3f type=%s v=%d%n",
+                    bb.x, bb.y, bb.width, bb.height, bestSim, vs.type.name(), vs.vertexCount);
+            }
+        }
+
+        List<AnalysisResult> results = VectorMatcher.match(refId, ref, se, Collections.emptySet(), OUTPUT);
+        AnalysisResult nr = results.stream()
+                .filter(r -> r.methodName().equals(VectorVariant.VECTOR_NORMAL.variantName()))
+                .findFirst().orElse(null);
+        double score = nr != null ? nr.matchScorePercent() : 0;
+        Rect   bbox  = nr != null ? nr.boundingRect() : null;
+        System.out.printf("%n  RESULT: score=%.1f%%  bbox=%s%n", score,
+            bbox != null ? String.format("(%d,%d %dx%d)", bbox.x, bbox.y, bbox.width, bbox.height) : "null");
+
+        // GT from the scene itself — it's a white/colour shape on black, so GT is correct
+        Rect gt = MatchDiagnosticLibrary.groundTruthRect(scene);
+        report.record("Multi-Colour Debug", refId.name(), refId.name(), "own-scene",
+                scene, gt, results, 0L);
+        diag.recordResult(BackgroundId.BG_SOLID_BLACK, "own-scene", refId, results, gt,
+                DIAG_PASS_THRESH, DIAG_TARGET, DIAG_GOOD_IOU);
+
+        se.release(); ref.release(); scene.release();
+    }
+
+    // =========================================================================
+    // Scene builders — diagnostic helpers
+    // =========================================================================
+
+    /** 3× scaled ref centred on a 640×480 black canvas — multi-colour self-match scene. */
+    private static Mat diagBuildMultiColourScene(ReferenceId id) {
+        Mat ref = ReferenceImageFactory.build(id);
+        Mat scaled = new Mat();
+        Imgproc.resize(ref, scaled, new Size(ref.cols() * 3, ref.rows() * 3), 0, 0, Imgproc.INTER_NEAREST);
+        ref.release();
+        Mat canvas = Mat.zeros(480, 640, CvType.CV_8UC3);
+        int x = (canvas.cols() - scaled.cols()) / 2;
+        int y = (canvas.rows() - scaled.rows()) / 2;
+        scaled.copyTo(canvas.submat(new Rect(x, y, scaled.cols(), scaled.rows())));
+        scaled.release();
+        return canvas;
+    }
+
+    private static Mat diagBuildDiamond() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(320,100), new Point(500,240),
+                new Point(320,380), new Point(140,240))),
+                true, new Scalar(255,255,255), 3);
+        return m;
+    }
+
+    private static Mat diagBuildCircle() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.circle(m, new Point(320,240), 60, new Scalar(255,255,255), -1);
+        return m;
+    }
+
+    private static Mat diagBuildArrow() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(185, 180), new Point(320, 180), new Point(320, 132),
+                new Point(455, 240),
+                new Point(320, 348), new Point(320, 300),
+                new Point(185, 300))),
+                true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    private static Mat diagBuildRect() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.rectangle(m, new Point(230,160), new Point(410,320), new Scalar(255,255,255), -1);
+        return m;
+    }
+
+    /** Rotates {@code src} by {@code angleDeg} around the image centre on a black canvas. */
+    private static Mat diagRotateScene(Mat src, int angleDeg) {
+        if (angleDeg == 0) return src.clone();
+        Point centre = new Point(src.cols() / 2.0, src.rows() / 2.0);
+        Mat   rotM   = Imgproc.getRotationMatrix2D(centre, angleDeg, 1.0);
+        Mat   dst    = Mat.zeros(src.size(), src.type());
+        Imgproc.warpAffine(src, dst, rotM, src.size(), Imgproc.INTER_LINEAR,
+                org.opencv.core.Core.BORDER_CONSTANT, new Scalar(0, 0, 0));
+        rotM.release();
+        return dst;
     }
 }

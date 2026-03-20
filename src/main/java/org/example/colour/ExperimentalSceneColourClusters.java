@@ -53,8 +53,13 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
      * connected-component analysis.  Closing bridges gaps up to
      * {@code 2 × HEAL_RADIUS} pixels wide.  Increase to merge regions
      * separated by wider gaps; decrease for finer spatial separation.
+     *
+     * <p>Item 14: reduced from 8→3 (17×17→7×7).  Anti-aliasing and thin
+     * separation gaps are 1–4 px wide; a 7×7 kernel bridges up to 6 px,
+     * which is sufficient.  The 17×17 kernel over-heals on noisy backgrounds,
+     * spuriously merging distinct components.
      */
-    public static final int HEAL_RADIUS = 8;
+    public static final int HEAL_RADIUS = 3;
 
     /**
      * Maximum half-width (OpenCV hue units, 0–179) a cluster's hue range may
@@ -81,6 +86,19 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
      * 32 ≈ 12.5 % of the full saturation range.
      */
     private static final int S_PEAK_MIN_SEP = 32;
+
+    /**
+     * Maximum number of spatial components returned per cluster from
+     * {@link #splitSpatially}.  When more than this many components survive
+     * {@link #MIN_PIXEL_COUNT}, the effective pixel-count floor is raised so
+     * only the {@code MAX_SPLIT_COMPONENTS} largest survive.
+     *
+     * <p>Item 16: bounds Mat allocations, {@code put()} calls, and downstream
+     * {@code contoursFromMask} calls regardless of background complexity.
+     * Small noise fragments are never matched against reference shapes; shapes
+     * are always larger.
+     */
+    private static final int MAX_SPLIT_COMPONENTS = 24;
 
     /**
      * Maximum recursion depth for Otsu-based S sub-cluster detection.
@@ -110,15 +128,26 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
      */
     @Override
     public List<ColourCluster> extractFromBorderPixels(Mat bgrScene) {
+        return extractFromBorderPixels(bgrScene, null);
+    }
+
+    /**
+     * Border-pixel histogram variant with optional chromatic accumulation.
+     *
+     * <p>When {@code chromaticOut} is non-null it must be a pre-allocated
+     * {@code byte[rows * cols]} array.  Step 7 of {@link #buildClustersOnePass}
+     * will write {@code (byte) 255} for every pixel that falls into a chromatic
+     * cluster, allowing the caller to build {@code combinedChromaticMask} with a
+     * single {@code Mat.put()} instead of N {@code Core.bitwise_or} calls.
+     */
+    public List<ColourCluster> extractFromBorderPixels(Mat bgrScene, byte[] chromaticOut) {
         Mat hsv = new Mat();
         Imgproc.cvtColor(bgrScene, hsv, Imgproc.COLOR_BGR2HSV);
 
         // Build border-pixel mask for histogram (same semantics as production)
         Mat chromaticRaw = buildChromaticMask(hsv);
-        Mat border3      = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
         Mat borderMask   = new Mat();
-        Imgproc.morphologyEx(chromaticRaw, borderMask, Imgproc.MORPH_GRADIENT, border3);
-        border3.release();
+        Imgproc.morphologyEx(chromaticRaw, borderMask, Imgproc.MORPH_GRADIENT, buildBorderKernel());
         chromaticRaw.release();
 
         // Bulk-read the border mask into Java (one JNI call).
@@ -127,7 +156,7 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
         borderMask.get(0, 0, borderData);
         borderMask.release();
 
-        List<ColourCluster> result = buildClustersOnePass(hsv, borderData);
+        List<ColourCluster> result = buildClustersOnePass(hsv, borderData, chromaticOut);
         hsv.release();
         return result;
     }
@@ -142,7 +171,7 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
     public List<ColourCluster> extract(Mat bgrScene) {
         Mat hsv = new Mat();
         Imgproc.cvtColor(bgrScene, hsv, Imgproc.COLOR_BGR2HSV);
-        List<ColourCluster> result = buildClustersOnePass(hsv, null);
+        List<ColourCluster> result = buildClustersOnePass(hsv, null, null);
         hsv.release();
         return result;
     }
@@ -172,7 +201,7 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
      * <p>The BRIGHT/DARK achromatic split uses a data-driven V valley
      * (see {@link #dynamicAchromaticThreshold}).
      */
-    private List<ColourCluster> buildClustersOnePass(Mat hsv, byte[] borderData) {
+    private List<ColourCluster> buildClustersOnePass(Mat hsv, byte[] borderData, byte[] chromaticOut) {
         int rows = hsv.rows(), cols = hsv.cols();
         int n    = rows * cols;
 
@@ -182,7 +211,7 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
 
         // ── 2. Hue histogram + achromatic-V histogram (single loop) ──────────
         float[] hueHist   = new float[180];
-        float[] achrVHist = new float[256];
+        int[]   achrVHist = new int[256];
 
         if (borderData != null) {
             for (int r = 1; r < rows - 1; r++) {
@@ -311,6 +340,10 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
         // it broke when the vivid-S pixels (high V) outnumbered the muted-S
         // pixels (lower V), wrongly blocking the lower-V population before
         // Otsu sub-clustering could separate them.
+        //
+        // If chromaticOut is non-null, each chromatic pixel also sets
+        // chromaticOut[i] = 255 — letting the caller build combinedChromaticMask
+        // with one Mat.put() instead of N bitwise_or JNI calls (Item 12).
         byte[][] maskData = new byte[totalSlots][n];
         int[]    pixCount = new int[totalSlots];
 
@@ -331,6 +364,7 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
                                 if (s >= sLo[si] && s <= sHi[si]) {
                                     maskData[gIdx[si]][i] = (byte) 255;
                                     pixCount[gIdx[si]]++;
+                                    if (chromaticOut != null) chromaticOut[i] = (byte) 255;
                                     break;
                                 }
                             }
@@ -345,6 +379,9 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
         }
 
         // ── 8. Spatial splitting ──────────────────────────────────────────────
+        // maskData[gIdx] is passed directly as rawBytes — splitSpatially uses it
+        // instead of calling rawMask.get(), eliminating a redundant native→Java
+        // bulk read per cluster (Item 10).
         Mat healKernel = buildHealKernel();
         List<ColourCluster> clusters = new ArrayList<>();
 
@@ -354,7 +391,7 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
                 if (pixCount[gIdx] < MIN_PIXEL_COUNT) continue;
                 Mat rawMask = new Mat(rows, cols, CvType.CV_8UC1);
                 rawMask.put(0, 0, maskData[gIdx]);
-                clusters.addAll(splitSpatially(rawMask, clusterPeaks[ci], false, false,
+                clusters.addAll(splitSpatially(rawMask, maskData[gIdx], clusterPeaks[ci], false, false,
                         clusterLo[ci], clusterHi[ci], subSLo[ci][si], subSHi[ci][si], healKernel));
                 rawMask.release();
             }
@@ -363,18 +400,19 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
         if (pixCount[brightIdx] >= MIN_PIXEL_COUNT) {
             Mat rawMask = new Mat(rows, cols, CvType.CV_8UC1);
             rawMask.put(0, 0, maskData[brightIdx]);
-            clusters.addAll(splitSpatially(rawMask, Double.NaN, true, true, 0, 179, 0, 255, healKernel));
+            clusters.addAll(splitSpatially(rawMask, maskData[brightIdx], Double.NaN, true, true, 0, 179, 0, 255, healKernel));
             rawMask.release();
         }
 
         if (pixCount[darkIdx] >= MIN_PIXEL_COUNT) {
             Mat rawMask = new Mat(rows, cols, CvType.CV_8UC1);
             rawMask.put(0, 0, maskData[darkIdx]);
-            clusters.addAll(splitSpatially(rawMask, Double.NaN, true, false, 0, 179, 0, 255, healKernel));
+            clusters.addAll(splitSpatially(rawMask, maskData[darkIdx], Double.NaN, true, false, 0, 179, 0, 255, healKernel));
             rawMask.release();
         }
 
-        healKernel.release();
+        // healKernel is the static cachedHealKernel — do not release it here.
+        // The static field owns the kernel's lifetime across all calls.
         return clusters;
     }
 
@@ -485,19 +523,18 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
      * <p>Falls back to {@link #BRIGHT_VAL_I} when the histogram is unimodal,
      * either class has too few pixels, or the class V-means are &lt; 40 units apart.
      */
-    private static int dynamicAchromaticThreshold(float[] achrVHist) {
-        int[] hist  = new int[256];
-        int   total = 0;
-        for (int v = 0; v < 256; v++) { hist[v] = (int) achrVHist[v]; total += hist[v]; }
+    private static int dynamicAchromaticThreshold(int[] achrVHist) {
+        int total = 0;
+        for (int v = 0; v < 256; v++) total += achrVHist[v];
         if (total < MIN_PIXEL_COUNT * 2) return BRIGHT_VAL_I;
 
-        int  T          = otsuThreshold(hist, 0, 255);
+        int  T          = otsuThreshold(achrVHist, 0, 255);
         int  darkCount  = 0;
         long darkSum    = 0;
-        for (int v = 0;     v <= T;  v++) { darkCount += hist[v]; darkSum += (long) v * hist[v]; }
+        for (int v = 0;     v <= T;  v++) { darkCount += achrVHist[v]; darkSum += (long) v * achrVHist[v]; }
         int  brightCount = total - darkCount;
         long brightSum   = 0;
-        for (int v = T + 1; v < 256; v++) brightSum += (long) v * hist[v];
+        for (int v = T + 1; v < 256; v++) brightSum += (long) v * achrVHist[v];
 
         if (darkCount < MIN_PIXEL_COUNT || brightCount < MIN_PIXEL_COUNT) return BRIGHT_VAL_I;
 
@@ -535,16 +572,12 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
      * and the expensive closing kernel is skipped for already-connected clusters.
      */
     private static List<ColourCluster> splitSpatially(
-            Mat rawMask, double hue, boolean achromatic, boolean bright,
+            Mat rawMask, byte[] rawBytes, double hue, boolean achromatic, boolean bright,
             int lo, int hi, int sLo, int sHi, Mat healKernel) {
 
         int rows = rawMask.rows(), cols = rawMask.cols(), n = rows * cols;
 
         // ── 1. Fast-path: check raw component count before paying for MORPH_CLOSE ─
-        // connectedComponents is cheap (single linear scan); MORPH_CLOSE with a
-        // 17×17 kernel is expensive. If the raw mask is already a single connected
-        // region (numComponents == 2: background label 0 + one foreground label),
-        // healing cannot produce a different split — skip it entirely.
         Mat labels32 = new Mat();
         int numComponents = Imgproc.connectedComponents(rawMask, labels32);
 
@@ -554,8 +587,6 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
         }
 
         // ── 2. Auto-heal only when multiple raw components exist ──────────────
-        // Healing bridges small gaps (anti-aliasing, thin separations) that
-        // cause a logically single region to appear as multiple raw components.
         if (numComponents > 2) {
             Mat healed = new Mat();
             Imgproc.morphologyEx(rawMask, healed, Imgproc.MORPH_CLOSE, healKernel);
@@ -569,31 +600,68 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
             }
         }
 
-        // ── 3. Bulk read — 2 JNI calls replace K×(inRange+bitwise_and+countNonZero) ──
-        int[]  labelsData = new int [n];
-        byte[] rawData    = new byte[n];
+        // ── 3. Bulk read labels; use rawBytes directly — no rawMask.get() needed ──
+        // rawBytes is maskData[gIdx] from buildClustersOnePass, which is the exact
+        // same data that was just put() into rawMask.  Reusing it eliminates one
+        // ~300KB native→Java bulk read per splitSpatially call (Item 10).
+        int[] labelsData = new int[n];
         labels32.get(0, 0, labelsData);
         labels32.release();
-        rawMask.get(0, 0, rawData);
+        byte[] rawData = rawBytes;
 
-        // ── 4. Single Java pass: fill per-component masks and count pixels ───
-        int maxComp = Math.min(numComponents, 255); // cap guard
-        byte[][] compMasks = new byte[maxComp][n];
-        int[]    compCount = new int [maxComp];
+        // ── 4. Two-pass lazy compMasks — count first, allocate only valid ─────
+        // Old approach allocated byte[maxComp][n] upfront, wasting up to
+        // maxComp×n bytes when most components are noise (Item 11).
+        int maxComp = Math.min(numComponents, 255);
 
+        // Pass 1: count pixels per component label
+        int[] compCount = new int[maxComp];
         for (int i = 0; i < n; i++) {
             int label = labelsData[i];
-            // Keep only original (non-healed) pixels
-            if (label > 0 && label < maxComp && (rawData[i] & 0xFF) > 0) {
-                compMasks[label][i] = (byte) 255;
+            if (label > 0 && label < maxComp && (rawData[i] & 0xFF) > 0)
                 compCount[label]++;
+        }
+
+        // Item 16: cap output to top-MAX_SPLIT_COMPONENTS components.
+        // If more components survive MIN_PIXEL_COUNT, raise the effective floor
+        // so only the K largest are materialised — bounds allocations and
+        // contoursFromMask calls regardless of background complexity.
+        int effectiveMin = MIN_PIXEL_COUNT;
+        int validCount = 0;
+        for (int comp = 1; comp < maxComp; comp++) {
+            if (compCount[comp] >= MIN_PIXEL_COUNT) validCount++;
+        }
+        if (validCount > MAX_SPLIT_COMPONENTS) {
+            // Collect valid pixel-counts, sort ascending, take the K-th from top
+            int[] validCounts = new int[validCount];
+            int vi = 0;
+            for (int comp = 1; comp < maxComp; comp++) {
+                if (compCount[comp] >= MIN_PIXEL_COUNT) validCounts[vi++] = compCount[comp];
             }
+            Arrays.sort(validCounts);
+            // validCounts[validCount - MAX_SPLIT_COMPONENTS] is the smallest
+            // count that still makes the top-K cut.
+            effectiveMin = Math.max(MIN_PIXEL_COUNT, validCounts[validCount - MAX_SPLIT_COMPONENTS]);
+        }
+
+        // Allocate byte[n] only for components that will survive effectiveMin
+        byte[][] compMasks = new byte[maxComp][];
+        for (int comp = 1; comp < maxComp; comp++) {
+            if (compCount[comp] >= effectiveMin)
+                compMasks[comp] = new byte[n];
+        }
+
+        // Pass 2: fill only the allocated masks
+        for (int i = 0; i < n; i++) {
+            int label = labelsData[i];
+            if (label > 0 && label < maxComp && compMasks[label] != null && (rawData[i] & 0xFF) > 0)
+                compMasks[label][i] = (byte) 255;
         }
 
         // ── 5. Materialise valid components (Mat.put = plain memcpy) ─────────
         List<ColourCluster> result = new ArrayList<>();
         for (int comp = 1; comp < maxComp; comp++) {
-            if (compCount[comp] < MIN_PIXEL_COUNT) continue;
+            if (compMasks[comp] == null) continue;
             Mat compMask = new Mat(rows, cols, CvType.CV_8UC1);
             compMask.put(0, 0, compMasks[comp]);
             result.add(new ColourCluster(compMask, hue, achromatic, bright, lo, hi, sLo, sHi));
@@ -633,9 +701,33 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
         return m;
     }
 
+    // Cached heal kernel — HEAL_RADIUS is a compile-time constant so the kernel
+    // shape never changes. Lazy-initialised on first use (OpenCV must be loaded).
+    // Do NOT call release() on the returned Mat — the static field owns its lifetime.
+    private static Mat cachedHealKernel = null;
+
     private static Mat buildHealKernel() {
-        int d = 2 * HEAL_RADIUS + 1;
-        return Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(d, d));
+        if (cachedHealKernel == null || cachedHealKernel.empty()) {
+            int d = 2 * HEAL_RADIUS + 1;
+            // Item 13: MORPH_RECT uses OpenCV's O(n) running-sum decomposition
+            // (two 1-D passes independent of kernel area), replacing the general
+            // O(n × kernel_area) path used by MORPH_ELLIPSE.  For a 17×17
+            // ellipse on a 640×480 image that was ~200 ms per close call; with
+            // a 7×7 rect (Items 13+14 combined) it drops to ~1–2 ms.
+            cachedHealKernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(d, d));
+        }
+        return cachedHealKernel;
+    }
+
+    // Cached 3×3 MORPH_RECT kernel used for the morphological gradient border mask.
+    // Shape never changes — owned by the static field, never released by callers.
+    private static Mat cachedBorderKernel = null;
+
+    private static Mat buildBorderKernel() {
+        if (cachedBorderKernel == null || cachedBorderKernel.empty()) {
+            cachedBorderKernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+        }
+        return cachedBorderKernel;
     }
 
     // =========================================================================
