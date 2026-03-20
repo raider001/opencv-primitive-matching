@@ -263,14 +263,14 @@ class VectorMatchingTest {
     }
 
     @Test @Order(23) @DisplayName("BICOLOUR_CROSSHAIR_RING — bi-colour crosshair+ring on black")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
-                     reason = "Ring + crosshair overlay. This remains a known unstable self-case under " +
-                              "the current single-variant VectorMatcher path; score is ~69.7% due to " +
-                              "compound cluster assignment variance between ref and scene. Asserted at " +
-                              "68% minimum (conservative PARTIAL band).")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Ring (CYAN circle, thickness=5) + crosshair (YELLOW + shape, arm=48px). " +
+                              "Arms stop 4+ px before the ring's inner edge so the ring is one unbroken " +
+                              "circle contour (type=CIRCLE) and the crosshair is one + polygon " +
+                              "(CLOSED_CONCAVE_POLY). Both produce stable, scale-invariant descriptors.")
     void bicolourCrosshairRingSelf() {
-        assertSelfMatchAtLeast(ReferenceId.BICOLOUR_CROSSHAIR_RING,
-                multiColourScene(ReferenceId.BICOLOUR_CROSSHAIR_RING), 68.0);
+        assertSelfMatch(ReferenceId.BICOLOUR_CROSSHAIR_RING,
+                multiColourScene(ReferenceId.BICOLOUR_CROSSHAIR_RING));
     }
 
     @Test @Order(24) @DisplayName("BICOLOUR_CHEVRON_FILLED — bi-colour chevron on black")
@@ -332,8 +332,9 @@ class VectorMatchingTest {
     }
 
     @Test @Order(37) @DisplayName("Focused: BICOLOUR_CROSSHAIR_RING diagnostic")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
-                     reason = "Focused diagnostic for BICOLOUR_CROSSHAIR_RING (known challenging pattern)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Post-fix: ring is one unbroken CIRCLE contour, crosshair is one " +
+                              "CLOSED_CONCAVE_POLY. Diagnostic confirms clean cluster structure.")
     void focusedCrosshair() {
         runFocusedMultiColour(ReferenceId.BICOLOUR_CROSSHAIR_RING);
     }
@@ -365,6 +366,15 @@ class VectorMatchingTest {
         }
     }
 
+    /**
+     * Like {@link #assertSelfMatch} but uses {@code minScore} as the score floor
+     * instead of the default 70 % gate from {@link MatchReportLibrary#isDetectionPass}.
+     * The IoU gate (0.90 – 1.10) is still applied.
+     *
+     * <p>Use this for PARTIAL-band shapes whose self-match score is documented to be
+     * below 70 % (e.g. BICOLOUR_CROSSHAIR_RING ~69.7 %) so the assertion honours the
+     * conservative threshold set in the test without incorrectly requiring 70 %.
+     */
     private void assertSelfMatchAtLeast(ReferenceId refId, Mat sceneMat, double minScore) {
         Rect gt  = MatchDiagnosticLibrary.groundTruthRect(sceneMat);
         Mat ref  = ReferenceImageFactory.build(refId);
@@ -373,9 +383,10 @@ class VectorMatchingTest {
             double score = record("Self-match", refId.name(), refId.name(),
                     refId.name() + " (own)", sceneMat, run, gt);
             double iou = normalIou(run, gt);
-            assertTrue(MatchReportLibrary.isDetectionPass(score, iou),
+            boolean pass = !Double.isNaN(iou) && iou > 0.90 && iou < 1.10 && score >= minScore;
+            assertTrue(pass,
                     refId.name() + " self-match got " + String.format("%.1f", score) + "%"
-                            + " (need score > 70 and 0.9 < IoU < 1.1; IoU="
+                            + " (need score >= " + minScore + " and 0.9 < IoU < 1.1; IoU="
                             + (Double.isNaN(iou) ? "NaN" : String.format("%.2f", iou)) + ")");
         } finally {
             ref.release();
@@ -1282,9 +1293,9 @@ class VectorMatchingTest {
     @Test @Order(313)
     @DisplayName("Diagnostic focused: BICOLOUR_CROSSHAIR_RING on own scene")
     @ExpectedOutcome(
-        value  = ExpectedOutcome.Result.PARTIAL,
-        reason = "Score ~89.7% — marginally below the 90% target. Crosshair cluster is " +
-                 "COMPOUND type and its SegmentDescriptor has higher variance across scales.")
+        value  = ExpectedOutcome.Result.PASS,
+        reason = "Post-fix: ring is one unbroken CIRCLE contour, crosshair is one CLOSED_CONCAVE_POLY. " +
+                 "Score and IoU both expected to be high after drawing correction.")
     void focusedBicolourCrosshairRing() { runFocusedMultiColour(ReferenceId.BICOLOUR_CROSSHAIR_RING); }
 
     @Test @Order(314)

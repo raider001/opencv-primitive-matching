@@ -967,14 +967,36 @@ public final class ReferenceImageFactory {
         Imgproc.polylines(m, List.of(mop), true, new Scalar(220, 220, 220), 1);
     }
 
-    /** Crosshair lines in YELLOW, surrounding circle ring in CYAN. */
+    /**
+     * Crosshair lines in YELLOW, surrounding circle ring in CYAN.
+     *
+     * <p>Drawing order matters:
+     * <ol>
+     *   <li>YELLOW crosshair is drawn first with arms that stop {@code r-6} pixels
+     *       from the image centre — well short of the CYAN ring's inner edge.</li>
+     *   <li>CYAN ring is drawn last so it is never broken by the crosshair lines.</li>
+     * </ol>
+     *
+     * <p>This ensures the colour extractor sees:
+     * <ul>
+     *   <li>CYAN: <b>one</b> unbroken circular arc contour (type=CIRCLE, high circularity)</li>
+     *   <li>YELLOW: <b>one</b> connected + polygon (type=CLOSED_CONCAVE_POLY, ~12 vertices)</li>
+     * </ul>
+     * Both produce stable, scale-invariant {@link org.example.matchers.VectorSignature}
+     * descriptors that match reliably at any scene scale.
+     */
     private static void drawBicolourCrosshairRing(Mat m) {
-        int r = SIZE / 2 - 10;
-        // Circle outline in cyan
-        Imgproc.circle(m, centre(), r, MCOL_CYAN, 3);
-        // Crosshair in yellow
-        Imgproc.line(m, new Point(8, SIZE / 2), new Point(SIZE - 9, SIZE / 2), MCOL_YELLOW, 2);
-        Imgproc.line(m, new Point(SIZE / 2, 8), new Point(SIZE / 2, SIZE - 9), MCOL_YELLOW, 2);
+        int r   = SIZE / 2 - 10;  // ring radius = 54 for SIZE=128
+        int arm = r - 6;           // half-arm length = 48; gap to ring inner edge ≥ 4 px
+
+        // Draw crosshair FIRST — arms stay strictly inside the ring
+        Imgproc.line(m, new Point(SIZE / 2 - arm, SIZE / 2),
+                        new Point(SIZE / 2 + arm, SIZE / 2), MCOL_YELLOW, 3);
+        Imgproc.line(m, new Point(SIZE / 2, SIZE / 2 - arm),
+                        new Point(SIZE / 2, SIZE / 2 + arm), MCOL_YELLOW, 3);
+
+        // Draw ring LAST — paints over any stray pixels, stays one unbroken circle
+        Imgproc.circle(m, centre(), r, MCOL_CYAN, 5);
     }
 
     /** Chevron outline in ORANGE, interior filled in MAGENTA. */

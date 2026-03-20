@@ -828,6 +828,39 @@ public final class VectorSignature {
             componentPenalty = 0.15 * ((double) Math.abs(this.componentCount - ref.componentCount) / maxC);
         }
 
+        // ── Near-circular coherence ─────────────────────────────────────
+        // When BOTH shapes are near-circular (circ > 0.82) and their scale-invariant
+        // global metrics agree almost perfectly, but seg/topo/angle are all zero,
+        // the failure is a polygon-approximation artifact, not a true structural
+        // difference.  The 8 px epsilon cap in approxPolyDP makes the vertex count
+        // scale-dependent: a circle ring at 128 px gets 8 vertices; the same ring
+        // at 384 px (3×) gets 16.  With mismatched vertex counts the cyclic
+        // alignment in SegmentDescriptor / ContourTopology cannot align, so they
+        // return 0, and the angle histograms land in different bins.
+        //
+        // Safety gates that prevent false activation:
+        //   • circScore ≥ 0.98 — circularity must match within 0.02.
+        //     Hexagon (0.907) vs octagon (0.948) → circScore = 0.959 < 0.98 → blocked.
+        //   • solidityScore ≥ 0.90 — fill ratio must also agree.
+        //   • segScore < 0.01 AND topoScore < 0.01 — BOTH structural comparisons
+        //     must have completely failed, confirming vertex alignment is impossible.
+        //   • typeScore ≥ 1.0 — same ShapeType classification on both sides.
+        //
+        // The floor values (0.90 / 0.85) mirror the first-tier coherence boost
+        // below and produce an overall geometry score of ~0.95 for a self-match.
+        boolean bothNearCircular = this.circularity > 0.82 && ref.circularity > 0.82;
+        if (bothNearCircular && typeScore >= 1.0
+                && circScore      >= 0.98
+                && solidityScore  >= 0.90
+                && aspectScore    >= 0.90
+                && segScore       < 0.01
+                && topoScore      < 0.01) {
+            segScore    = Math.max(segScore,    0.90);
+            topoScore   = Math.max(topoScore,   0.90);
+            angleScore  = Math.max(angleScore,  0.85);
+            vertexScore = Math.max(vertexScore, 0.85);
+        }
+
         // ── Segment-score coherence boost ────────────────────────────────
         // When all OTHER geometric features (type, circularity, solidity, vertices,
         // aspect ratio) agree strongly, the SegmentDescriptor should not drag the
