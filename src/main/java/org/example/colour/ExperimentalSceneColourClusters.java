@@ -521,14 +521,18 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
      *
      * <p>New approach:</p>
      * <ol>
-     *   <li>{@code morphologyEx} (MORPH_CLOSE) — unchanged, 1 native call.</li>
-     *   <li>{@code connectedComponents} on healed mask — unchanged, 1 native call.</li>
+     *   <li>{@code connectedComponents} on raw mask first — cheap linear scan.</li>
+     *   <li>{@code morphologyEx} (MORPH_CLOSE) <em>only</em> when raw component
+     *       count &gt; 2, i.e. when healing may actually merge disconnected regions.
+     *       Single-component clusters skip closing entirely.</li>
+     *   <li>{@code connectedComponents} on healed mask (only if healing ran).</li>
      *   <li>Two bulk reads: {@code labels32.get()} + {@code rawMask.get()} — 2 JNI calls.</li>
      *   <li>One Java loop over all pixels: builds every component's {@code byte[]}
      *       mask and pixel count simultaneously.</li>
      *   <li>One {@code Mat.put()} per valid component — plain memcpy, no per-pixel work.</li>
      * </ol>
-     * Total native work is now {@code O(W×H)} independent of component count K.
+     * Total native work is now {@code O(W×H)} independent of component count K,
+     * and the expensive closing kernel is skipped for already-connected clusters.
      */
     private static List<ColourCluster> splitSpatially(
             Mat rawMask, double hue, boolean achromatic, boolean bright,
@@ -536,18 +540,33 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
 
         int rows = rawMask.rows(), cols = rawMask.cols(), n = rows * cols;
 
-        // ── 1. Auto-heal ─────────────────────────────────────────────────────
-        Mat healed = new Mat();
-        Imgproc.morphologyEx(rawMask, healed, Imgproc.MORPH_CLOSE, healKernel);
-
-        // ── 2. Connected-component labelling (CV_32SC1, label 0 = background) ─
+        // ── 1. Fast-path: check raw component count before paying for MORPH_CLOSE ─
+        // connectedComponents is cheap (single linear scan); MORPH_CLOSE with a
+        // 17×17 kernel is expensive. If the raw mask is already a single connected
+        // region (numComponents == 2: background label 0 + one foreground label),
+        // healing cannot produce a different split — skip it entirely.
         Mat labels32 = new Mat();
-        int numComponents = Imgproc.connectedComponents(healed, labels32);
-        healed.release();
+        int numComponents = Imgproc.connectedComponents(rawMask, labels32);
 
         if (numComponents <= 1) {
             labels32.release();
             return Collections.emptyList();
+        }
+
+        // ── 2. Auto-heal only when multiple raw components exist ──────────────
+        // Healing bridges small gaps (anti-aliasing, thin separations) that
+        // cause a logically single region to appear as multiple raw components.
+        if (numComponents > 2) {
+            Mat healed = new Mat();
+            Imgproc.morphologyEx(rawMask, healed, Imgproc.MORPH_CLOSE, healKernel);
+            labels32.release();
+            labels32 = new Mat();
+            numComponents = Imgproc.connectedComponents(healed, labels32);
+            healed.release();
+            if (numComponents <= 1) {
+                labels32.release();
+                return Collections.emptyList();
+            }
         }
 
         // ── 3. Bulk read — 2 JNI calls replace K×(inRange+bitwise_and+countNonZero) ──
