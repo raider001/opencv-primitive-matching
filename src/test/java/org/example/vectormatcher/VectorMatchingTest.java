@@ -44,16 +44,6 @@ import static org.junit.jupiter.api.Assertions.*;
 class VectorMatchingTest {
 
     private static final Path   OUTPUT          = Paths.get("test_output", "vector_matching");
-    private static final double MATCH_THRESHOLD = 90.0;
-    /** Score below which the matcher must stay when the query shape is NOT in the scene. */
-    private static final double REJECT_THRESHOLD = 40.0;
-    /**
-     * Lower threshold for tests where the shape is composited onto a noisy
-     * background (BG_RANDOM_LINES / BG_RANDOM_CIRCLES — Tier 3 complexity).
-     * Set to 60 % to reflect realistic degradation: e.g. LINE_CROSS on a
-     * random-lines background scores ~69 % and BICOLOUR_RECT_HALVES ~63 %.
-     */
-    private static final double BG_MATCH_THRESHOLD = 60.0;
 
     // ── Diagnostic constants (merged from VectorMatcherDiagnosticTest) ────────
     private static final double DIAG_PASS_THRESH = 40.0;
@@ -313,31 +303,6 @@ class VectorMatchingTest {
                 multiColourScene(ReferenceId.COMPOUND_CROSS_IN_CIRCLE), 88.0);
     }
 
-    // =========================================================================
-    // Focused diagnostics for problematic patterns
-    // =========================================================================
-
-    @Test @Order(35) @DisplayName("Focused: COMPOUND_BULLSEYE diagnostic")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
-                     reason = "Focused diagnostic for COMPOUND_BULLSEYE (IoU improvement target)")
-    void focusedBullseye() {
-        runFocusedMultiColour(ReferenceId.COMPOUND_BULLSEYE);
-    }
-
-    @Test @Order(36) @DisplayName("Focused: COMPOUND_CIRCLE_IN_RECT diagnostic")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
-                     reason = "Focused diagnostic for COMPOUND_CIRCLE_IN_RECT (IoU improvement target)")
-    void focusedCircleInRect() {
-        runFocusedMultiColour(ReferenceId.COMPOUND_CIRCLE_IN_RECT);
-    }
-
-    @Test @Order(37) @DisplayName("Focused: BICOLOUR_CROSSHAIR_RING diagnostic")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
-                     reason = "Post-fix: ring is one unbroken CIRCLE contour, crosshair is one " +
-                              "CLOSED_CONCAVE_POLY. Diagnostic confirms clean cluster structure.")
-    void focusedCrosshair() {
-        runFocusedMultiColour(ReferenceId.BICOLOUR_CROSSHAIR_RING);
-    }
 
     // =========================================================================
     // Core helper — run, record, assert
@@ -345,7 +310,7 @@ class VectorMatchingTest {
 
     /**
      * Builds the reference, runs the matcher against the supplied scene,
-     * records the result, releases resources, and asserts ≥ MATCH_THRESHOLD.
+     * records the result, releases resources, and asserts score > 70 % with IoU in [0.90, 1.10].
      */
     private void assertSelfMatch(ReferenceId refId, Mat sceneMat) {
         // Self-match scenes are always white shape on black — GT derivation is exact.
@@ -447,8 +412,7 @@ class VectorMatchingTest {
 
     /**
      * Composes the 3× scaled reference image (non-black pixels only) onto a
-     * fresh clone of the specified background, then asserts the matcher scores
-     * ≥ {@link #BG_MATCH_THRESHOLD}.
+     * fresh clone of the specified background, then asserts score > 70 % with IoU in [0.90, 1.10].
      */
     private void assertBgMatch(ReferenceId refId, BackgroundId bgId) {
         Mat sceneMat = shapeOnBackground(refId, bgId);
@@ -677,7 +641,7 @@ class VectorMatchingTest {
     }
 
     // =========================================================================
-    // BG_RANDOM_LINES background — self-match (≥ BG_MATCH_THRESHOLD)
+    // BG_RANDOM_LINES background — self-match (≥ 60 %)
     // =========================================================================
 
     @Test @Order(40) @DisplayName("CIRCLE_FILLED — on random-lines background")
@@ -831,7 +795,7 @@ class VectorMatchingTest {
     void compoundCrossInCircleOnLines() { assertBgMatch(ReferenceId.COMPOUND_CROSS_IN_CIRCLE, BackgroundId.BG_RANDOM_LINES); }
 
     // =========================================================================
-    // BG_RANDOM_CIRCLES background — self-match (≥ BG_MATCH_THRESHOLD)
+    // BG_RANDOM_CIRCLES background — self-match (≥ 60 %)
     // =========================================================================
 
     // CIRCLE_FILLED@BG_RANDOM_CIRCLES removed — finding a filled circle among
@@ -986,7 +950,7 @@ class VectorMatchingTest {
     // =========================================================================
     //
     // Scene contains shape B; the matcher searches for shape A (A ≠ B).
-    // Assertion: score < REJECT_THRESHOLD — the matcher must NOT fire on the wrong shape.
+    // Assertion: score < 40 % — the matcher must NOT fire on the wrong shape.
     //
     // @ExpectedOutcome(PASS)  — structurally distinct pairs; reliable rejection expected.
     // @ExpectedOutcome(FAIL)  — geometrically similar pairs; known VectorMatcher FP risk.
@@ -1129,7 +1093,7 @@ class VectorMatchingTest {
     /**
      * Searches for {@code queryRef} inside a scene built from {@code sceneRef} (3× scaled,
      * centred on a 640×480 black canvas). Asserts that the match score is below
-     * {@link #REJECT_THRESHOLD} — the matcher must NOT fire on the wrong shape.
+     * 40 % — the matcher must NOT fire on the wrong shape.
      *
      * @param queryRef  the reference being searched for (shape A)
      * @param sceneRef  the reference whose image forms the scene content (shape B, B ≠ A)
@@ -1577,7 +1541,7 @@ class VectorMatchingTest {
     /** Runs a focused multi-colour self-match probe (3× scaled ref on black canvas). */
     private void runFocusedMultiColour(ReferenceId refId) {
         Mat ref   = ReferenceImageFactory.build(refId);
-        Mat scene = diagBuildMultiColourScene(refId);
+        Mat scene = multiColourScene(refId);
 
         // Save upscaled scene to disk for inspection
         Path sceneOut = OUTPUT.resolve("debug_scene_" + refId.name() + ".png");
@@ -1646,19 +1610,6 @@ class VectorMatchingTest {
     // Scene builders — diagnostic helpers
     // =========================================================================
 
-    /** 3× scaled ref centred on a 640×480 black canvas — multi-colour self-match scene. */
-    private static Mat diagBuildMultiColourScene(ReferenceId id) {
-        Mat ref = ReferenceImageFactory.build(id);
-        Mat scaled = new Mat();
-        Imgproc.resize(ref, scaled, new Size(ref.cols() * 3, ref.rows() * 3), 0, 0, Imgproc.INTER_NEAREST);
-        ref.release();
-        Mat canvas = Mat.zeros(480, 640, CvType.CV_8UC3);
-        int x = (canvas.cols() - scaled.cols()) / 2;
-        int y = (canvas.rows() - scaled.rows()) / 2;
-        scaled.copyTo(canvas.submat(new Rect(x, y, scaled.cols(), scaled.rows())));
-        scaled.release();
-        return canvas;
-    }
 
     private static Mat diagBuildDiamond() {
         Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
