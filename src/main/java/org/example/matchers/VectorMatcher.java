@@ -410,13 +410,6 @@ public final class VectorMatcher {
                 // smallest (e.g. 2.88 → 3.0, dev=0.12; 1.83 → 2.0, dev=0.17).
                 // Half-step quantisation reflects natural scene scales used in this
                 // test suite (1×, 1.5×, 2×, 3×). Fallback: 3.0.
-                //
-                // Tie-break: among candidates with deviation within 0.05 of the best,
-                // prefer the LARGER scale.  When the anchor is an inner component of
-                // a compound shape, the matching outer ref contour gives a smaller
-                // scale, but the actual scene scale is larger.  The larger scale
-                // produces more generous expansion caps, allowing the bbox to cover
-                // the full compound shape extent.
                 double anchorDiag    = Math.hypot(anchorBbox.width, anchorBbox.height);
                 double estimatedScale = 3.0;
                 double bestRatioDev   = Double.MAX_VALUE;
@@ -428,13 +421,7 @@ public final class VectorMatcher {
                         double candidate = anchorDiag / rcDiag;
                         if (candidate < 1.0 || candidate > 8.0) continue;
                         double dev = Math.abs(candidate - Math.round(candidate * 2.0) / 2.0);
-                        if (dev < bestRatioDev - 0.05) {
-                            // Clearly better — take it
-                            bestRatioDev = dev; estimatedScale = candidate;
-                        } else if (dev <= bestRatioDev + 0.05 && candidate > estimatedScale) {
-                            // Similar deviation — prefer larger scale (safer for compound shapes)
-                            bestRatioDev = dev; estimatedScale = candidate;
-                        }
+                        if (dev < bestRatioDev) { bestRatioDev = dev; estimatedScale = candidate; }
                     }
                 }
                 estimatedScale = Math.min(8.0, Math.max(1.0, estimatedScale));
@@ -1333,6 +1320,26 @@ public final class VectorMatcher {
                         double candidateArea = (double) candidate.width * candidate.height;
                         if (candidateArea <= maxAllowedArea) {
                             expandedBbox = candidate;
+                        } else if (concentric) {
+                            // ── Tightly concentric override ────────────────────
+                            // When a same-cluster sibling is VERY precisely centered
+                            // on the anchor (center-to-center distance < 5% of
+                            // anchor diagonal), it is almost certainly an outer ring
+                            // of a compound shape (e.g. COMPOUND_BULLSEYE outer ring
+                            // when the anchor is the middle ring).
+                            //
+                            // The normal cap (based on estimated scale) can be too
+                            // tight when the scale estimation picks a ref contour
+                            // at the wrong nesting level.  Allow expansion up to
+                            // 3× the current bbox area for tightly concentric
+                            // siblings — generous enough for outer rings, but still
+                            // capped to prevent absorption of large background noise.
+                            double ancDiag = Math.hypot(expandedBbox.width, expandedBbox.height);
+                            double dist    = centreDist(expandedBbox, ceBb);
+                            if (dist <= ancDiag * 0.05
+                                    && candidateArea <= expandedArea * 3.0) {
+                                expandedBbox = candidate;
+                            }
                         }
                     }
                 }
