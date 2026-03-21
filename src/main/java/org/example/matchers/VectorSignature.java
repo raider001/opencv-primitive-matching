@@ -186,7 +186,7 @@ public final class VectorSignature {
         // isClosedCurve mismatch against the reference (built from a smooth mask
         // contour) and a segScore of 0.0.
         double rawPerim = Imgproc.arcLength(contour2f, true);
-        SegmentDescriptor rawSegDesc = SegmentDescriptor.build(contour, rawPerim);
+        SegmentDescriptor rawSegDesc = SegmentDescriptor.build(pts, rawPerim);
 
         // ── Step 2: ApproxPolyDP reduction for polygon-based metrics (vertex
         // count, circularity, solidity, type classification, topology).
@@ -361,13 +361,12 @@ public final class VectorSignature {
         double strictEps = Math.min(Math.max(0.01 * perimeter, 1.5), 6.0);
         MatOfPoint2f strictApprox = new MatOfPoint2f();
         Imgproc.approxPolyDP(contour2f, strictApprox, strictEps, true);
-        MatOfPoint strictContour = new MatOfPoint(strictApprox.toArray());
-        SegmentDescriptor segDesc = SegmentDescriptor.build(strictContour, perimeter);
+        Point[] strictPts = strictApprox.toArray();
+        SegmentDescriptor segDesc = SegmentDescriptor.build(strictPts, perimeter);
         strictApprox.release();
-        strictContour.release();
 
-        // Concavity ratio via convex hull
-        double concavityRatio = computeConcavityRatio(contour, perimeter);
+        // Concavity ratio via convex hull — reuse shared contour2f (OPT-H)
+        double concavityRatio = computeConcavityRatio(contour2f, perimeter);
 
         // Edge-length coefficient of variation (CV = stddev/mean) — scale invariant.
         // Uses a dedicated coarser epsilon (4% of perimeter, no 8px cap) so that
@@ -535,15 +534,17 @@ public final class VectorSignature {
      * non-monotonic.  We sanitise the contour with {@code approxPolyDP}
      * before computing defects — this collapses tiny loops and removes
      * self-intersections without materially changing the shape.</p>
+     *
+     * <p>OPT-H: accepts a shared {@code MatOfPoint2f} from the caller,
+     * avoiding a redundant {@code contour.toArray()} + {@code new MatOfPoint2f}
+     * allocation per call.</p>
      */
-    static double computeConcavityRatio(MatOfPoint contour, double perimeter) {
+    static double computeConcavityRatio(MatOfPoint2f contour2f, double perimeter) {
         try {
             // ── Sanitise: approxPolyDP removes self-intersections ────────
-            MatOfPoint2f raw2f = new MatOfPoint2f(contour.toArray());
             double eps = Math.max(1.0, 0.005 * perimeter);   // very light — just fix crossings
             MatOfPoint2f approxF = new MatOfPoint2f();
-            Imgproc.approxPolyDP(raw2f, approxF, eps, true);
-            raw2f.release();
+            Imgproc.approxPolyDP(contour2f, approxF, eps, true);
 
             MatOfPoint clean = new MatOfPoint();
             approxF.convertTo(clean, CvType.CV_32S);

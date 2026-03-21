@@ -127,10 +127,21 @@ public final class SegmentDescriptor {
     public static SegmentDescriptor build(MatOfPoint contour, double perimeter) {
         if (contour == null || contour.empty() || perimeter < 1.0)
             return empty();
+        return build(contour.toArray(), perimeter);
+    }
 
-        Point[] rawPts = contour.toArray();
+    /**
+     * Builds a {@code SegmentDescriptor} from pre-extracted contour points,
+     * avoiding a redundant {@code contour.toArray()} native→Java copy when the
+     * caller already holds the point array (OPT-J).
+     *
+     * @param rawPts    contour points (from {@code MatOfPoint.toArray()})
+     * @param perimeter arc-length of the closed contour
+     */
+    public static SegmentDescriptor build(Point[] rawPts, double perimeter) {
+        if (rawPts == null || rawPts.length < 3 || perimeter < 1.0)
+            return empty();
         int n = rawPts.length;
-        if (n < 3) return empty();
 
         // ── Densify sparse contours ───────────────────────────────────────
         // CHAIN_APPROX_SIMPLE compresses every straight side of a polygon to

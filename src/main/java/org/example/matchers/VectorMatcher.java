@@ -231,6 +231,12 @@ public final class VectorMatcher {
                 candidates = reExtractTopCandidates(candidates, scene, erosionDepth, descriptor);
             }
 
+            // ── OPT-R: Build signatures only for surviving candidates ───
+            // Deferred from collectSceneCandidates so contours eliminated by
+            // CC filter, global size filter, or re-extraction skip the expensive
+            // VectorSignature.buildFromContour work entirely.
+            candidates = buildSignatures(candidates, descriptor.sceneArea);
+
             // Scene diagonal — derived from combinedChromaticMask dimensions if available,
             // otherwise estimated from sceneArea (assumes roughly square scene).
             double sceneW, sceneH;
@@ -340,7 +346,7 @@ public final class VectorMatcher {
                 if (!skipped) {
                     // ── Score this candidate ──────────────────────────────────
                     score = scoreRegion(refClusters, refCount, primaryRef,
-                            matched, descriptor, regionBbox, allAchromatic);
+                            matched, descriptor, regionBbox, allAchromatic, sceneDiag);
                 }
 
                 if (VM_DEBUG) {
@@ -425,8 +431,8 @@ public final class VectorMatcher {
                 double estimatedScale = 3.0;
                 double bestRatioDev   = Double.MAX_VALUE;
                 for (RefCluster rc : refClusters) {
-                    for (MatOfPoint refContour : rc.contours) {
-                        Rect   rcBb      = Imgproc.boundingRect(refContour);
+                    for (int ri = 0; ri < rc.contours.size(); ri++) {
+                        Rect   rcBb      = rc.contourBboxes[ri];  // OPT-E: cached
                         double rcDiag    = Math.hypot(rcBb.width, rcBb.height);
                         if (rcDiag < 6.0) continue;
                         double candidate = anchorDiag / rcDiag;
@@ -602,6 +608,7 @@ public final class VectorMatcher {
      * @param descriptor   scene descriptor (for Fix B contamination)
      * @param regionBbox   candidate bounding box
      * @param allAchromatic true when every ref cluster is achromatic (pre-computed)
+     * @param sceneDiag     scene diagonal length (pre-computed, OPT-I)
      */
     private static double scoreRegion(List<RefCluster> refClusters,
                                       int refCount,
@@ -609,7 +616,8 @@ public final class VectorMatcher {
                                       List<SceneContourEntry> matched,
                                       SceneDescriptor descriptor,
                                       Rect regionBbox,
-                                      boolean allAchromatic) {
+                                      boolean allAchromatic,
+                                      double sceneDiag) {
 
         // ── Layer 1: boundary count ───────────────────────────────────────
         int matchedCount = matched.size();
@@ -640,12 +648,6 @@ public final class VectorMatcher {
         }
 
         // ── Layer 2: structural coherence ────────────────────────────────
-        double sceneW = descriptor.combinedChromaticMask != null
-                ? descriptor.combinedChromaticMask.cols() : Math.sqrt(descriptor.sceneArea);
-        double sceneH = descriptor.combinedChromaticMask != null
-                ? descriptor.combinedChromaticMask.rows() : Math.sqrt(descriptor.sceneArea);
-        double sceneDiag = Math.sqrt(sceneW * sceneW + sceneH * sceneH);
-
         double sumContrib  = 0.0;
         double sumWeights  = 0.0;
 
@@ -969,6 +971,10 @@ public final class VectorMatcher {
         final double  maxContourArea;
         /** Bounding rect of the primary (largest-area) contour — cached. */
         final Rect    primaryBbox;
+        /** Bounding rects for ALL contours — cached (OPT-E). */
+        final Rect[]  contourBboxes;
+        /** Cached maxContourArea / imageArea — avoids redundant division (OPT-S). */
+        final double  cachedRefFraction;
 
         private VectorSignature cachedSig = null;
 
@@ -979,15 +985,20 @@ public final class VectorMatcher {
             this.brightAchromatic = brightAchromatic;
             this.contours         = contours;
             this.imageArea        = imageArea;
-            // Pre-compute max contour area and primary bbox in one pass
+            // Pre-compute all contour areas and bounding rects in one pass (OPT-E)
+            int size = contours.size();
+            this.contourBboxes = new Rect[size];
             double bestArea = 0.0;
-            MatOfPoint primary = contours.get(0);
-            for (MatOfPoint c : contours) {
+            int primaryIdx = 0;
+            for (int i = 0; i < size; i++) {
+                MatOfPoint c = contours.get(i);
                 double a = Imgproc.contourArea(c);
-                if (a > bestArea) { bestArea = a; primary = c; }
+                contourBboxes[i] = Imgproc.boundingRect(c);
+                if (a > bestArea) { bestArea = a; primaryIdx = i; }
             }
-            this.maxContourArea = bestArea;
-            this.primaryBbox    = Imgproc.boundingRect(primary);
+            this.maxContourArea    = bestArea;
+            this.primaryBbox       = contourBboxes[primaryIdx];
+            this.cachedRefFraction = (imageArea > 0) ? maxContourArea / imageArea : 0.0;
         }
 
         /** Returns the best (highest solidity) VectorSignature at fixed epsilon. */
@@ -1010,7 +1021,7 @@ public final class VectorMatcher {
 
         /** Fraction of ref image area occupied by this cluster's primary contour. */
         double refFraction() {
-            return (imageArea > 0) ? maxContourArea / imageArea : 0.0;
+            return cachedRefFraction;
         }
 
         void release() { for (MatOfPoint c : contours) c.release(); }
@@ -1046,12 +1057,29 @@ public final class VectorMatcher {
                 if (bbArea > descriptor.sceneArea * 0.50) continue;
 
                 double cArea = Imgproc.contourArea(c);
-                VectorSignature sig = VectorSignature.buildFromContour(c, EPSILON, descriptor.sceneArea);
+                // OPT-R: defer VectorSignature build until after filtering stages
                 out.add(new SceneContourEntry(c, ci, cc.achromatic, cc.brightAchromatic,
-                        cc.hue, sig, bb, cArea));
+                        cc.hue, null, bb, cArea));
             }
         }
         return out;
+    }
+
+    /**
+     * OPT-R: Builds VectorSignatures for entries that don't have one yet.
+     * Called after CC filter + global size filter so that eliminated contours
+     * skip the expensive buildFromContour work entirely.
+     */
+    private static List<SceneContourEntry> buildSignatures(
+            List<SceneContourEntry> entries, double sceneArea) {
+        List<SceneContourEntry> result = new ArrayList<>(entries.size());
+        for (SceneContourEntry ce : entries) {
+            if (ce.sig != null) { result.add(ce); continue; }
+            VectorSignature sig = VectorSignature.buildFromContour(ce.contour, EPSILON, sceneArea);
+            result.add(new SceneContourEntry(ce.contour, ce.clusterIdx, ce.achromatic,
+                    ce.brightAchromatic, ce.clusterHue, sig, ce.bbox, ce.area));
+        }
+        return result;
     }
 
     // =========================================================================
@@ -1112,7 +1140,7 @@ public final class VectorMatcher {
 
     /** Relative contour area of a ref cluster's primary contour vs ref image area. */
     private static double refFraction(RefCluster rc) {
-        return (rc.imageArea > 0) ? rc.maxContourArea / rc.imageArea : 0.0;
+        return rc.cachedRefFraction;
     }
 
     /** Relative contour area of a scene entry vs the current candidate bbox area. */
