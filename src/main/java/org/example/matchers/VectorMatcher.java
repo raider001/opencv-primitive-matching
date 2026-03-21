@@ -734,29 +734,56 @@ public final class VectorMatcher {
             // Both sides converge to π/4 for circles, 1.0 for rectangles, etc.
             // Using refImageArea for the ref denominator causes a systematic
             // mismatch (circle fills 30% of 128×128 image but 78.5% of its bbox).
+            //
+            // LINE_SEGMENT guard: when either the ref or scene contour has extreme
+            // aspect ratio (> 4:1), the axis-aligned bounding box is unreliable for
+            // coverage/scale comparison — a thin line rotated 45° has an AABB much
+            // larger than its actual extent.  Use contour area directly for scale
+            // comparison and skip covScore (which compares fill fractions).
             Rect   refBb        = primaryBbox(rc);
             double refBbArea    = Math.max(1.0, (double) refBb.width * refBb.height);
             double entryBbArea  = Math.max(1.0, (double) entryBb.width * entryBb.height);
-            double refFrac      = rc.maxContourArea / refBbArea;
-            double sceneFrac    = entry.area / entryBbArea;
-            double covScore     = 1.0 - Math.min(1.0,
-                    Math.abs(refFrac - sceneFrac) / Math.max(refFrac, 0.01));
 
-            // Absolute scale check: penalize when bbox sizes differ significantly.
-            // Even if shapes are geometrically similar (diamond vs rotated rect),
-            // extreme scale differences may indicate wrong match.
-            // Uses square-root ratio to account for area growing quadratically.
-            // Expected scale: scene is typically 3x scaled from 128x128 ref → ratio ≈ 3.0
-            double refBboxDim   = Math.sqrt(refBbArea);
-            double sceneBboxDim = Math.sqrt(entryBbArea);
-            double sizeRatio    = sceneBboxDim / Math.max(refBboxDim, 1.0);
-            double scaleScore   = 1.0;
-            if (sizeRatio > 6.0 || sizeRatio < (1.0/6.0)) {
-                // Extreme scale mismatch (>6x or <1/6x) — hard penalty
-                scaleScore = 0.25;
-            } else if (sizeRatio > 4.5 || sizeRatio < (1.0/4.5)) {
-                // Large scale mismatch (4.5x-6x or 1/4.5x-1/6x) — moderate penalty
-                scaleScore = 0.70;
+            double refBbAR      = Math.max(refBb.width, refBb.height)
+                                / Math.max(1.0, Math.min(refBb.width, refBb.height));
+            double entryBbAR    = Math.max(entryBb.width, entryBb.height)
+                                / Math.max(1.0, Math.min(entryBb.width, entryBb.height));
+            boolean lineSegLike = refBbAR > 4.0 || entryBbAR > 4.0;
+
+            double covScore;
+            double scaleScore = 1.0;
+
+            if (lineSegLike) {
+                // For LINE_SEGMENT-like shapes: use contour area ratio for scale.
+                // AABB-based coverage is meaningless for rotated thin shapes.
+                covScore = 1.0;   // skip — contour fill ratio varies with rotation
+                double refArea2   = Math.max(1.0, rc.maxContourArea);
+                double sceneArea2 = Math.max(1.0, entry.area);
+                double areaSizeRatio = Math.sqrt(sceneArea2 / refArea2);
+                if (areaSizeRatio > 6.0 || areaSizeRatio < (1.0/6.0)) {
+                    scaleScore = 0.25;
+                } else if (areaSizeRatio > 4.5 || areaSizeRatio < (1.0/4.5)) {
+                    scaleScore = 0.70;
+                }
+            } else {
+                double refFrac   = rc.maxContourArea / refBbArea;
+                double sceneFrac = entry.area / entryBbArea;
+                covScore  = 1.0 - Math.min(1.0,
+                        Math.abs(refFrac - sceneFrac) / Math.max(refFrac, 0.01));
+
+                // Absolute scale check: penalize when bbox sizes differ significantly.
+                // Even if shapes are geometrically similar (diamond vs rotated rect),
+                // extreme scale differences may indicate wrong match.
+                // Uses square-root ratio to account for area growing quadratically.
+                // Expected scale: scene is typically 3x scaled from 128x128 ref → ratio ≈ 3.0
+                double refBboxDim   = Math.sqrt(refBbArea);
+                double sceneBboxDim = Math.sqrt(entryBbArea);
+                double sizeRatio    = sceneBboxDim / Math.max(refBboxDim, 1.0);
+                if (sizeRatio > 6.0 || sizeRatio < (1.0/6.0)) {
+                    scaleScore = 0.25;
+                } else if (sizeRatio > 4.5 || sizeRatio < (1.0/4.5)) {
+                    scaleScore = 0.70;
+                }
             }
 
             sumContrib += weight * (proxScore * 0.40 + covScore * 0.40 + scaleScore * 0.20);
@@ -1120,10 +1147,15 @@ public final class VectorMatcher {
             if (cc.envelope) continue;
 
             for (MatOfPoint c : cc.contours) {
-                // Skip contours that span > 50% of scene — background fills or noise merges
+                // Skip contours that span > 80% of scene — background fills or noise merges.
+                // The previous 50% threshold was too aggressive: shapes rotated 45° (e.g.
+                // RECT_SQUARE, LINE_X) can have AABB area of 55–75% of scene area even
+                // though their contour area is much smaller.  VectorSignature.similarity()
+                // already caps near-full-image contours (normalisedArea > 0.80) at 0.25,
+                // providing a secondary guard against background fills.
                 Rect   bb     = Imgproc.boundingRect(c);
                 double bbArea = (double) bb.width * bb.height;
-                if (bbArea > descriptor.sceneArea * 0.50) continue;
+                if (bbArea > descriptor.sceneArea * 0.80) continue;
 
                 double cArea = Imgproc.contourArea(c);
                 // OPT-R: defer VectorSignature build until after filtering stages

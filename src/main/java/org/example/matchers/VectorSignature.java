@@ -235,6 +235,19 @@ public final class VectorSignature {
             finalType = ShapeType.CIRCLE;
         }
 
+        // Fallback: large filled circles compressed by CHAIN_APPROX_SIMPLE produce
+        // polygon-like contours where isClosedCurve = false, but the shape is
+        // structurally a circle.  Circularity ≥ 0.96 is above octagon (≈0.948) and
+        // heptagon (≈0.930) but catches 16+-sided regular polygons (≈0.97+) that are
+        // really circles at rendering resolution.  Without this, such circles are
+        // classified as CLOSED_CONVEX_POLY and the cross-type hard gate between
+        // RECT/TRIANGLE and CIRCLE never fires, inflating false-match scores.
+        if (finalType != ShapeType.CIRCLE
+                && sig.circularity >= 0.96
+                && sig.solidity > 0.80) {
+            finalType = ShapeType.CIRCLE;
+        }
+
         return new VectorSignature(
                 finalType, sig.vertexCount, sig.circularity, sig.concavityRatio,
                 sig.angleHistogram, sig.componentCount, sig.aspectRatio,
@@ -402,6 +415,13 @@ public final class VectorSignature {
                     && !segDesc.isClosedCurve
                     && !segDesc.segments.isEmpty();
             type = hasStarightSegs ? ShapeType.CLOSED_CONVEX_POLY : ShapeType.CIRCLE;
+
+            // Fallback: if circularity is very high (≥ 0.96, above octagon/heptagon)
+            // and shape is filled, treat as CIRCLE regardless of SegmentDescriptor.
+            // Mirrors the identical guard in buildFromContour — see rationale there.
+            if (type != ShapeType.CIRCLE && circularity >= 0.96 && solidity > 0.80) {
+                type = ShapeType.CIRCLE;
+            }
         } else if (concavityRatio >= 0.08) {
             type = ShapeType.CLOSED_CONCAVE_POLY;
         } else {
@@ -847,27 +867,87 @@ public final class VectorSignature {
         double vertexMultiplier = 1.0;
         if (this.type == ShapeType.CLOSED_CONVEX_POLY && ref.type == ShapeType.CLOSED_CONVEX_POLY
                 && this.vertexCount > 0 && ref.vertexCount > 0
-                && this.vertexCount != ref.vertexCount
-                // Guard 1: only canonical small polygons — ellipses/circles approximated as
-                // 12–20-vertex polygons have inherent approximation noise across scale/threshold
-                // changes; applying the penalty there breaks legitimate self-matches.
-                && Math.max(this.vertexCount, ref.vertexCount) <= 10
-                // Guard 2: ±1 vertex tolerance — polygon approximation commonly adds or
-                // drops a single vertex due to staircase rasterization of rotated edges.
-                // For low-vertex shapes (triangle 3→4, rect 4→5) the relative gap is
-                // large (25–33 %) but the structural difference is noise, not genuine.
-                // Skip the penalty when |diff| = 1; genuine polygon-order mismatches
-                // always differ by ≥ 2 vertices (triangle↔pentagon, rect↔hexagon).
-                && Math.abs(this.vertexCount - ref.vertexCount) >= 2
-                ) {
-            double vtxRatio = (double) Math.min(this.vertexCount, ref.vertexCount)
-                            / (double) Math.max(this.vertexCount, ref.vertexCount);
-            if (vtxRatio <= 0.80) {
-                vertexMultiplier = Math.pow(vtxRatio, 2.5);
+                && this.vertexCount != ref.vertexCount) {
+
+            // ── Thin/arc shape guard ──────────────────────────────────────
+            // Shapes with very low circularity (< 0.15) and low solidity (< 0.30) are
+            // thin open shapes (arcs, crescents, thin strokes) where the polygon vertex
+            // count from approxPolyDP varies wildly with scale (e.g. ref=8 vs scene=16
+            // for ARC_HALF at different resolutions).  The vertex count is NOT a stable
+            // structural feature for these shapes — skip the multiplier entirely.
+            boolean bothThinOpen = this.circularity < 0.15 && ref.circularity < 0.15
+                                && this.solidity < 0.30 && ref.solidity < 0.30;
+
+            // ── Outline shape guard ───────────────────────────────────────
+            // Outline shapes (solidity < 0.30) with high vertex count (≥ 6) commonly
+            // gain/lose 1 vertex from rasterization noise at different scales/rotations.
+            // Use ±2 tolerance instead of ±1 for these shapes.
+            boolean bothOutline = this.solidity < 0.30 && ref.solidity < 0.30;
+
+            if (bothThinOpen) {
+                // Skip vertex multiplier for thin/open shapes — vertex count is
+                // scale-dependent, not structurally meaningful.
+                vertexMultiplier = 1.0;
                 if (VM_DEBUG) {
-                    System.out.printf("[VTXMULT-GATE] type=%s/%s vtx=%d/%d ratio=%.3f mult=%.3f%n",
-                        this.type, ref.type, this.vertexCount, ref.vertexCount,
-                        vtxRatio, vertexMultiplier);
+                    System.out.printf("[VTXMULT-SKIP-THIN] vtx=%d/%d circ=%.3f/%.3f solid=%.3f/%.3f%n",
+                        this.vertexCount, ref.vertexCount,
+                        this.circularity, ref.circularity,
+                        this.solidity, ref.solidity);
+                }
+            } else {
+                double vtxRatio = (double) Math.min(this.vertexCount, ref.vertexCount)
+                                / (double) Math.max(this.vertexCount, ref.vertexCount);
+
+                // Path A: canonical small polygons (max ≤ 10)
+                // ±1 tolerance for low-vertex FILLED shapes where staircase rasterization
+                // commonly adds/drops a vertex.  For min ≥ 6 (hexagon+) on FILLED shapes,
+                // a 1-vertex diff is structurally meaningful (hexagon ≠ heptagon).
+                // Outline shapes (solidity < 0.30) get ±2 tolerance because thin contours
+                // are more susceptible to rasterization noise at rotated angles.
+                //
+                // Mild penalty path: when the vertex difference is exactly 1 for high-vertex
+                // shapes (min ≥ 6), a small 10% penalty (0.90) is applied instead of the
+                // severe vtxRatio^2.5 penalty.  A single vertex noise from rasterization at
+                // rotated angles (e.g. hexagon → 7 vertices at 45°) should not crush the score
+                // by 30%+.  Genuine cross-shape mismatches (hexagon vs heptagon) are caught
+                // by angle histogram and segment descriptor differences.
+                int minDiff;
+                if (bothOutline) {
+                    minDiff = 2;   // outlines: ±1 vertex noise from rasterization at rotation
+                } else {
+                    minDiff = (Math.min(this.vertexCount, ref.vertexCount) >= 6) ? 1 : 2;
+                }
+                if (Math.max(this.vertexCount, ref.vertexCount) <= 10
+                        && Math.abs(this.vertexCount - ref.vertexCount) >= minDiff
+                        && vtxRatio <= 0.90) {
+                    // Mild penalty for exactly ±1 vertex difference on high-vertex shapes:
+                    // rasterization noise at rotated angles commonly adds/drops 1 vertex.
+                    if (Math.abs(this.vertexCount - ref.vertexCount) == 1
+                            && Math.min(this.vertexCount, ref.vertexCount) >= 5) {
+                        vertexMultiplier = 0.90;
+                    } else {
+                        vertexMultiplier = Math.pow(vtxRatio, 2.5);
+                    }
+                    if (VM_DEBUG) {
+                        System.out.printf("[VTXMULT-GATE] type=%s/%s vtx=%d/%d ratio=%.3f mult=%.3f%n",
+                            this.type, ref.type, this.vertexCount, ref.vertexCount,
+                            vtxRatio, vertexMultiplier);
+                    }
+                }
+                // Path B: large vertex-count difference regardless of max
+                // Catches shapes like rectangle (4 vtx) vs circle-as-polygon (16 vtx)
+                // where the ≤10 guard in Path A doesn't fire.  A 2:1+ ratio indicates
+                // genuinely different polygon families, not approximation noise.
+                //
+                // Guard: skip for thin/open shapes (both circularity < 0.15) where vertex
+                // count is scale-dependent (ARC_HALF ref=8 vs scene=16 at different scales).
+                else if (vtxRatio <= 0.50) {
+                    vertexMultiplier = Math.pow(vtxRatio, 1.5);
+                    if (VM_DEBUG) {
+                        System.out.printf("[VTXMULT-GATE-B] type=%s/%s vtx=%d/%d ratio=%.3f mult=%.3f%n",
+                            this.type, ref.type, this.vertexCount, ref.vertexCount,
+                            vtxRatio, vertexMultiplier);
+                    }
                 }
             }
         }
@@ -980,6 +1060,47 @@ public final class VectorSignature {
                 && topoScore     <  0.10) {
             segScore  = Math.max(segScore,  0.70);
             topoScore = Math.max(topoScore, 0.70);
+        }
+
+        // ── Thin/open shape coherence boost ──────────────────────────────
+        // For thin open CLOSED_CONVEX_POLY shapes (arcs, crescents, thin strokes),
+        // both topo and angle are unreliable because:
+        //   • Topology depends on vertex alignment which varies with approxPolyDP
+        //     epsilon (scale-dependent: ref at 128px has eps=3.4, scene at 640px
+        //     has eps=6.0, producing different vertex sequences).
+        //   • Angle histograms diverge when vertex count differs (8 vs 16).
+        //
+        // When the reliable scale-invariant metrics agree (circularity, solidity,
+        // aspect ratio) and both structural descriptors have failed, floor topo and
+        // angle at conservative values.
+        //
+        // Safety gates:
+        //   • Both shapes have very low circularity (< 0.20) — only thin/crescent shapes
+        //   • circScore ≥ 0.90 — circularity must agree well
+        //   • solidityScore ≥ 0.85 — fill ratio must agree (relaxed from 0.90 for crescents)
+        //   • topoScore < 0.10 — topology must have completely failed
+        //
+        // Tier 1: strong agreement (aspectScore ≥ 0.80) — aggressive floor
+        // Tier 2: weaker AR agreement (aspectScore ≥ 0.60) — moderate floor
+        //   Covers rotated arcs where the bounding box proportions change.
+        boolean bothThinOpenPoly = (this.type == ShapeType.CLOSED_CONVEX_POLY || this.type == ShapeType.CLOSED_CONCAVE_POLY)
+                && (ref.type == ShapeType.CLOSED_CONVEX_POLY || ref.type == ShapeType.CLOSED_CONCAVE_POLY)
+                && this.circularity < 0.20 && ref.circularity < 0.20;
+        if (bothThinOpenPoly && typeScore >= 1.0
+                && circScore     >= 0.90
+                && solidityScore >= 0.85
+                && topoScore     <  0.10) {
+            if (aspectScore >= 0.80) {
+                // Tier 1: strong AR agreement — shape proportions match well
+                topoScore   = Math.max(topoScore,   0.75);
+                angleScore  = Math.max(angleScore,   0.60);
+                vertexScore = Math.max(vertexScore,  0.85);
+            } else if (aspectScore >= 0.60) {
+                // Tier 2: moderate AR agreement — rotated arc, proportions shifted
+                topoScore   = Math.max(topoScore,   0.55);
+                angleScore  = Math.max(angleScore,   0.40);
+                vertexScore = Math.max(vertexScore,  0.75);
+            }
         }
 
         // ── Near-circular coherence ─────────────────────────────────────

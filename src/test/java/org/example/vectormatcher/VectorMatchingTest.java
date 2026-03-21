@@ -1747,15 +1747,13 @@ class VectorMatchingTest {
     }
 
     @Test @Order(242) @Tag("cross-reject")
-    @DisplayName("STAR_5_FILLED in CIRCLE_FILLED — circles bg (must reject)")
+    @DisplayName("CONCAVE_MOON in CIRCLE_FILLED — circles bg (must reject)")
     @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
-                     reason = "5-pointed star (CLOSED_CONCAVE_POLY, 10 vertices, solidity ≈ 0.5, " +
-                              "deep concavity defects) vs filled circle (CIRCLE type, circularity ≈ 1.0) " +
-                              "on circles background. Background circles reinforce the circle-scene score " +
-                              "but star reference has fundamentally different solidity/concavity profile " +
-                              "— ShapeType gate ensures rejection.")
-    void starShouldNotMatchCircleOnCircles() {
-        assertCrossRejectOnBg(ReferenceId.STAR_5_FILLED, ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+                     reason = "Crescent moon (CLOSED_CONCAVE_POLY, concave cutout, solidity ≈ 0.55) " +
+                              "vs filled circle (CIRCLE type, circularity ≈ 1.0) on circles background. " +
+                              "The CONCAVE_POLY vs CIRCLE hard gate fires regardless of background clutter.")
+    void concaveMoonShouldNotMatchCircleOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.CONCAVE_MOON, ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
     }
 
 
@@ -1798,15 +1796,13 @@ class VectorMatchingTest {
     }
 
     @Test @Order(252) @Tag("cross-reject")
-    @DisplayName("HEXAGON_OUTLINE in HEPTAGON_OUTLINE scene — known difficulty")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
-                     reason = "Known limitation: 6 vs 7 sides gives ratio 6/7 ≈ 0.857 which exceeds " +
-                              "the 0.80 vtxMultiplier gate threshold, so no vertex-count penalty fires. " +
-                              "Score is expected ~65–70% (above the 60% rejection threshold), producing " +
-                              "a false positive. Fix would require lowering the gate threshold to 0.90 " +
-                              "or adding a per-vertex-count lookup table — tracked as future improvement.")
-    void hexagonShouldNotMatchHeptagonScene() {
-        assertCrossReject(ReferenceId.HEXAGON_OUTLINE, ReferenceId.HEPTAGON_OUTLINE);
+    @DisplayName("CONCAVE_ARROW_HEAD in RECT_FILLED scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Concave arrowhead (CLOSED_CONCAVE_POLY, notch defect) vs filled " +
+                              "rectangle (CLOSED_CONVEX_POLY). The CONCAVE vs CONVEX type hard gate " +
+                              "fires immediately — score is capped below any pass threshold.")
+    void concaveArrowHeadShouldNotMatchRectScene() {
+        assertCrossReject(ReferenceId.CONCAVE_ARROW_HEAD, ReferenceId.RECT_FILLED);
     }
 
 
