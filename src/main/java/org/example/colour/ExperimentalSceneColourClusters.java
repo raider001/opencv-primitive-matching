@@ -156,6 +156,28 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
         borderMask.get(0, 0, borderData);
         borderMask.release();
 
+        // ── Degenerate-case fallback ──────────────────────────────────────
+        // When the entire scene is chromatic (e.g. a coloured gradient that
+        // fills every pixel), the chromatic mask is all-255 and the morphological
+        // gradient produces signal only on the 1-pixel image edge — which the
+        // inner-pixel loop bounds [1, rows-1) × [1, cols-1) skip entirely.
+        // Result: zero border pixels → zero hue peaks → zero clusters.
+        //
+        // Detect this by counting non-zero border pixels in the interior.
+        // If fewer than MIN_PIXEL_COUNT survive, fall back to the full-pixel
+        // histogram path (borderData = null) so every interior pixel votes.
+        int borderCount = 0;
+        int rows = hsv.rows(), cols = hsv.cols();
+        for (int r = 1; r < rows - 1 && borderCount < MIN_PIXEL_COUNT; r++) {
+            int off = r * cols;
+            for (int c = 1; c < cols - 1 && borderCount < MIN_PIXEL_COUNT; c++) {
+                if ((borderData[off + c] & 0xFF) != 0) borderCount++;
+            }
+        }
+        if (borderCount < MIN_PIXEL_COUNT) {
+            borderData = null;  // full-pixel fallback
+        }
+
         List<ColourCluster> result = buildClustersOnePass(hsv, borderData, chromaticOut);
         hsv.release();
         return result;
