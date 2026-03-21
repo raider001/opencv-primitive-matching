@@ -844,28 +844,25 @@ public final class VectorSignature {
         //
         // Only applies to CLOSED_CONVEX_POLY pairs — circles, lines and open curves
         // have vertex counts that vary with approximation noise and must not be penalised.
-        //
-        // Two conditions trigger the gate:
-        //   (a) Small-polygon mismatch (≤10 vertices, ratio ≤ 0.80) — different polygon
-        //       orders, e.g. hexagon(6) vs octagon(8): ratio=0.75 → mult≈0.487.
-        //   (b) Extreme ratio (< 0.40) regardless of vertex count upper bound — the same
-        //       shape cannot have a 2.5:1+ vertex ratio across scale; e.g. rect(4) vs a
-        //       circle approximated as a 16-vertex polygon at scene scale: ratio=0.25.
-        //       Guard (1) ≤10 would miss this because max(4,16)=16 > 10.
         double vertexMultiplier = 1.0;
         if (this.type == ShapeType.CLOSED_CONVEX_POLY && ref.type == ShapeType.CLOSED_CONVEX_POLY
                 && this.vertexCount > 0 && ref.vertexCount > 0
                 && this.vertexCount != ref.vertexCount
-                // ±1 vertex tolerance — polygon approximation commonly adds or drops a single
-                // vertex due to staircase rasterization. Genuine mismatches always differ ≥ 2.
+                // Guard 1: only canonical small polygons — ellipses/circles approximated as
+                // 12–20-vertex polygons have inherent approximation noise across scale/threshold
+                // changes; applying the penalty there breaks legitimate self-matches.
+                && Math.max(this.vertexCount, ref.vertexCount) <= 10
+                // Guard 2: ±1 vertex tolerance — polygon approximation commonly adds or
+                // drops a single vertex due to staircase rasterization of rotated edges.
+                // For low-vertex shapes (triangle 3→4, rect 4→5) the relative gap is
+                // large (25–33 %) but the structural difference is noise, not genuine.
+                // Skip the penalty when |diff| = 1; genuine polygon-order mismatches
+                // always differ by ≥ 2 vertices (triangle↔pentagon, rect↔hexagon).
                 && Math.abs(this.vertexCount - ref.vertexCount) >= 2
                 ) {
             double vtxRatio = (double) Math.min(this.vertexCount, ref.vertexCount)
                             / (double) Math.max(this.vertexCount, ref.vertexCount);
-            boolean smallPolyMismatch = Math.max(this.vertexCount, ref.vertexCount) <= 10
-                                        && vtxRatio <= 0.80;
-            boolean extremeRatio      = vtxRatio < 0.40;   // e.g. 4 vs 16 → ratio=0.25
-            if (smallPolyMismatch || extremeRatio) {
+            if (vtxRatio <= 0.80) {
                 vertexMultiplier = Math.pow(vtxRatio, 2.5);
                 if (VM_DEBUG) {
                     System.out.printf("[VTXMULT-GATE] type=%s/%s vtx=%d/%d ratio=%.3f mult=%.3f%n",
