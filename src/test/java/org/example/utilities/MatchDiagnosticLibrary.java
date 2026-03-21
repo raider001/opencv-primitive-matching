@@ -1,19 +1,13 @@
 package org.example.utilities;
 
 import org.example.analytics.AnalysisResult;
-import org.example.analytics.AnalysisResult;
 import org.example.colour.ColourCluster;
 import org.example.colour.SceneColourClusters;
-import org.example.factories.BackgroundFactory;
 import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
-import org.example.factories.ReferenceImageFactory;
 import org.example.matchers.SceneDescriptor;
-import org.example.matchers.VectorMatcher;
 import org.example.matchers.VectorSignature;
 import org.example.matchers.VectorVariant;
-import org.example.scene.SceneCategory;
-import org.example.scene.SceneEntry;
 import org.opencv.core.*;
 import org.opencv.imgproc.Imgproc;
 
@@ -27,14 +21,14 @@ import java.util.stream.Collectors;
  * Shared diagnostic library for VectorMatcher tests.
  *
  * <p>Accumulates per-case {@link DiagRow} records produced by
- * {@link #evaluate(BackgroundId, String, ReferenceId, double, double, double, Path)}
- * then writes a combined JSON + stdout report via {@link #writeReport(Path)}.
+ * {@link #recordResult} then writes a combined JSON + stdout report
+ * via {@link #writeReport(Path)}.
  *
  * <p>Usage:
  * <pre>
  *   MatchDiagnosticLibrary diag = new MatchDiagnosticLibrary();
- *   diag.evaluate(BackgroundId.BG_SOLID_WHITE, "solid-white",
- *                 ReferenceId.CIRCLE_FILLED, 40.0, 75.0, 0.5, OUTPUT);
+ *   diag.recordResult(BackgroundId.BG_SOLID_WHITE, "solid-white",
+ *                     ReferenceId.CIRCLE_FILLED, results, gt, 40.0, 75.0, 1.0);
  *   diag.writeReport(OUTPUT);
  * </pre>
  */
@@ -55,7 +49,7 @@ public class MatchDiagnosticLibrary {
         double circScore, double solidScore, double totalSim,
         int refVertices, int detVertices,
         String refType, String detType,
-        /** All other contour hits above 1% similarity: each entry [x, y, w, h, scorePct]. */
+        /* All other contour hits above 1% similarity: each entry [x, y, w, h, scorePct]. */
         List<double[]> otherHits
     ) {}
 
@@ -67,128 +61,6 @@ public class MatchDiagnosticLibrary {
     /** Read-only view of accumulated rows. */
     public List<DiagRow> rows() { return Collections.unmodifiableList(rows); }
 
-    // ── Core evaluation ───────────────────────────────────────────────────────
-
-    /**
-     * Runs VectorMatcher on a composited scene and accumulates one {@link DiagRow}.
-     *
-     * @param bgId          background to composite the shape onto
-     * @param bgLabel       human-readable background label
-     * @param refId         reference shape to match
-     * @param passThreshold min score (%) to count as a detection
-     * @param targetScore   score (%) above which a correct hit is "good"
-     * @param goodIou       IoU above which location is correct
-     * @param outputDir     directory for matcher artefacts
-     */
-    public DiagRow evaluate(BackgroundId bgId, String bgLabel, ReferenceId refId,
-                            double passThreshold, double targetScore, double goodIou,
-                            Path outputDir) {
-        Mat shapeMat = buildShapeMat(refId);
-        Mat ref      = ReferenceImageFactory.build(refId);
-        Rect gt      = groundTruthRect(shapeMat);
-        Mat scene    = compositeOnBackground(shapeMat, bgId);
-
-        SceneEntry sceneEntry = new SceneEntry(
-                refId, SceneCategory.A_CLEAN, bgLabel, bgId,
-                Collections.emptyList(), scene);
-
-        List<AnalysisResult> results = VectorMatcher.match(
-                refId, ref, sceneEntry, Collections.emptySet(), outputDir);
-
-        AnalysisResult result = results.stream()
-                .filter(r -> r.methodName().equals(VectorVariant.VECTOR_NORMAL.variantName()))
-                .findFirst().orElse(results.isEmpty() ? null : results.get(0));
-
-        double scorePercent = result != null ? result.matchScorePercent() : 0.0;
-        Rect   bestBbox     = result != null ? result.boundingRect()      : null;
-
-        double  iou           = Double.NaN;
-        boolean falsePositive = false;
-        boolean badIou        = false;
-        boolean correctHit    = false;
-        boolean missed        = false;
-
-        // ── Pass / fail rules ─────────────────────────────────────────────
-        // Positive scene (reference present): PASS when IoU ≥ 95 % of target.
-        // Negative scene (reference absent):  PASS when score < 60 %;
-        //                                     FAIL (false alarm) when score ≥ 60 %.
-        final double iouThreshold = goodIou * 0.95;  // e.g. 0.475 when goodIou = 0.5
-        final double fpGate       = 60.0;            // score above which a negative detection fails
-
-        if (gt != null) {
-            // Positive scene — reference is present
-            if (bestBbox != null) {
-                iou           = iou(bestBbox, gt);
-                falsePositive = (scorePercent >= fpGate)        && (iou < 0.3);
-                badIou        = (scorePercent >= passThreshold) && (iou >= 0.3) && (iou < iouThreshold);
-                correctHit    = (scorePercent >= passThreshold) && (iou >= iouThreshold);
-            }
-            if (scorePercent < passThreshold) missed = true;
-        } else {
-            // Negative scene — reference is absent; any score ≥ fpGate is a false alarm
-            falsePositive = (scorePercent >= fpGate);
-        }
-        boolean lowScore = correctHit && (scorePercent < targetScore);
-
-        // Derive scene sig for reporting
-        double eps       = VectorVariant.VECTOR_NORMAL.epsilonFactor();
-        double sceneArea = (double) scene.rows() * scene.cols();
-        VectorSignature refSig      = VectorMatcher.buildRefSignature(ref, eps);
-        VectorSignature bestSceneSig = null;
-        if (bestBbox != null) {
-            outer:
-            for (SceneDescriptor.ClusterContours cc : sceneEntry.descriptor().clusters()) {
-                for (MatOfPoint c : cc.contours) {
-                    if (Imgproc.boundingRect(c).equals(bestBbox)) {
-                        bestSceneSig = VectorSignature.buildFromContour(c, eps, sceneArea);
-                        break outer;
-                    }
-                }
-            }
-        }
-
-        double circScore  = 0, solidScore = 0;
-        if (refSig != null && bestSceneSig != null) {
-            circScore  = 1.0 - Math.abs(refSig.circularity  - bestSceneSig.circularity);
-            solidScore = 1.0 - Math.abs(refSig.solidity     - bestSceneSig.solidity);
-        }
-
-        // ── Collect all other hits above 1% ───────────────────────────────
-        List<double[]> otherHits = allScoredBboxes(scene, refSig).stream()
-                .filter(e -> e[1] > 0.01)
-                .filter(e -> bestBbox == null || !(e[0] == bestBbox.x && e[2] == bestBbox.y
-                             && e[3] == bestBbox.width && e[4] == bestBbox.height))
-                .map(e -> new double[]{e[0], e[2], e[3], e[4], e[1] * 100.0}) // x,y,w,h,scorePct
-                .sorted(Comparator.comparingDouble(e -> -e[4]))
-                .collect(Collectors.toList());
-
-        DiagRow row = new DiagRow(
-            bgLabel, refId.name(),
-            scorePercent, iou,
-            falsePositive, badIou, correctHit, lowScore, missed,
-            gt      != null ? gt.x          : -1, gt      != null ? gt.y           : -1,
-            gt      != null ? gt.width      : -1, gt      != null ? gt.height      : -1,
-            bestBbox != null ? bestBbox.x   : -1, bestBbox != null ? bestBbox.y    : -1,
-            bestBbox != null ? bestBbox.width: -1, bestBbox != null ? bestBbox.height: -1,
-            refSig       != null ? refSig.toString()       : "null",
-            bestSceneSig != null ? bestSceneSig.toString() : "null",
-            circScore, solidScore,
-            refSig != null && bestSceneSig != null ? refSig.similarity(bestSceneSig) : 0,
-            refSig       != null ? refSig.vertexCount       : -1,
-            bestSceneSig != null ? bestSceneSig.vertexCount : -1,
-            refSig       != null ? refSig.type.name()       : "null",
-            bestSceneSig != null ? bestSceneSig.type.name() : "null",
-            otherHits
-        );
-
-        rows.add(row);
-
-        sceneEntry.release();
-        shapeMat.release();
-        ref.release();
-        scene.release();
-        return row;
-    }
 
     // ── Report writer ─────────────────────────────────────────────────────────
 
@@ -348,20 +220,6 @@ public class MatchDiagnosticLibrary {
         return r;
     }
 
-    public static Mat compositeOnBackground(Mat shapeMat, BackgroundId bgId) {
-        Mat scene = BackgroundFactory.build(bgId, shapeMat.cols(), shapeMat.rows());
-        Mat grey  = new Mat(); Imgproc.cvtColor(scene, grey, Imgproc.COLOR_BGR2GRAY);
-        double bgLuma = Core.mean(grey).val[0]; grey.release();
-        Mat foreground = shapeMat.clone();
-        if (bgLuma > 100) Core.bitwise_not(foreground, foreground);
-        Mat maskGrey = new Mat(), mask = new Mat();
-        Imgproc.cvtColor(shapeMat, maskGrey, Imgproc.COLOR_BGR2GRAY);
-        Imgproc.threshold(maskGrey, mask, 5, 255, Imgproc.THRESH_BINARY);
-        maskGrey.release();
-        foreground.copyTo(scene, mask);
-        foreground.release(); mask.release();
-        return scene;
-    }
 
     public static Mat buildShapeMat(ReferenceId id) {
         return switch (id) {
@@ -533,36 +391,16 @@ public class MatchDiagnosticLibrary {
         return dst;
     }
 
-    /**
-     * Scans every colour-cluster contour and returns all hits with their
-     * penalised similarity score against the best-matching ref signature.
-     * Each entry: {@code [x, scoreFraction, y, w, h]} (indexed for sort by [1]).
-     * Uses all ref signatures so multi-colour refs are handled correctly.
-     */
-    public static List<double[]> allScoredBboxes(Mat scene, VectorSignature refSig) {
-        // Build the full list of ref sigs via colour clusters (same as VectorMatcher)
-        List<VectorSignature> refSigs = new ArrayList<>();
-        List<ColourCluster> refClusters = SceneColourClusters.extract(scene);
-        // We don't have the original ref Mat here, so fall back to the single sig passed in
-        refSigs.add(refSig);
-        for (ColourCluster c : refClusters) c.release();
-
-        return allScoredBboxes(scene, refSigs);
-    }
-
     // ── Fast-path recorder — uses pre-computed results ────────────────────────
 
     /**
      * Records a diagnostic row from <em>pre-computed</em> matcher results.
-     * Does NOT rebuild the scene or re-run the matcher — avoids the scene
-     * inconsistency that arises when {@link #evaluate} is called with only
-     * a {@link BackgroundId} and {@link ReferenceId} (which causes it to
-     * independently rebuild the scene via {@link #buildShapeMat}).
+     * Does NOT rebuild the scene or re-run the matcher.
      *
      * @param bgId          background identifier
      * @param bgLabel       human-readable label for the background / test stage
      * @param refId         reference shape that was matched
-     * @param results       pre-computed {@link VectorMatcher#match} results
+     * @param results       pre-computed matcher results
      * @param gt            ground-truth bounding rect derived from a clean (black-BG)
      *                      version of the scene; may be {@code null} for negative scenes
      * @param passThreshold min score (%) to count as a detection
@@ -620,8 +458,8 @@ public class MatchDiagnosticLibrary {
         return row;
     }
 
-    /** Full version — scores against a list of ref signatures (one per colour cluster). */
-    /** Full version — scores against a list of ref signatures (one per colour cluster). */
+    /** Scores every colour-cluster contour against the given ref signatures.
+     *  Each entry: {@code [x, scoreFraction, y, w, h]} (indexed for sort by [1]). */
     public static List<double[]> allScoredBboxes(Mat scene, List<VectorSignature> refSigs) {
         List<double[]> hits = new ArrayList<>();
         if (refSigs == null || refSigs.isEmpty()) return hits;

@@ -3,8 +3,6 @@ package org.example.utilities;
 import org.example.analytics.AnalysisResult;
 import org.example.colour.ColourCluster;
 import org.example.colour.ExperimentalSceneColourClusters;
-import org.example.colour.SceneColourClusters;
-import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
 import org.example.factories.ReferenceImageFactory;
 import org.example.matchers.SceneDescriptor;
@@ -72,7 +70,6 @@ public class MatchReportLibrary {
             String displayName,
             String reason) {}
 
-    private final List<TestDoc> testDocs = new ArrayList<>();
     /** Keyed by the derived label — see {@link #deriveLabel(String)}. */
     private final Map<String, TestDoc> docByLabel = new HashMap<>();
 
@@ -84,7 +81,6 @@ public class MatchReportLibrary {
      * <p>Call this once from {@code @BeforeAll} after {@link #clear()}.
      */
     public void scanTestAnnotations(Class<?> testClass) {
-        testDocs.clear();
         docByLabel.clear();
         for (Method m : testClass.getDeclaredMethods()) {
             if (m.getAnnotation(org.junit.jupiter.api.Test.class) == null) continue;
@@ -94,7 +90,6 @@ public class MatchReportLibrary {
                     m.getAnnotation(org.junit.jupiter.api.DisplayName.class);
             String displayName = (dn != null && !dn.value().isBlank()) ? dn.value() : m.getName();
             TestDoc doc = new TestDoc(m.getName(), displayName, eo.reason());
-            testDocs.add(doc);
             docByLabel.put(deriveLabel(displayName), doc);
         }
     }
@@ -140,7 +135,7 @@ public class MatchReportLibrary {
     }
 
     /** Clear accumulated rows and test docs (call in {@code @BeforeAll}). */
-    public void clear() { rows.clear(); testDocs.clear(); docByLabel.clear(); }
+    public void clear() { rows.clear(); docByLabel.clear(); }
 
     public List<ReportRow> rows() { return Collections.unmodifiableList(rows); }
 
@@ -185,10 +180,11 @@ public class MatchReportLibrary {
             refOrigPng = matToBase64Png(refOrig);
 
             // Build ref contours from ALL clusters (chromatic + achromatic) so that
-            // every colour region and edge boundary is visible — exactly mirrors how
-            // SceneColourClusters works on the scene side.
+            // every colour region and edge boundary is visible — uses the same
+            // ExperimentalSceneColourClusters extractor as the scene side (critical invariant).
             List<MatOfPoint> refContours = new ArrayList<>();
-            List<ColourCluster> refClusters = SceneColourClusters.extract(refOrig);
+            List<ColourCluster> refClusters =
+                    ExperimentalSceneColourClusters.INSTANCE.extractFromBorderPixels(refOrig);
             for (ColourCluster c : refClusters) {
                 refContours.addAll(SceneDescriptor.contoursFromMask(c.mask));
                 c.release();
@@ -328,27 +324,12 @@ public class MatchReportLibrary {
                 .orElse(0.0);
     }
 
-    public static double normalScore(MatchRun run) {
-        return normalScore(run.results());
-    }
-
     private static Rect findBestBbox(Mat scene, VectorSignature refSig) {
         if (refSig == null) return null;
         return MatchDiagnosticLibrary.allScoredBboxes(scene, List.of(refSig)).stream()
                 .max(Comparator.comparingDouble(e -> e[1]))
                 .map(e -> new Rect((int)e[0], (int)e[2], (int)e[3], (int)e[4]))
                 .orElse(null);
-    }
-
-    /**
-     * Delegates to MatchDiagnosticLibrary — single sig convenience wrapper.
-     */
-    private static List<double[]> allScoredBboxes(Mat scene, VectorSignature refSig) {
-        return MatchDiagnosticLibrary.allScoredBboxes(scene, List.of(refSig));
-    }
-
-    private static String buildAnnotated(Mat scene, Rect winnerBbox, Rect gt, double winnerScore) {
-        return buildAnnotated(scene, winnerBbox, gt, winnerScore, List.of());
     }
 
     private static String buildAnnotated(Mat scene, Rect winnerBbox, Rect gt,
