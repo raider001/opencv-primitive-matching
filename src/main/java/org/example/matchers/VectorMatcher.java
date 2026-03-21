@@ -428,10 +428,13 @@ public final class VectorMatcher {
 
                 // Three area limits derived from the reference geometry:
                 //
-                //  anchorTrimArea  (5%)  — tight cap used to trim the initial anchor
-                //    bbox when background noise has inflated it beyond the reference
-                //    shape's expected footprint.  Prevents over-expansion from the
-                //    very start.
+                //  anchorTrimArea  (5%)  — cap used to trim the initial anchor bbox
+                //    when background noise has inflated it beyond the reference shape's
+                //    expected footprint.  Uses the max dimension squared so that an
+                //    elongated reference (e.g. horizontal ellipse) is not over-trimmed
+                //    when detected at a diagonal rotation (where its AABB is roughly
+                //    square rather than elongated).  For square-ish references this
+                //    gives the same result as width*height.
                 //
                 //  matchedUnionArea (15%) — generous cap used when unioning already-
                 //    scored matched contours in Step C.  These contours were vetted
@@ -442,13 +445,14 @@ public final class VectorMatcher {
                 //  siblingExpArea   (5%)  — tight cap for Step D sibling expansion.
                 //    Siblings are unverified — they may include background circles
                 //    that happen to overlap the anchor cluster.
-                double anchorTrimW     = refFullBbox.width  * estimatedScale * 1.05;
-                double anchorTrimH     = refFullBbox.height * estimatedScale * 1.05;
-                double anchorTrimArea  = anchorTrimW  * anchorTrimH;
+                double refMaxDim       = Math.max(refFullBbox.width, refFullBbox.height);
+                double anchorTrimSide  = refMaxDim * estimatedScale * 1.05;
+                double anchorTrimArea  = anchorTrimSide * anchorTrimSide;
 
                 double matchedUnionW    = refFullBbox.width  * estimatedScale * 1.15;
                 double matchedUnionH    = refFullBbox.height * estimatedScale * 1.15;
-                double matchedUnionArea = matchedUnionW * matchedUnionH;
+                double matchedUnionArea = Math.max(matchedUnionW * matchedUnionH,
+                        anchorTrimArea * 1.15);
 
                 double siblingExpArea   = anchorTrimArea;   // same 5 % budget
 

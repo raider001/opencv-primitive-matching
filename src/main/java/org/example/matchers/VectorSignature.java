@@ -285,9 +285,14 @@ public final class VectorSignature {
         double circularity = (4.0 * Math.PI * area) / (perimeter * perimeter);
         circularity = Math.min(1.0, Math.max(0.0, circularity));
 
-        // Bounding box aspect ratio
-        Rect bb = Imgproc.boundingRect(contour);
-        double w = bb.width, h = bb.height;
+        // Minimum-area bounding rectangle aspect ratio — rotation invariant.
+        // Using minAreaRect instead of axis-aligned boundingRect ensures that a
+        // triangle or ellipse rotated 45° keeps the same AR as at 0°, preventing
+        // spurious AR-mismatch penalties in the similarity scorer.
+        MatOfPoint2f arPts = new MatOfPoint2f(contour.toArray());
+        RotatedRect minRect = Imgproc.minAreaRect(arPts);
+        arPts.release();
+        double w = minRect.size.width, h = minRect.size.height;
         double aspectRatio = (Math.max(w, h)) / Math.max(1.0, Math.min(w, h));
 
         // Solidity = area / convex-hull area — scale and rotation invariant
@@ -571,7 +576,7 @@ public final class VectorSignature {
      * is preserved when the shape is scaled or rotated:
      * <ul>
      *   <li><b>circularity</b>  — 4π·area/perimeter² — scale invariant</li>
-     *   <li><b>aspectRatio</b>  — bbox width/height   — scale invariant, rotation stable ±45°</li>
+     *   <li><b>aspectRatio</b>  — minAreaRect width/height — scale and rotation invariant</li>
      *   <li><b>solidity</b>     — area/hull area      — scale and rotation invariant</li>
      *   <li><b>vertexCount</b>  — polygon corners     — topology invariant</li>
      *   <li><b>angleHistogram</b> — angle distribution — rotation invariant (absolute angles)</li>
@@ -812,10 +817,13 @@ public final class VectorSignature {
                 // 12–20-vertex polygons have inherent approximation noise across scale/threshold
                 // changes; applying the penalty there breaks legitimate self-matches.
                 && Math.max(this.vertexCount, ref.vertexCount) <= 10
-                // Guard 2: require a meaningful relative gap (> 20%).  This protects against
-                // 1-vertex polygon-approximation noise (hexagon detected as 7-gon: 6/7 = 0.857
-                // which is > 0.80 → no penalty).  True polygon-order differences like
-                // hexagon(6) vs octagon(8) produce ratio 0.75 which is ≤ 0.80.
+                // Guard 2: ±1 vertex tolerance — polygon approximation commonly adds or
+                // drops a single vertex due to staircase rasterization of rotated edges.
+                // For low-vertex shapes (triangle 3→4, rect 4→5) the relative gap is
+                // large (25–33 %) but the structural difference is noise, not genuine.
+                // Skip the penalty when |diff| = 1; genuine polygon-order mismatches
+                // always differ by ≥ 2 vertices (triangle↔pentagon, rect↔hexagon).
+                && Math.abs(this.vertexCount - ref.vertexCount) >= 2
                 ) {
             double vtxRatio = (double) Math.min(this.vertexCount, ref.vertexCount)
                             / (double) Math.max(this.vertexCount, ref.vertexCount);
