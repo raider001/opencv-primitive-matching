@@ -155,7 +155,40 @@ public enum ReferenceId {
     BICOLOUR_RECT_HALVES,    // Rectangle split horizontally: top half hue A, bottom half hue B (≥60° apart)
     TRICOLOUR_TRIANGLE,      // Equilateral triangle with three 120°-apart hue regions
     BICOLOUR_CROSSHAIR_RING, // Crosshair lines in one colour, surrounding circle ring in a second colour
-    BICOLOUR_CHEVRON_FILLED  // Chevron outline in colour A, interior flood-filled with colour B
+    BICOLOUR_CHEVRON_FILLED, // Chevron outline in colour A, interior flood-filled with colour B
+
+    // -------------------------------------------------------------------------
+    // Individual Characters — Lowercase a-z  (26)
+    // Rendered with FONT_HERSHEY_PLAIN at large scale to fill the 128×128 canvas.
+    // Intended for size-12 monospace character matching tests.
+    // -------------------------------------------------------------------------
+    CHAR_a, CHAR_b, CHAR_c, CHAR_d, CHAR_e, CHAR_f, CHAR_g, CHAR_h, CHAR_i,
+    CHAR_j, CHAR_k, CHAR_l, CHAR_m, CHAR_n, CHAR_o, CHAR_p, CHAR_q, CHAR_r,
+    CHAR_s, CHAR_t, CHAR_u, CHAR_v, CHAR_w, CHAR_x, CHAR_y, CHAR_z,
+
+    // -------------------------------------------------------------------------
+    // Individual Characters — Uppercase A-Z  (26)
+    // -------------------------------------------------------------------------
+    CHAR_A, CHAR_B, CHAR_C, CHAR_D, CHAR_E, CHAR_F, CHAR_G, CHAR_H, CHAR_I,
+    CHAR_J, CHAR_K, CHAR_L, CHAR_M, CHAR_N, CHAR_O, CHAR_P, CHAR_Q, CHAR_R,
+    CHAR_S, CHAR_T, CHAR_U, CHAR_V, CHAR_W, CHAR_X, CHAR_Y, CHAR_Z,
+
+    // -------------------------------------------------------------------------
+    // Individual Characters — Digits 0-9  (10)
+    // -------------------------------------------------------------------------
+    CHAR_0, CHAR_1, CHAR_2, CHAR_3, CHAR_4,
+    CHAR_5, CHAR_6, CHAR_7, CHAR_8, CHAR_9,
+
+    // -------------------------------------------------------------------------
+    // Individual Characters — Punctuation  (6)
+    // Characters from the benchmark scene string: aAbB...zZ0-9,."'-=
+    // -------------------------------------------------------------------------
+    CHAR_PERIOD,   // full stop '.'
+    CHAR_COMMA,    // comma ','
+    CHAR_DQUOTE,   // double quote '"'
+    CHAR_SQUOTE,   // single quote / apostrophe '\''
+    CHAR_HYPHEN,   // hyphen-minus '-'
+    CHAR_EQUALS    // equals sign '='
 }
 
 
