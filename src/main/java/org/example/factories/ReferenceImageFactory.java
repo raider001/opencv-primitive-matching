@@ -312,9 +312,10 @@ public final class ReferenceImageFactory {
             case CHECKERBOARD_2X2 -> drawCheckerboard(m, 2, fg);
             case CHECKERBOARD_4X4 -> drawCheckerboard(m, 4, fg);
             case CROSSHAIR -> {
+                // thickness=2 so contours pass the ≥64 px² area filter in VectorSignature
                 int cx = SIZE / 2, cy = SIZE / 2;
-                Imgproc.line(m, new Point(8, cy), new Point(SIZE-9, cy), fg, 1);
-                Imgproc.line(m, new Point(cx, 8), new Point(cx, SIZE-9), fg, 1);
+                Imgproc.line(m, new Point(8, cy), new Point(SIZE-9, cy), fg, 2);
+                Imgproc.line(m, new Point(cx, 8), new Point(cx, SIZE-9), fg, 2);
                 Imgproc.circle(m, centre(), 3, fg, -1);
             }
 
