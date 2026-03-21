@@ -380,14 +380,43 @@ public final class VectorMatcher {
             // largest contours, so this correctly steers the bbox to the right
             // location while preserving the best geometry score.
             //
+            // Guard: the re-selected candidate's shape type must be compatible
+            // with the primary reference shape type.  This prevents jumping from
+            // a correctly-detected thin shape (e.g. LINE_X → COMPOUND) to a
+            // large background circle (CLOSED_CONVEX_POLY) that happens to have
+            // a high enough score.
+            //
             // This is purely geometry-driven — no colour terms involved.
             if (bestScore >= 0.60 && bestAnchor != null) {
                 double reselThreshold = bestScore * 0.85;
                 double reselBestArea  = bestAnchor.area;
+                VectorSignature.ShapeType bestAnchorType = bestAnchor.sig != null
+                        ? bestAnchor.sig.type : null;
                 for (int ri = 0; ri < anchorScores.size(); ri++) {
                     double rScore = anchorScores.get(ri)[0];
                     double rArea  = anchorScores.get(ri)[1];
                     if (rScore >= reselThreshold && rArea > reselBestArea) {
+                        // Shape-type compatibility gate: do not re-select an anchor
+                        // with an incompatible shape type (e.g. circle replacing
+                        // compound, or convex replacing concave)
+                        SceneContourEntry reselCandidate = anchorEntries.get(ri);
+                        VectorSignature.ShapeType candType = reselCandidate.sig != null
+                                ? reselCandidate.sig.type : null;
+                        if (bestAnchorType != null && candType != null
+                                && bestAnchorType != candType
+                                && candType != VectorSignature.ShapeType.COMPOUND
+                                && bestAnchorType != VectorSignature.ShapeType.COMPOUND) {
+                            // Incompatible types — check if they are at least in the
+                            // same broad family (both CLOSED_*_POLY or both CIRCLE-ish)
+                            boolean sameFamily =
+                                    (isClosedPoly(bestAnchorType) && isClosedPoly(candType))
+                                 || (bestAnchorType == VectorSignature.ShapeType.CIRCLE
+                                     && isClosedPoly(candType))
+                                 || (isClosedPoly(bestAnchorType)
+                                     && candType == VectorSignature.ShapeType.CIRCLE);
+                            if (!sameFamily) continue;  // skip incompatible candidate
+                        }
+
                         reselBestArea = rArea;
                         // Score stays at the original best; only bbox/anchor change
                         bestBbox    = anchorBboxes.get(ri);
@@ -397,8 +426,8 @@ public final class VectorMatcher {
             }
 
             // ── Post-score bbox expansion ─────────────────────────────────
-            // Only expand when the match is confident (score ≥ 85%).
-            if (bestBbox != null && bestAnchor != null && bestScore >= 0.80) {
+            // Only expand when the match is confident (score ≥ 75%).
+            if (bestBbox != null && bestAnchor != null && bestScore >= 0.75) {
                 Rect initialBbox = new Rect(bestBbox.x, bestBbox.y, bestBbox.width, bestBbox.height);
 
                 // ── Step A: Retrieve the stored matched set for bestAnchor ────
@@ -1180,6 +1209,12 @@ public final class VectorMatcher {
     private static boolean rectsIntersect(Rect a, Rect b) {
         return a.x < b.x + b.width  && b.x < a.x + a.width
             && a.y < b.y + b.height && b.y < a.y + a.height;
+    }
+
+    /** Returns true if the shape type is any closed polygon variant. */
+    private static boolean isClosedPoly(VectorSignature.ShapeType t) {
+        return t == VectorSignature.ShapeType.CLOSED_CONVEX_POLY
+            || t == VectorSignature.ShapeType.CLOSED_CONCAVE_POLY;
     }
 
     private static double bboxIoU(Rect a, Rect b) {
