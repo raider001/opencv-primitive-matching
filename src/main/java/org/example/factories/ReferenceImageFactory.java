@@ -100,8 +100,82 @@ public final class ReferenceImageFactory {
         Scalar fg   = FG_PALETTE[idx % FG_PALETTE.length];
         Scalar fgLt = FG_LIGHT  [idx % FG_LIGHT.length];
         Mat canvas  = buildBackground(idx);
-        drawShape(canvas, id, fg, fgLt);
+        // Character references are handled separately to keep drawShape readable.
+        String ch = characterString(id);
+        if (ch != null) {
+            drawCharRef(canvas, ch, fg);
+        } else {
+            drawShape(canvas, id, fg, fgLt);
+        }
         return canvas;
+    }
+
+    // -------------------------------------------------------------------------
+    // Character reference helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Returns the single-character string that corresponds to a character reference ID,
+     * or {@code null} if the given ID is not a character reference.
+     *
+     * <p>Covers the 66 individual-character IDs added for {@code CharacterMatchingTest}:
+     * lowercase a–z ({@code CHAR_LOWER_*}), uppercase A–Z ({@code CHAR_UPPER_*}),
+     * digits 0–9 ({@code CHAR_0}–{@code CHAR_9}), and punctuation
+     * ({@code CHAR_PERIOD}, {@code CHAR_COMMA}, {@code CHAR_SQUOTE}, {@code CHAR_DQUOTE}).
+     */
+    public static String characterString(ReferenceId id) {
+        return switch (id) {
+            // Lowercase a–z
+            case CHAR_LOWER_A -> "a"; case CHAR_LOWER_B -> "b";
+            case CHAR_LOWER_C -> "c"; case CHAR_LOWER_D -> "d";
+            case CHAR_LOWER_E -> "e"; case CHAR_LOWER_F -> "f";
+            case CHAR_LOWER_G -> "g"; case CHAR_LOWER_H -> "h";
+            case CHAR_LOWER_I -> "i"; case CHAR_LOWER_J -> "j";
+            case CHAR_LOWER_K -> "k"; case CHAR_LOWER_L -> "l";
+            case CHAR_LOWER_M -> "m"; case CHAR_LOWER_N -> "n";
+            case CHAR_LOWER_O -> "o"; case CHAR_LOWER_P -> "p";
+            case CHAR_LOWER_Q -> "q"; case CHAR_LOWER_R -> "r";
+            case CHAR_LOWER_S -> "s"; case CHAR_LOWER_T -> "t";
+            case CHAR_LOWER_U -> "u"; case CHAR_LOWER_V -> "v";
+            case CHAR_LOWER_W -> "w"; case CHAR_LOWER_X -> "x";
+            case CHAR_LOWER_Y -> "y"; case CHAR_LOWER_Z -> "z";
+            // Uppercase A–Z
+            case CHAR_UPPER_A -> "A"; case CHAR_UPPER_B -> "B";
+            case CHAR_UPPER_C -> "C"; case CHAR_UPPER_D -> "D";
+            case CHAR_UPPER_E -> "E"; case CHAR_UPPER_F -> "F";
+            case CHAR_UPPER_G -> "G"; case CHAR_UPPER_H -> "H";
+            case CHAR_UPPER_I -> "I"; case CHAR_UPPER_J -> "J";
+            case CHAR_UPPER_K -> "K"; case CHAR_UPPER_L -> "L";
+            case CHAR_UPPER_M -> "M"; case CHAR_UPPER_N -> "N";
+            case CHAR_UPPER_O -> "O"; case CHAR_UPPER_P -> "P";
+            case CHAR_UPPER_Q -> "Q"; case CHAR_UPPER_R -> "R";
+            case CHAR_UPPER_S -> "S"; case CHAR_UPPER_T -> "T";
+            case CHAR_UPPER_U -> "U"; case CHAR_UPPER_V -> "V";
+            case CHAR_UPPER_W -> "W"; case CHAR_UPPER_X -> "X";
+            case CHAR_UPPER_Y -> "Y"; case CHAR_UPPER_Z -> "Z";
+            // Digits 0–9
+            case CHAR_0 -> "0"; case CHAR_1 -> "1";
+            case CHAR_2 -> "2"; case CHAR_3 -> "3";
+            case CHAR_4 -> "4"; case CHAR_5 -> "5";
+            case CHAR_6 -> "6"; case CHAR_7 -> "7";
+            case CHAR_8 -> "8"; case CHAR_9 -> "9";
+            // Punctuation
+            case CHAR_PERIOD -> ".";
+            case CHAR_COMMA  -> ",";
+            case CHAR_SQUOTE -> "'";
+            case CHAR_DQUOTE -> "\"";
+            // All other IDs are not character references
+            default -> null;
+        };
+    }
+
+    /**
+     * Returns {@code true} if {@code id} is one of the 66 individual-character references
+     * ({@code CHAR_LOWER_*}, {@code CHAR_UPPER_*}, {@code CHAR_0}–{@code CHAR_9},
+     * or punctuation).
+     */
+    public static boolean isCharRef(ReferenceId id) {
+        return characterString(id) != null;
     }
 
     /**
@@ -519,6 +593,35 @@ public final class ReferenceImageFactory {
             (SIZE + ts.height) / 2.0
         );
         Imgproc.putText(m, text, org, font, fontScale, fg, thickness, Imgproc.LINE_AA, false);
+    }
+
+    /**
+     * Draws a single character centred on the canvas using {@code FONT_HERSHEY_PLAIN}
+     * (the most mono-style stroke font available in OpenCV).
+     *
+     * <p>The font scale is chosen automatically: starting from {@code 8.0} it is reduced
+     * by {@code 0.5} steps until the glyph fits within the canvas bounds minus a
+     * 16-pixel border on each side.  Thickness is fixed at 3 to ensure the strokes
+     * produce contours large enough for the VectorMatcher's ≥ 64 px² area gate.
+     */
+    private static void drawCharRef(Mat m, String ch, Scalar fg) {
+        int   font      = Imgproc.FONT_HERSHEY_PLAIN;
+        int   thickness = 3;
+        int[] baseline  = {0};
+        int   margin    = SIZE - 16;      // max glyph dimension
+
+        double fontScale = 8.0;
+        Size ts = Imgproc.getTextSize(ch, font, fontScale, thickness, baseline);
+        while (fontScale > 0.5 && (ts.width > margin || ts.height > margin)) {
+            fontScale -= 0.5;
+            ts = Imgproc.getTextSize(ch, font, fontScale, thickness, baseline);
+        }
+
+        Point org = new Point(
+            (SIZE - ts.width)  / 2.0,
+            (SIZE + ts.height) / 2.0
+        );
+        Imgproc.putText(m, ch, org, font, fontScale, fg, thickness, Imgproc.LINE_AA, false);
     }
 
     // -------------------------------------------------------------------------
