@@ -1229,9 +1229,14 @@ class VectorMatchingTest {
     void runDiagnosticMatrix() {
         for (BgSpec bg : BgSpec.values()) {
             for (ReferenceId refId : ALL_SHAPES) {
-                Mat shapeMat = MatchDiagnosticLibrary.buildShapeMat(refId);
-                Rect gt      = MatchDiagnosticLibrary.groundTruthRect(shapeMat);
-                Mat  scene   = MatchDiagnosticLibrary.compositeOnBackground(shapeMat, bg.id);
+                // Use the same scene-builder as the direct BG tests so cluster
+                // decomposition is identical (coloured ref composited via mask).
+                Mat scene = shapeOnBackground(refId, bg.id);
+                // GT from a clean black-BG version so background pixels can't inflate it.
+                Mat cleanMat = shapeOnBackground(refId, BackgroundId.BG_SOLID_BLACK);
+                Rect gt      = MatchDiagnosticLibrary.groundTruthRect(cleanMat);
+                cleanMat.release();
+
                 Mat  ref     = ReferenceImageFactory.build(refId);
                 SceneEntry se = new SceneEntry(refId, SceneCategory.A_CLEAN,
                         bg.label, bg.id, Collections.emptyList(), scene);
@@ -1239,11 +1244,11 @@ class VectorMatchingTest {
                         refId, ref, se, Collections.emptySet(), OUTPUT);
                 // Record into report with correct GT (not auto-derived from composite scene)
                 report.record(bg.label, bg.label + "/" + refId.name(), refId.name(),
-                        bg.label, scene, gt, results, 0L);
+                        bg.label, scene, gt, results, se.descriptorBuildMs());
                 // Record diagnostic row with same results + GT — no second matcher run
                 diag.recordResult(bg.id, bg.label, refId, results, gt,
                         DIAG_PASS_THRESH, DIAG_TARGET, DIAG_GOOD_IOU);
-                se.release(); shapeMat.release(); ref.release(); scene.release();
+                se.release(); ref.release(); scene.release();
             }
         }
     }
@@ -1477,7 +1482,7 @@ class VectorMatchingTest {
 
                 // Record with correct explicit GT — consistent score + IoU in report
                 report.record(label, label + "/" + refId.name(), refId.name(),
-                        label, scene, gt, results, 0L);
+                        label, scene, gt, results, se.descriptorBuildMs());
                 diag.recordResult(BackgroundId.BG_SOLID_BLACK, label, refId, results, gt,
                         DIAG_PASS_THRESH, DIAG_TARGET, DIAG_GOOD_IOU);
 
@@ -1507,10 +1512,13 @@ class VectorMatchingTest {
      * The GT is derived from a clean (black-BG) shape so background pixels don't inflate it.
      */
     private void runFocused(ReferenceId refId, BackgroundId bgId, String bgLabel) {
-        Mat shapeMat = MatchDiagnosticLibrary.buildShapeMat(refId);
-        Mat ref      = ReferenceImageFactory.build(refId);
-        Rect gt      = MatchDiagnosticLibrary.groundTruthRect(shapeMat);
-        Mat  scene   = MatchDiagnosticLibrary.compositeOnBackground(shapeMat, bgId);
+        // Use the same scene-builder as the direct BG tests
+        Mat scene = shapeOnBackground(refId, bgId);
+        Mat ref   = ReferenceImageFactory.build(refId);
+        // GT from a clean black-BG version
+        Mat cleanMat = shapeOnBackground(refId, BackgroundId.BG_SOLID_BLACK);
+        Rect gt      = MatchDiagnosticLibrary.groundTruthRect(cleanMat);
+        cleanMat.release();
 
         SceneEntry se = new SceneEntry(refId, SceneCategory.A_CLEAN,
                 bgLabel, bgId, Collections.emptyList(), scene);
@@ -1559,11 +1567,11 @@ class VectorMatchingTest {
         }
 
         report.record(bgLabel, bgLabel+"/"+refId.name(), refId.name(), bgLabel,
-                scene, gt, results, 0L);
+                scene, gt, results, se.descriptorBuildMs());
         diag.recordResult(bgId, bgLabel, refId, results, gt,
                 DIAG_PASS_THRESH, DIAG_TARGET, DIAG_GOOD_IOU);
 
-        se.release(); shapeMat.release(); ref.release(); scene.release();
+        se.release(); ref.release(); scene.release();
     }
 
     /** Runs a focused multi-colour self-match probe (3× scaled ref on black canvas). */
@@ -1627,7 +1635,7 @@ class VectorMatchingTest {
         // GT from the scene itself — it's a white/colour shape on black, so GT is correct
         Rect gt = MatchDiagnosticLibrary.groundTruthRect(scene);
         report.record("Multi-Colour Debug", refId.name(), refId.name(), "own-scene",
-                scene, gt, results, 0L);
+                scene, gt, results, se.descriptorBuildMs());
         diag.recordResult(BackgroundId.BG_SOLID_BLACK, "own-scene", refId, results, gt,
                 DIAG_PASS_THRESH, DIAG_TARGET, DIAG_GOOD_IOU);
 
