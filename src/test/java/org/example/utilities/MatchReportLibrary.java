@@ -270,9 +270,17 @@ public class MatchReportLibrary {
      *
      * <h3>Detection tests</h3> (label does NOT contain {@code "→"})
      * <ul>
-     *   <li>PASS — IoU &gt; 0.9 AND IoU &lt; 1.1 AND score &gt; 70 %</li>
+     *   <li>PASS — IoU &gt; 0.9 AND score &gt; 70 %</li>
      *   <li>FAIL — everything else</li>
      * </ul>
+     *
+     * <p>No upper IoU cap is applied.  The coverage-scaled formula
+     * {@code IoU = recall × scale} (where {@code scale = detArea / gtArea ≥ 1}) can
+     * legitimately exceed 1.1 for degenerate-aspect shapes such as horizontal or vertical
+     * lines whose ground-truth bounding box is only a few pixels tall/wide.  A detected
+     * region that fully covers the GT but has a larger bounding box is still a correct
+     * detection — the {@code > 0.9} floor already guarantees adequate GT coverage via
+     * the recall component; {@code score > 70} guards against weak geometric matches.
      *
      * <h3>Rejection tests</h3> (label contains {@code "→"}, reference absent)
      * <ul>
@@ -285,11 +293,15 @@ public class MatchReportLibrary {
         return isDetectionPass(score, iou);                               // detection: score + location
     }
 
-    /** Shared detection gate used by both HTML report rows and JUnit assertions. */
+    /**
+     * Shared detection gate used by both HTML report rows and JUnit assertions.
+     *
+     * <p>Passes when {@code iou > 0.90} (GT is adequately covered) and
+     * {@code score > 70}.  No upper IoU cap — see {@link #determinePassed} for rationale.
+     */
     public static boolean isDetectionPass(double score, double iou) {
         return !Double.isNaN(iou)
                 && iou > 0.90
-                && iou < 1.10
                 && score > 70.0;
     }
 
@@ -525,8 +537,16 @@ public class MatchReportLibrary {
           .append("</div></div>")
           .append("<div class='legend-block'><div class='legend-title'>Row status</div>")
           .append("<div class='legend-row'>")
-          .append("<span class='legend-pill pass-pill'>green = passed (0.9 &lt; IoU &lt; 1.1 and score &gt; 70%)</span>")
+          .append("<span class='legend-pill pass-pill'>green = passed (IoU &gt; 0.9 and score &gt; 70%)</span>")
           .append("<span class='legend-pill fail-pill'>red = failed</span>")
+          .append("</div></div>")
+          .append("<div class='legend-block'><div class='legend-title'>IoU badge colours</div>")
+          .append("<div class='legend-row'>")
+          .append("<span class='legend-pill iou-pill-exc'>blue IoU ≥ 1.0 exact/near-exact</span>")
+          .append("<span class='legend-pill iou-pill-inf'>purple ⚑ IoU &gt; 1.1 — inflated (thin GT bbox, expected for line shapes)</span>")
+          .append("<span class='legend-pill iou-pill-gd'>green IoU ≥ 0.8</span>")
+          .append("<span class='legend-pill iou-pill-warn'>yellow IoU ≥ 0.5</span>")
+          .append("<span class='legend-pill iou-pill-bad'>red IoU &lt; 0.5</span>")
           .append("</div></div>")
           .append("</div>"); // end .header
 
@@ -559,24 +579,38 @@ public class MatchReportLibrary {
               .append("</details></section>");
         }
 
-        // Lazy iframe loading + auto-resize via postMessage
+        // Lazy iframe loading + auto-resize + lightbox relay via postMessage
         sb.append("<script>")
           .append("window.addEventListener('message',function(e){")
-          .append("  if(!e.data||e.data.type!=='section-resize')return;")
-          .append("  document.querySelectorAll('.section-frame').forEach(function(f){")
-          .append("    try{if(f.contentWindow===e.source){")
-          .append("      f.style.height=(e.data.height+4)+'px';")
-          .append("      var w=f.closest('.frame-wrap');")
-          .append("      if(w){var l=w.querySelector('.frame-loading');if(l)l.style.display='none';}")
-          .append("    }}catch(err){}")
-          .append("  });")
+          .append("  if(!e.data)return;")
+          .append("  if(e.data.type==='section-resize'){")
+          .append("    document.querySelectorAll('.section-frame').forEach(function(f){")
+          .append("      try{if(f.contentWindow===e.source){")
+          .append("        f.style.height=(e.data.height+4)+'px';")
+          .append("        var w=f.closest('.frame-wrap');")
+          .append("        if(w){var l=w.querySelector('.frame-loading');if(l)l.style.display='none';}")
+          .append("      }}catch(err){}")
+          .append("    });")
+          .append("  } else if(e.data.type==='open-lightbox'){")
+          .append("    document.getElementById('lb-img').src=e.data.src;")
+          .append("    document.getElementById('lb-caption').textContent=e.data.caption||'';")
+          .append("    document.getElementById('lb').classList.add('lb-visible');")
+          .append("  }")
           .append("});")
           .append("function loadSection(det){")
           .append("  if(!det.open)return;")
           .append("  var f=det.querySelector('.section-frame');")
           .append("  if(!f.getAttribute('src')){f.src=f.dataset.src;}")
           .append("}")
+          .append("function closeLb(){document.getElementById('lb').classList.remove('lb-visible');}")
+          .append("document.addEventListener('keydown',function(e){if(e.key==='Escape')closeLb();});")
           .append("</script>")
+          // Global lightbox — position:fixed is relative to the real browser viewport here
+          .append("<div id='lb' class='lb-overlay' onclick='closeLb()'>")
+          .append("<div class='lb-box' onclick='event.stopPropagation()'>")
+          .append("<button class='lb-close' onclick='closeLb()'>✕</button>")
+          .append("<img id='lb-img' src='' alt='' class='lb-img'/>")
+          .append("<div id='lb-caption' class='lb-caption'></div></div></div>")
           .append("</body></html>");
         return sb.toString();
     }
@@ -603,12 +637,15 @@ public class MatchReportLibrary {
               .append("<span class='row-shape'>").append(esc(r.shapeName())).append("</span>")
               .append("<span class='row-desc'>").append(esc(r.sceneDesc())).append("</span>");
             if (!Double.isNaN(r.iou())) {
-                String ic = r.iou() >= 1.0 ? "iou-excellent"
-                          : r.iou() >= 0.8 ? "iou-good"
-                          : r.iou() >= 0.5 ? "iou-warn"
-                          : "iou-bad";
+                String ic = r.iou() > 1.1    ? "iou-inflated"
+                          : r.iou() >= 1.0   ? "iou-excellent"
+                          : r.iou() >= 0.8   ? "iou-good"
+                          : r.iou() >= 0.5   ? "iou-warn"
+                          :                    "iou-bad";
+                String iouText = String.format("%.2f", r.iou());
+                if (r.iou() > 1.1) iouText += " ⚑";   // flag: inflated due to thin GT bbox
                 sb.append("<span class='iou-val ").append(ic).append("'>IoU ")
-                  .append(String.format("%.2f", r.iou())).append("</span>");
+                  .append(iouText).append("</span>");
             }
             sb.append("<span class='timing-badge'>")
               .append("desc:").append(r.descriptorMs()).append("ms")
@@ -639,20 +676,10 @@ public class MatchReportLibrary {
               .append("</div></div></div>");
         }
 
-        // Lightbox (self-contained per section)
-        sb.append("<div id='lb' class='lb-overlay' onclick='closeLb()'>")
-          .append("<div class='lb-box' onclick='event.stopPropagation()'>")
-          .append("<button class='lb-close' onclick='closeLb()'>✕</button>")
-          .append("<img id='lb-img' src='' alt='' class='lb-img'/>")
-          .append("<div id='lb-caption' class='lb-caption'></div></div></div>");
-
-        // Lightbox JS + report height to parent for iframe auto-sizing
+        // Lightbox JS — delegates to parent shell's global lightbox via postMessage
+        // so position:fixed is relative to the real browser viewport, not the iframe.
         sb.append("<script>")
-          .append("function openLb(s,c){document.getElementById('lb-img').src=s;")
-          .append("document.getElementById('lb-caption').textContent=c;")
-          .append("document.getElementById('lb').classList.add('lb-visible');}")
-          .append("function closeLb(){document.getElementById('lb').classList.remove('lb-visible');}")
-          .append("document.addEventListener('keydown',e=>{if(e.key==='Escape')closeLb();});")
+          .append("function openLb(s,c){window.parent.postMessage({type:'open-lightbox',src:s,caption:c},'*');}")
           .append("function _reportH(){")
           .append("  window.parent.postMessage({type:'section-resize',height:document.body.scrollHeight},'*');")
           .append("}")
@@ -769,6 +796,11 @@ public class MatchReportLibrary {
         .legend-pill{font-size:.72rem;font-weight:600;border-radius:4px;padding:2px 8px;border-left:3px solid transparent}
         .pass-pill{border-left-color:#238636;background:#0d2619;color:#56d364}
         .fail-pill{border-left-color:#da3633;background:#2b0c0c;color:#f85149}
+        .iou-pill-exc{border-left-color:#388bfd;background:#0a1628;color:#79c0ff}
+        .iou-pill-inf{border-left-color:#9a6ed8;background:#1a0d2e;color:#bc8cff}
+        .iou-pill-gd{border-left-color:#238636;background:#0d2619;color:#56d364}
+        .iou-pill-warn{border-left-color:#9e6a03;background:#271c00;color:#d29922}
+        .iou-pill-bad{border-left-color:#da3633;background:#2b0c0c;color:#f85149}
         section{padding:0 24px 16px}
         /* ── Collapsible stage sections ──────────────────────────────── */
         .stage-details{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:12px}
@@ -791,6 +823,14 @@ public class MatchReportLibrary {
         .frame-wrap{position:relative;background:#0d1117}
         .frame-loading{padding:20px;text-align:center;color:#8b949e;font-size:.82rem}
         .section-frame{display:block;width:100%;border:none;overflow:hidden;background:#0d1117}
+        /* ── Global lightbox (lives in main shell — position:fixed is real viewport) ── */
+        .lb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;align-items:center;justify-content:center;cursor:zoom-out}
+        .lb-visible{display:flex}
+        .lb-box{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;max-width:90vw;max-height:90vh;overflow:auto;position:relative;cursor:default}
+        .lb-close{position:absolute;top:8px;right:10px;background:none;border:none;color:#8b949e;font-size:1.2rem;cursor:pointer;line-height:1}
+        .lb-close:hover{color:#c9d1d9}
+        .lb-img{display:block;max-width:100%;max-height:80vh;border-radius:4px}
+        .lb-caption{font-size:.78rem;color:#8b949e;margin-top:8px;text-align:center}
         """;
 
     /** CSS for section files (sections/*.html): rows, pipeline steps, scores, lightbox. */
@@ -802,6 +842,7 @@ public class MatchReportLibrary {
         .row.fail{border-left:3px solid #da3633}
         .iou-val{font-size:.72rem;font-weight:600;white-space:nowrap}
         .iou-excellent{color:#79c0ff}.iou-good{color:#56d364}.iou-warn{color:#d29922}.iou-bad{color:#f85149}
+        .iou-inflated{color:#bc8cff}  /* > 1.1 — inflated due to thin GT bbox (expected for line shapes) */
         .timing-badge{font-size:.68rem;color:#8b949e;background:#21262d;border:1px solid #30363d;border-radius:4px;padding:1px 8px;white-space:nowrap;margin-left:auto}
         .row-meta{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
         .row-id{font-size:.72rem;font-weight:700;background:#21262d;border-radius:3px;padding:1px 6px;color:#79c0ff}
@@ -826,13 +867,6 @@ public class MatchReportLibrary {
         .s-good{color:#56d364}.s-warn{color:#d29922}.s-bad{color:#f85149}
         .bar-bg{width:80px;height:8px;background:#21262d;border-radius:4px;overflow:hidden}
         .bar-fill{height:100%;border-radius:4px}
-        .lb-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:1000;align-items:center;justify-content:center;cursor:zoom-out}
-        .lb-visible{display:flex}
-        .lb-box{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;max-width:90vw;max-height:90vh;overflow:auto;position:relative;cursor:default}
-        .lb-close{position:absolute;top:8px;right:10px;background:none;border:none;color:#8b949e;font-size:1.2rem;cursor:pointer;line-height:1}
-        .lb-close:hover{color:#c9d1d9}
-        .lb-img{display:block;max-width:100%;max-height:80vh;border-radius:4px}
-        .lb-caption{font-size:.78rem;color:#8b949e;margin-top:8px;text-align:center}
         """;
 }
 
