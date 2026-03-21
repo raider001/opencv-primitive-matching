@@ -166,8 +166,17 @@ public class MatchReportLibrary {
 
         ReferenceId rid = results.isEmpty() ? null : results.get(0).referenceId();
 
-        // Recolour the synthetic white-on-black scene to the reference colour
-        Mat sceneWithRef = rid != null ? recolourToRef(sceneMat, rid) : sceneMat.clone();
+        // Recolour only white-on-black synthetic scenes (self-match tests) so the
+        // report shows the reference colour.  Scenes that already contain coloured
+        // shapes on a non-black background (e.g. solid-white, gradient, random-circles)
+        // must NOT be recoloured — doing so fills the bright background with the ref
+        // colour and turns the entire image into a solid block, hiding all contours.
+        Mat sceneWithRef;
+        if (rid != null && isWhiteOnBlackScene(sceneMat)) {
+            sceneWithRef = recolourToRef(sceneMat, rid);
+        } else {
+            sceneWithRef = sceneMat.clone();
+        }
 
         // ── Reference images ──────────────────────────────────────────────
         String refOrigPng = "", refPointsPng = "";
@@ -419,6 +428,27 @@ public class MatchReportLibrary {
         fill.copyTo(result, fgMask);
         fill.release(); fgMask.release();
         return result;
+    }
+
+    /**
+     * Returns {@code true} if the scene looks like a white-on-black synthetic image
+     * (self-match tests) where recolouring is appropriate.
+     *
+     * <p>Heuristic: if fewer than 30 % of pixels are "bright" (grayscale &gt; 240), the
+     * scene is predominantly dark and the bright pixels are the foreground shape → safe
+     * to recolour.  Scenes on white / light / gradient / noisy backgrounds have &gt; 30 %
+     * bright pixels → must NOT be recoloured (the bright pixels are the background, and
+     * filling them would erase all contrast).
+     */
+    private static boolean isWhiteOnBlackScene(Mat sceneMat) {
+        Mat grey = new Mat();
+        Imgproc.cvtColor(sceneMat, grey, Imgproc.COLOR_BGR2GRAY);
+        Mat bright = new Mat();
+        Imgproc.threshold(grey, bright, 240, 255, Imgproc.THRESH_BINARY);
+        double brightFraction = Core.countNonZero(bright) / (double) (grey.rows() * grey.cols());
+        grey.release();
+        bright.release();
+        return brightFraction < 0.30;
     }
 
     public static String matToBase64Png(Mat m) {
