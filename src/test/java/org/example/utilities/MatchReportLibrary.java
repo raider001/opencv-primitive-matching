@@ -2,6 +2,7 @@ package org.example.utilities;
 
 import org.example.analytics.AnalysisResult;
 import org.example.colour.ColourCluster;
+import org.example.colour.ExperimentalSceneColourClusters;
 import org.example.colour.SceneColourClusters;
 import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
@@ -203,9 +204,13 @@ public class MatchReportLibrary {
         // ── Colour clusters (what the matcher actually sees) ──────────────
         // Each cluster is drawn in its actual hue colour (chromatic) or grey
         // (achromatic).  Labels show peak hue and valley-based exclusive bounds.
+        // Uses ExperimentalSceneColourClusters.extractFromBorderPixels — the
+        // same path as SceneDescriptor.build() — so the report is faithful
+        // to what the matcher really works with.
         String allPointsPng;
         {
-            List<ColourCluster> clusters = SceneColourClusters.extract(sceneWithRef);
+            List<ColourCluster> clusters =
+                    ExperimentalSceneColourClusters.INSTANCE.extractFromBorderPixels(sceneWithRef);
             allPointsPng = buildClusterOverlay(sceneWithRef, clusters);
             clusters.forEach(ColourCluster::release);
         }

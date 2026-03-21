@@ -2,6 +2,7 @@ package org.example.matchers;
 
 import org.example.analytics.AnalysisResult;
 import org.example.colour.ColourCluster;
+import org.example.colour.ExperimentalSceneColourClusters;
 import org.example.colour.SceneColourClusters;
 import org.example.factories.ReferenceId;
 import org.example.scene.SceneEntry;
@@ -319,24 +320,32 @@ public final class VectorMatcher {
                 }
             }
 
-            // ── Anchor re-selection: prefer largest contour among near-best ──
+            // ── Anchor re-selection for bbox: prefer largest contour ──────
             // When the scene contains background elements geometrically similar to
             // the reference (e.g. background circles vs octagon/pentagon), a small
-            // background contour can outscore the actual target by a few percent.
-            // The target shape at 3× scale is always among the largest contours.
-            // Among candidates scoring within 90% of the best, prefer the one
-            // with the largest contour area.  This is purely geometry-driven.
-            if (bestScore >= 0.60) {
-                double reselThreshold = bestScore * 0.90;
-                double reselBestArea  = -1;
+            // background contour can outscore the actual target by a few percent,
+            // causing the bbox to land on the background element instead of the
+            // real target shape.
+            //
+            // Fix: keep bestScore (the highest score from any anchor — conservative
+            // for rejection tests) but re-select the ANCHOR and BBOX from the
+            // candidate with the largest contour area among those scoring within
+            // 90 % of the best.  The target shape at 3× scale is always among the
+            // largest contours, so this correctly steers the bbox to the right
+            // location while preserving the best geometry score.
+            //
+            // This is purely geometry-driven — no colour terms involved.
+            if (bestScore >= 0.60 && bestAnchor != null) {
+                double reselThreshold = bestScore * 0.85;
+                double reselBestArea  = Imgproc.contourArea(bestAnchor.contour);
                 for (int ri = 0; ri < anchorScores.size(); ri++) {
                     double rScore = anchorScores.get(ri)[0];
                     double rArea  = anchorScores.get(ri)[1];
                     if (rScore >= reselThreshold && rArea > reselBestArea) {
                         reselBestArea = rArea;
-                        bestScore     = rScore;
-                        bestBbox      = anchorBboxes.get(ri);
-                        bestAnchor    = anchorEntries.get(ri);
+                        // Score stays at the original best; only bbox/anchor change
+                        bestBbox    = anchorBboxes.get(ri);
+                        bestAnchor  = anchorEntries.get(ri);
                     }
                 }
             }
@@ -401,6 +410,13 @@ public final class VectorMatcher {
                 // smallest (e.g. 2.88 → 3.0, dev=0.12; 1.83 → 2.0, dev=0.17).
                 // Half-step quantisation reflects natural scene scales used in this
                 // test suite (1×, 1.5×, 2×, 3×). Fallback: 3.0.
+                //
+                // Tie-break: among candidates with deviation within 0.05 of the best,
+                // prefer the LARGER scale.  When the anchor is an inner component of
+                // a compound shape, the matching outer ref contour gives a smaller
+                // scale, but the actual scene scale is larger.  The larger scale
+                // produces more generous expansion caps, allowing the bbox to cover
+                // the full compound shape extent.
                 double anchorDiag    = Math.hypot(anchorBbox.width, anchorBbox.height);
                 double estimatedScale = 3.0;
                 double bestRatioDev   = Double.MAX_VALUE;
@@ -412,7 +428,13 @@ public final class VectorMatcher {
                         double candidate = anchorDiag / rcDiag;
                         if (candidate < 1.0 || candidate > 8.0) continue;
                         double dev = Math.abs(candidate - Math.round(candidate * 2.0) / 2.0);
-                        if (dev < bestRatioDev) { bestRatioDev = dev; estimatedScale = candidate; }
+                        if (dev < bestRatioDev - 0.05) {
+                            // Clearly better — take it
+                            bestRatioDev = dev; estimatedScale = candidate;
+                        } else if (dev <= bestRatioDev + 0.05 && candidate > estimatedScale) {
+                            // Similar deviation — prefer larger scale (safer for compound shapes)
+                            bestRatioDev = dev; estimatedScale = candidate;
+                        }
                     }
                 }
                 estimatedScale = Math.min(8.0, Math.max(1.0, estimatedScale));
@@ -474,6 +496,12 @@ public final class VectorMatcher {
                 //
                 // Hue distance threshold: 20 degrees on the [0,180) OpenCV scale,
                 // accounting for the 0/179 wrap-around (red appears at both ends).
+                // Spatial guard: the two chromatic clusters must also occupy distinct
+                // regions (primary bbox IoU < 0.50).  Without this, border-pixel
+                // extraction artifacts on single-colour shapes (e.g. red triangle)
+                // falsely trigger the generous bicolour cap because the anti-aliased
+                // edge produces two chromatic clusters with different hues at the
+                // SAME physical location.
                 boolean hasDistinctChromaticHues = false;
                 List<RefCluster> chromatics = refClusters.stream()
                         .filter(rc -> !rc.achromatic)
@@ -483,8 +511,13 @@ public final class VectorMatcher {
                     for (int cj = ci + 1; cj < chromatics.size(); cj++) {
                         double diff = Math.abs(chromatics.get(ci).hue - chromatics.get(cj).hue);
                         if (Math.min(diff, 180.0 - diff) > 20.0) {
-                            hasDistinctChromaticHues = true;
-                            break outer;
+                            // Also require spatially distinct regions
+                            Rect bi = primaryBbox(chromatics.get(ci));
+                            Rect bj = primaryBbox(chromatics.get(cj));
+                            if (bboxIoU(bi, bj) < 0.50) {
+                                hasDistinctChromaticHues = true;
+                                break outer;
+                            }
                         }
                     }
                 }
@@ -664,15 +697,24 @@ public final class VectorMatcher {
         double matchScore = (sumWeights > 0) ? sumContrib / sumWeights : 0.0;
 
         // ── Layer 3: primary boundary geometry ───────────────────────────
+        // Try the primary ref cluster's signature first, then also try each
+        // secondary ref cluster's signature.  For multi-colour shapes (e.g.
+        // BICOLOUR_RECT_HALVES), the primary cluster may be achromatic (full
+        // rectangle border) which has no clean counterpart in a noisy scene,
+        // while the chromatic half-rectangle clusters match perfectly.
+        // Using the best geometry across ALL ref clusters is purely structural
+        // — it finds the best structural alignment regardless of cluster origin.
         double geomScore = 0.0;
-        VectorSignature refSig = primaryRef.bestSig(EPSILON);
         SceneContourEntry primaryScene = null;
         double bestGeom = -1.0;
-        for (SceneContourEntry e : matched) {
-            double sim = refSig.similarity(e.sig);
-            if (sim > bestGeom) {
-                bestGeom = sim;
-                primaryScene = e;
+        for (RefCluster rc : refClusters) {
+            VectorSignature rcSig = rc.bestSig(EPSILON);
+            for (SceneContourEntry e : matched) {
+                double sim = rcSig.similarity(e.sig);
+                if (sim > bestGeom) {
+                    bestGeom = sim;
+                    primaryScene = e;
+                }
             }
         }
         if (bestGeom >= 0.0) {
@@ -784,8 +826,13 @@ public final class VectorMatcher {
     // =========================================================================
 
     static List<RefCluster> buildRefClusters(Mat refBgr) {
+        // Use ExperimentalSceneColourClusters — the same extraction path as
+        // SceneDescriptor.build() — so ref and scene cluster decomposition
+        // are directly comparable.  The non-experimental extractor produces
+        // different cluster assignments (e.g. misses cyan/magenta halves on
+        // BICOLOUR_RECT_HALVES) which causes systematic ref/scene mismatch.
         List<ColourCluster> raw =
-                SceneColourClusters.extractFromBorderPixels(refBgr);
+                ExperimentalSceneColourClusters.INSTANCE.extractFromBorderPixels(refBgr);
         List<RefCluster> result = new ArrayList<>();
         double refArea = (double) refBgr.rows() * refBgr.cols();
 
@@ -800,7 +847,8 @@ public final class VectorMatcher {
 
         // Fallback: no border-pixel clusters found — use full extraction
         if (result.isEmpty()) {
-            List<ColourCluster> fallback = SceneColourClusters.extract(refBgr);
+            List<ColourCluster> fallback =
+                    ExperimentalSceneColourClusters.INSTANCE.extract(refBgr);
             for (ColourCluster c : fallback) {
                 List<MatOfPoint> contours = SceneDescriptor.contoursFromMask(c.mask);
                 if (!contours.isEmpty()) {
