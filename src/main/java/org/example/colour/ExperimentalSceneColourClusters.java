@@ -726,9 +726,9 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
     // Cached heal kernel — HEAL_RADIUS is a compile-time constant so the kernel
     // shape never changes. Lazy-initialised on first use (OpenCV must be loaded).
     // Do NOT call release() on the returned Mat — the static field owns its lifetime.
-    private static Mat cachedHealKernel = null;
+    private static volatile Mat cachedHealKernel = null;
 
-    private static Mat buildHealKernel() {
+    private static synchronized Mat buildHealKernel() {
         if (cachedHealKernel == null || cachedHealKernel.empty()) {
             int d = 2 * HEAL_RADIUS + 1;
             // Item 13: MORPH_RECT uses OpenCV's O(n) running-sum decomposition
@@ -743,9 +743,9 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
 
     // Cached 3×3 MORPH_RECT kernel used for the morphological gradient border mask.
     // Shape never changes — owned by the static field, never released by callers.
-    private static Mat cachedBorderKernel = null;
+    private static volatile Mat cachedBorderKernel = null;
 
-    private static Mat buildBorderKernel() {
+    private static synchronized Mat buildBorderKernel() {
         if (cachedBorderKernel == null || cachedBorderKernel.empty()) {
             cachedBorderKernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
         }

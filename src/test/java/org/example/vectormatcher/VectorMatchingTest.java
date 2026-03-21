@@ -18,6 +18,8 @@ import org.example.utilities.ExpectedOutcome;
 import org.example.utilities.MatchDiagnosticLibrary;
 import org.example.utilities.MatchReportLibrary;
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;
 import org.opencv.imgproc.Imgproc;
@@ -40,6 +42,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @DisplayName("VectorMatchingTest — Black-background self-match (≥ 95 %)")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@Execution(ExecutionMode.CONCURRENT)
 class VectorMatchingTest {
 
     private static final Path   OUTPUT          = Paths.get("test_output", "vector_matching");
@@ -69,9 +72,6 @@ class VectorMatchingTest {
             ReferenceId.COMPOUND_RECT_IN_CIRCLE, ReferenceId.COMPOUND_TRIANGLE_IN_CIRCLE,
             ReferenceId.CROSSHAIR
     };
-
-    /** Angles tested in the rotation robustness sweep. */
-    private static final int[] ROTATION_ANGLES = {0, 15, 30, 45, 90, 135, 180};
 
 
     private final MatchReportLibrary     report = new MatchReportLibrary();
@@ -113,7 +113,7 @@ class VectorMatchingTest {
     // Single-colour shapes
     // =========================================================================
 
-    @Test @Order(1) @DisplayName("CIRCLE_FILLED — white circle on black")
+    @Test @Order(330) @DisplayName("CIRCLE_FILLED — white circle on black")
     @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
                      reason = "Perfect circle on an ideal clean scene: circularity ≈ 1.0, " +
                               "ShapeType.CIRCLE exact match, no background noise. All three " +
@@ -1759,64 +1759,93 @@ class VectorMatchingTest {
     // diagnostic coverage for those backgrounds is needed in future.
 
 
-    // ── Rotation robustness ───────────────────────────────────────────────────
+    // ── Rotation robustness (per-angle tests) ─────────────────────────────────
+    //
+    // Each angle runs as a separate @Test so they execute in parallel.
+    // Every test loops over ALL_SHAPES and records results individually.
+    //
+    // Pass criterion: IoU ≥ DIAG_GOOD_IOU × DIAG_IOU_MARGIN (= 0.95).
+    // No score-threshold gate — the IoU check is the primary signal.
+    //
+    // Annotated PNGs are saved to test_output/vector_matching/annotated/VECTOR_NORMAL/.
+
+    @Test @Order(330)
+    @DisplayName("Rotation robustness: 0° on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Identity rotation — every shape should pass at 0°. All contours " +
+                              "are pixel-identical to the reference; IoU ≈ 1.0 expected for all shapes.")
+    void rotationRobustness0() { runRotationForAngle(0); }
+
+    @Test @Order(331)
+    @DisplayName("Rotation robustness: 15° on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "15° rotation: AR-sensitive shapes (ELLIPSE_H/V, RECT_FILLED, " +
+                              "RECT_ROTATED_45, POLYLINE_DIAMOND, LINE_H, LINE_V) fail due to " +
+                              "AR shift. POLYLINE_PLUS_SHAPE drops from cyclic-alignment instability.")
+    void rotationRobustness15() { runRotationForAngle(15); }
+
+    @Test @Order(332)
+    @DisplayName("Rotation robustness: 30° on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "30° rotation: same AR-sensitive failures as 15°. POLYLINE_PLUS_SHAPE " +
+                              "also drops. Symmetric shapes (circle, pentagon, octagon) still pass.")
+    void rotationRobustness30() { runRotationForAngle(30); }
+
+    @Test @Order(333)
+    @DisplayName("Rotation robustness: 45° on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "45° rotation: worst case for AR-sensitive shapes — AR flips towards " +
+                              "1.0 for rectangles and elongated shapes. Symmetric shapes pass.")
+    void rotationRobustness45() { runRotationForAngle(45); }
+
+    @Test @Order(334)
+    @DisplayName("Rotation robustness: 90° on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "90° rotation: most shapes pass — rotation preserves AR for " +
+                              "symmetric shapes. ELLIPSE_H/V swap AR which may cause mismatch. " +
+                              "HEXAGON_OUTLINE and STAR_5_FILLED remain below ceiling.")
+    void rotationRobustness90() { runRotationForAngle(90); }
+
+    @Test @Order(335)
+    @DisplayName("Rotation robustness: 135° on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "135° rotation: similar failure profile to 45° — AR-sensitive " +
+                              "shapes fail at diagonal rotations. Symmetric shapes still pass.")
+    void rotationRobustness135() { runRotationForAngle(135); }
+
+    @Test @Order(336)
+    @DisplayName("Rotation robustness: 180° on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "180° rotation: point-symmetric flip — AR and contour geometry " +
+                              "are preserved for all shapes. Expected to match 0° pass rate.")
+    void rotationRobustness180() { runRotationForAngle(180); }
 
     /**
-     * Rotation robustness: every shape in {@link #ALL_SHAPES} at
-     * 0°, 15°, 30°, 45°, 90°, 135°, 180° on a solid-black background.
-     *
-     * <p>Pass criterion: IoU ≥ {@code DIAG_GOOD_IOU × DIAG_IOU_MARGIN} (= 0.95).
-     * No score-threshold gate — the IoU check is the primary signal.
-     *
-     * <p>Annotated PNGs are saved to
-     * {@code test_output/vector_matching/annotated/VECTOR_NORMAL/}.
-     *
-     * <p>Expected: ~65/98 (66%) pass on original 14 shapes; expanded to 34 shapes × 7 = 238 total.
-     * Symmetric shapes (circle, pentagon, octagon, triangle, arrow, cross) pass at all angles.
-     * AR-sensitive shapes (ELLIPSE_H/V, RECT_FILLED, RECT_ROTATED_45, POLYLINE_DIAMOND, LINE_H, LINE_V)
-     * legitimately fail at rotations that flip their aspect ratio.
-     * POLYLINE_PLUS_SHAPE drops at 15°/30°.  HEXAGON_OUTLINE and STAR_5_FILLED
-     * below ceiling at all angles.  ARC shapes expected partial-pass due to open contours.
+     * Runs rotation robustness for a single angle across all shapes in {@link #ALL_SHAPES}.
+     * Each shape is matched, recorded, and pass/fail tallied.
      */
-    @Test @Order(330)
-    @DisplayName("Rotation robustness: all shapes × 0°/15°/30°/45°/90°/135°/180° on black")
-    @ExpectedOutcome(
-        value  = ExpectedOutcome.Result.PARTIAL,
-        reason = "~65/98 (66%) pass. Symmetric shapes pass all angles. AR-sensitive shapes " +
-                 "(ELLIPSE_H, RECT_FILLED, RECT_ROTATED_45, POLYLINE_DIAMOND) legitimately " +
-                 "fail at diagonal rotations. POLYLINE_PLUS_SHAPE drops at 15°/30°. " +
-                 "HEXAGON_OUTLINE and STAR_5_FILLED below ceiling at all angles.")
-    void runRotationRobustness() {
-        System.out.printf("%n=== ROTATION ROBUSTNESS (black background, IoU threshold %.2f) ===%n",
-                DIAG_GOOD_IOU * DIAG_IOU_MARGIN);
-        String hdr = String.format("%-26s", "Shape");
-        for (int a : ROTATION_ANGLES) hdr += String.format(" %6s", a + "°");
-        System.out.println(hdr);
-        System.out.println("─".repeat(26 + ROTATION_ANGLES.length * 7));
-
+    private void runRotationForAngle(int angle) {
+        String stageLabel = "rot" + angle + "deg_black";
         int passCount = 0, totalCount = 0;
 
         for (ReferenceId refId : ALL_SHAPES) {
             Mat ref = ReferenceImageFactory.build(refId);
-            StringBuilder row = new StringBuilder(String.format("%-26s", refId.name()));
-
-            for (int angle : ROTATION_ANGLES) {
+            try {
                 Mat shapeMat = MatchDiagnosticLibrary.buildShapeMat(refId);
                 Mat scene    = diagRotateScene(shapeMat, angle);
                 shapeMat.release();
 
                 Rect gt = MatchDiagnosticLibrary.groundTruthRect(scene);
 
-                String label = "rot" + angle + "deg_black";
                 SceneEntry se = new SceneEntry(refId, SceneCategory.B_TRANSFORMED,
-                        label, BackgroundId.BG_SOLID_BLACK, Collections.emptyList(), scene);
+                        stageLabel, BackgroundId.BG_SOLID_BLACK, Collections.emptyList(), scene);
 
                 Set<String> save = Set.of(VectorVariant.VECTOR_NORMAL.variantName());
                 List<AnalysisResult> results = VectorMatcher.match(refId, ref, se, save, OUTPUT);
 
                 AnalysisResult best = results.stream()
                         .filter(r -> r.methodName().equals(VectorVariant.VECTOR_NORMAL.variantName()))
-                        .findFirst().orElse(results.isEmpty() ? null : results.get(0));
+                        .findFirst().orElse(results.isEmpty() ? null : results.getFirst());
 
                 double score  = best != null ? best.matchScorePercent() : 0.0;
                 Rect   bbox   = best != null ? best.boundingRect()      : null;
@@ -1826,12 +1855,10 @@ class VectorMatchingTest {
                 boolean pass = (gt != null)
                         ? (!Double.isNaN(iouVal) && iouVal >= DIAG_GOOD_IOU * DIAG_IOU_MARGIN)
                         : (score < DIAG_FP_GATE);
-                row.append(String.format(" %5.1f%s", score, pass ? "✓" : "✗"));
 
-                // Record with correct explicit GT — consistent score + IoU in report
-                report.record(label, label + "/" + refId.name(), refId.name(),
-                        label, scene, gt, results, se.descriptorBuildMs());
-                diag.recordResult(BackgroundId.BG_SOLID_BLACK, label, refId, results, gt,
+                report.record(stageLabel, stageLabel + "/" + refId.name(), refId.name(),
+                        stageLabel, scene, gt, results, se.descriptorBuildMs());
+                diag.recordResult(BackgroundId.BG_SOLID_BLACK, stageLabel, refId, results, gt,
                         DIAG_PASS_THRESH, DIAG_TARGET, DIAG_GOOD_IOU);
 
                 if (pass) passCount++;
@@ -1839,15 +1866,13 @@ class VectorMatchingTest {
 
                 se.release();
                 scene.release();
+            } finally {
+                ref.release();
             }
-
-            ref.release();
-            System.out.println(row);
         }
 
-        System.out.println("─".repeat(26 + ROTATION_ANGLES.length * 7));
-        System.out.printf("Pass: %d / %d  (%.0f%%)%n%n", passCount, totalCount,
-                100.0 * passCount / totalCount);
+        System.out.printf("[Rotation %3d°] Pass: %d / %d  (%.0f%%)%n",
+                angle, passCount, totalCount, 100.0 * passCount / totalCount);
     }
 
     // =========================================================================

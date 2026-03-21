@@ -15,6 +15,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.Collectors;
 
 /**
@@ -53,7 +54,7 @@ public class MatchDiagnosticLibrary {
         List<double[]> otherHits
     ) {}
 
-    private final List<DiagRow> rows = new ArrayList<>();
+    private final List<DiagRow> rows = new CopyOnWriteArrayList<>();
 
     /** Clear all accumulated rows (call in @BeforeAll to reset between runs). */
     public void clear() { rows.clear(); }

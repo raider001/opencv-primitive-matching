@@ -748,9 +748,21 @@ public final class VectorSignature {
         // Special case: if the reference has 0 vertices (circle / line), the shape
         // type already handles discrimination — don't penalise the scene for picking
         // up noise vertices in the polygon approximation.
+        //
+        // Special case: if either side is LINE_SEGMENT (arcs, curves, thin strokes),
+        // the vertex count from approxPolyDP is epsilon-dependent — the epsilon scales
+        // with perimeter, so a small ref arc (perimeter ~178px, eps ~1.8px) produces
+        // ~4 vertices while a larger scene arc (perimeter ~430px, eps ~4.3px) produces
+        // only ~2–3 vertices.  This creates an artificial mismatch even in self-matches.
+        // Aspect ratio (arMultiplier) already captures the structural shape; vertex
+        // count adds no useful discrimination for LINE_SEGMENT shapes.
         double vertexScore;
         if (ref.vertexCount == 0) {
             // Reference is a circle or line — vertex count not a discriminator here
+            vertexScore = 1.0;
+        } else if (this.type == ShapeType.LINE_SEGMENT || ref.type == ShapeType.LINE_SEGMENT) {
+            // Arc/line shapes: vertex count varies with epsilon (scales with perimeter) —
+            // not a stable structural feature.  AR gate handles elongation already.
             vertexScore = 1.0;
         } else if (this.vertexCount == 0) {
             // Scene produced no vertices but reference expects some — full penalty
@@ -907,6 +919,39 @@ public final class VectorSignature {
             componentPenalty = 0.15 * ((double) Math.abs(this.componentCount - ref.componentCount) / maxC);
         }
 
+        // ── LINE_SEGMENT coherence boost ────────────────────────────────
+        // For arc/curved LINE_SEGMENT shapes, SegmentDescriptor and ContourTopology
+        // are unreliable across scale because approxPolyDP epsilon scales with
+        // perimeter: a small ref arc (perimeter ~178px, eps ~1.8px) keeps dense
+        // arc-curve points while a larger scene arc (perimeter ~430px, eps ~4.3px)
+        // loses those points and may end up with a different segment structure.
+        // The densification in SegmentDescriptor.build() then diverges further.
+        // Result: seg=0 and topo=0 even for a perfect self-match of the same arc.
+        //
+        // When the reliable scale-invariant metrics agree (circularity, solidity,
+        // aspect ratio) and BOTH structural descriptors have completely failed,
+        // floor seg/topo at a conservative value so the score reflects the actual
+        // geometric match.
+        //
+        // Safety gates (prevent false positives):
+        //   • solidityScore ≥ 0.90 — arc shapes have low solidity (0.1–0.3) while
+        //     straight-line shapes have solidity ≈ 1.0; this gate blocks arcs from
+        //     matching straight background lines (which share similar AR/circularity).
+        //   • aspectScore ≥ 0.85 — ensures similar arc spans; blocks ARC_QUARTER
+        //     (AR≈42) from matching ARC_HALF (AR≈85) where ratio = 0.49.
+        //   • BOTH seg < 0.10 AND topo < 0.10 — both descriptors must completely
+        //     fail, confirming a scale artifact not a partial structural mismatch.
+        boolean bothLineSeg = this.type == ShapeType.LINE_SEGMENT && ref.type == ShapeType.LINE_SEGMENT;
+        if (bothLineSeg && typeScore >= 1.0
+                && circScore     >= 0.95
+                && solidityScore >= 0.90
+                && aspectScore   >= 0.85
+                && segScore      <  0.10
+                && topoScore     <  0.10) {
+            segScore  = Math.max(segScore,  0.70);
+            topoScore = Math.max(topoScore, 0.70);
+        }
+
         // ── Near-circular coherence ─────────────────────────────────────
         // When BOTH shapes are near-circular (circ > 0.82) and their scale-invariant
         // global metrics agree almost perfectly, but seg/topo/angle are all zero or
@@ -971,7 +1016,36 @@ public final class VectorSignature {
         //   • Acceptable (type match, all ≥ 0.80, AR ≥ 0.70, angle ≥ 0.60, seg/topo ≥ 0.40): floor at 0.65
         //     → good-quality matches are not suppressed below ~82% overall
         boolean allowBoost = true;
-        
+
+        // ── Tier 0 (new): topology-validated seg rescue ─────────────────
+        // When topology is very high (≥ 0.90) but seg is near-zero, AND all
+        // other global metrics agree strongly, the seg failure is almost
+        // certainly a noise artifact — background line arms touching the
+        // contour corrupt the SegmentDescriptor traversal (curvature spikes
+        // at noise joins terminate segments prematurely) while the topology
+        // (cyclic edge-length/angle pairs) is robust to the same noise.
+        //
+        // Safety gates:
+        //   • typeScore = 1.0 (exact type match)
+        //   • circ/solid/vtx ≥ 0.95 — near-perfect shape identity
+        //   • angle ≥ 0.90 — angle distribution also agrees
+        //   • topo ≥ 0.90 — structural connectivity validated
+        //   • segScore < 0.10 — seg genuinely failed (not just partially degraded)
+        //
+        // This cannot fire for false matches (e.g. diamond vs square) because
+        // their angle histograms diverge (angleScore < 0.80) or vertex counts
+        // differ (vertexScore < 0.80).
+        if (allowBoost && typeScore >= 1.0
+                && circScore     >= 0.95
+                && solidityScore >= 0.95
+                && vertexScore   >= 0.95
+                && aspectScore   >= 0.80
+                && angleScore    >= 0.90
+                && topoScore     >= 0.90
+                && segScore      <  0.10) {
+            segScore = Math.max(segScore, 0.88);
+        }
+
         if (allowBoost && typeScore >= 1.0
                 && circScore     >= 0.95
                 && solidityScore >= 0.95
