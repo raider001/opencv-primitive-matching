@@ -20,6 +20,7 @@ import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -298,20 +299,63 @@ public class MatchReportLibrary {
     }
 
     /**
-     * Writes an HTML report covering only the rows accumulated since {@link #clear()}.
-     * Deletes any existing file at the output path first.
+     * Writes the report as a lightweight {@code report.html} shell that lazily loads
+     * per-stage section files from a {@code sections/} sub-directory via iframes.
+     *
+     * <p>Each stage produces one self-contained {@code sections/&lt;slug&gt;.html} file
+     * containing only that stage's rows (with all embedded base64 images).  The main
+     * shell holds only the header, collapsible accordion entries, and the
+     * {@code <iframe>} placeholders that load on demand when a stage is expanded —
+     * keeping the main file tiny regardless of how many images the full suite generates.
+     *
+     * <p>Iframes auto-size to their content via a {@code postMessage} handshake so no
+     * scroll-bars appear inside the frames.  Each section file also has its own
+     * independent lightbox, so image zoom works without cross-frame JS.
+     *
+     * <p>Deletes any existing output at each path before writing.
      */
     public void writeReport(Path outputDir, String title) throws IOException {
         Files.createDirectories(outputDir);
+        Path sectionsDir = outputDir.resolve("sections");
+        Files.createDirectories(sectionsDir);
+
+        Map<String, List<ReportRow>> byStage = new LinkedHashMap<>();
+        for (ReportRow r : rows)
+            byStage.computeIfAbsent(r.stage(), k -> new ArrayList<>()).add(r);
+
+        // Write one self-contained HTML file per stage
+        Map<String, String> slugMap = new LinkedHashMap<>();
+        for (Map.Entry<String, List<ReportRow>> e : byStage.entrySet()) {
+            String slug = toSlug(e.getKey());
+            slugMap.put(e.getKey(), slug);
+            Path sectionFile = sectionsDir.resolve(slug + ".html");
+            Files.deleteIfExists(sectionFile);
+            Files.writeString(sectionFile,
+                    buildSectionHtml(e.getValue(), docByLabel, e.getKey()),
+                    StandardCharsets.UTF_8);
+            System.out.println("[MatchReportLibrary] Section: " + sectionFile.getFileName());
+        }
+
+        // Write the main shell
         Path out = outputDir.resolve("report.html");
         Files.deleteIfExists(out);
-        Files.writeString(out, buildHtml(rows, docByLabel, title), StandardCharsets.UTF_8);
+        Files.writeString(out, buildMainHtml(rows, byStage, slugMap, title), StandardCharsets.UTF_8);
         System.out.println("[MatchReportLibrary] Report: " + out.toAbsolutePath());
 
         long total  = rows.size();
         long passed = rows.stream().filter(ReportRow::passed).count();
         System.out.printf("[MatchReportLibrary] %d rows  %d passed  %d failed%n",
                 total, passed, total - passed);
+    }
+
+    /**
+     * Converts a stage name to a filesystem-safe slug used as the section file name.
+     * E.g. {@code "BG Random Lines"} → {@code "bg_random_lines"}.
+     */
+    static String toSlug(String stage) {
+        return stage.toLowerCase(Locale.ROOT)
+                    .replaceAll("[^a-z0-9]+", "_")
+                    .replaceAll("^_+|_+$", "");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -446,21 +490,22 @@ public class MatchReportLibrary {
         } catch (Exception e) { return ""; }
     }
 
-    // ── HTML builder ──────────────────────────────────────────────────────────
+    // ── HTML builders ─────────────────────────────────────────────────────────
 
-    private static String buildHtml(List<ReportRow> rows, Map<String, TestDoc> docByLabel, String title) {
-        Map<String, List<ReportRow>> byStage = new LinkedHashMap<>();
-        for (ReportRow r : rows)
-            byStage.computeIfAbsent(r.stage(), k -> new ArrayList<>()).add(r);
-
-        long total    = rows.size();
-        long passed   = rows.stream().filter(ReportRow::passed).count();
-        String ts     = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+    /** Builds the lightweight main shell: header + one lazy-loading iframe per stage. */
+    private static String buildMainHtml(List<ReportRow> allRows,
+                                         Map<String, List<ReportRow>> byStage,
+                                         Map<String, String> slugMap,
+                                         String title) {
+        long total  = allRows.size();
+        long passed = allRows.stream().filter(ReportRow::passed).count();
+        String ts   = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
 
         StringBuilder sb = new StringBuilder();
         sb.append("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>")
           .append("<title>").append(esc(title)).append("</title>")
-          .append("<style>").append(CSS).append("</style></head><body>")
+          .append("<style>").append(MAIN_CSS).append("</style>")
+          .append("</head><body>")
           .append("<div class='header'>")
           .append("<h1>").append(esc(title)).append("</h1>")
           .append("<div class='ts-line'>Generated: <span class='ts-val'>").append(ts).append("</span></div>")
@@ -483,7 +528,7 @@ public class MatchReportLibrary {
           .append("<span class='legend-pill pass-pill'>green = passed (0.9 &lt; IoU &lt; 1.1 and score &gt; 70%)</span>")
           .append("<span class='legend-pill fail-pill'>red = failed</span>")
           .append("</div></div>")
-          .append("</div>");
+          .append("</div>"); // end .header
 
         for (Map.Entry<String, List<ReportRow>> e : byStage.entrySet()) {
             List<ReportRow> stageRows = e.getValue();
@@ -491,9 +536,10 @@ public class MatchReportLibrary {
             long stagePassed = stageRows.stream().filter(ReportRow::passed).count();
             long stageFailed = stageTotal - stagePassed;
             int barW = (int) Math.max(1, Math.min(100, stageTotal == 0 ? 0 : stagePassed * 100 / stageTotal));
+            String slug = slugMap.get(e.getKey());
 
             sb.append("<section>")
-              .append("<details class='stage-details'>")
+              .append("<details class='stage-details' ontoggle='loadSection(this)'>")
               .append("<summary class='stage-summary'>")
               .append("<span class='stage-chevron'></span>")
               .append("<span class='stage-name'>").append(esc(e.getKey())).append("</span>")
@@ -506,67 +552,112 @@ public class MatchReportLibrary {
               .append("</span>")
               .append("<div class='stage-bar-bg'><div class='stage-bar-fill' style='width:").append(barW).append("%'></div></div>")
               .append("</summary>")
-              .append("<div class='stage-rows'>");
-            for (ReportRow r : stageRows) {
-                // Row is green (pass) or red (fail) — purely score + IoU
-                String cls = r.passed() ? "row pass" : "row fail";
-                sb.append("<div class='").append(cls).append("'>")
-                  .append("<div class='row-meta'>")
-                  .append("<span class='row-id'>").append(esc(r.label())).append("</span>")
-                  .append("<span class='row-shape'>").append(esc(r.shapeName())).append("</span>")
-                  .append("<span class='row-desc'>").append(esc(r.sceneDesc())).append("</span>");
-                if (!Double.isNaN(r.iou())) {
-                    // 1.0 = exact fit | >1.0 = det larger than GT | <1.0 = partial coverage
-                    String ic = r.iou() >= 1.0 ? "iou-excellent"
-                              : r.iou() >= 0.8 ? "iou-good"
-                              : r.iou() >= 0.5 ? "iou-warn"
-                              : "iou-bad";
-                    sb.append("<span class='iou-val ").append(ic).append("'>IoU ")
-                      .append(String.format("%.2f", r.iou())).append("</span>");
-                }
-                sb.append("<span class='timing-badge'>")
-                  .append("desc:").append(r.descriptorMs()).append("ms")
-                  .append(" match:").append(r.elapsedMs()).append("ms</span>")
-                  .append("</div>");
-
-                // ── Inline expected outcome (matched by label) ────────────
-                TestDoc doc = docByLabel.get(r.label());
-                if (doc != null) {
-                    sb.append("<div class='outcome-line'>")
-                      .append("<details class='outcome-details'><summary>Scenario: ")
-                      .append(esc(doc.displayName())).append("</summary>")
-                      .append("<span class='outcome-reason'>").append(esc(doc.reason())).append("</span>")
-                      .append("</details>")
-                      .append("</div>");
-                }
-
-                sb.append("<div class='pipeline-row'><div class='pipeline'>");
-                step(sb, r.refOrig(),    "Ref");
-                step(sb, r.refPoints(),  "Ref Points");
-                step(sb, r.sceneOrig(),  "Scene");
-                step(sb, r.allPoints(),  "Clusters (hue-coloured)");
-                step(sb, r.sceneAnnot(), "Match");
-                sb.append("</div>")
-                  .append("<div class='pipeline-score'>")
-                  .append("<span class='score-val ").append(r.score()>=70?"s-good":r.score()>=40?"s-warn":"s-bad").append("'>")
-                  .append(String.format("%.1f%%",r.score())).append("</span>")
-                  .append(bar(r.score()))
-                  .append("</div></div></div>");
-            }
-            sb.append("</div></details></section>");
+              .append("<div class='frame-wrap'>")
+              .append("<div class='frame-loading'>⏳ Loading section…</div>")
+              .append("<iframe class='section-frame' data-src='sections/").append(slug).append(".html'></iframe>")
+              .append("</div>")
+              .append("</details></section>");
         }
 
+        // Lazy iframe loading + auto-resize via postMessage
+        sb.append("<script>")
+          .append("window.addEventListener('message',function(e){")
+          .append("  if(!e.data||e.data.type!=='section-resize')return;")
+          .append("  document.querySelectorAll('.section-frame').forEach(function(f){")
+          .append("    try{if(f.contentWindow===e.source){")
+          .append("      f.style.height=(e.data.height+4)+'px';")
+          .append("      var w=f.closest('.frame-wrap');")
+          .append("      if(w){var l=w.querySelector('.frame-loading');if(l)l.style.display='none';}")
+          .append("    }}catch(err){}")
+          .append("  });")
+          .append("});")
+          .append("function loadSection(det){")
+          .append("  if(!det.open)return;")
+          .append("  var f=det.querySelector('.section-frame');")
+          .append("  if(!f.getAttribute('src')){f.src=f.dataset.src;}")
+          .append("}")
+          .append("</script>")
+          .append("</body></html>");
+        return sb.toString();
+    }
+
+    /**
+     * Builds a self-contained section HTML file containing all rows for one stage.
+     * Has its own CSS, lightbox, and a {@code postMessage} call to report its height
+     * to the parent shell so the enclosing iframe auto-sizes.
+     */
+    private static String buildSectionHtml(List<ReportRow> stageRows,
+                                            Map<String, TestDoc> docByLabel,
+                                            String stageName) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>")
+          .append("<title>").append(esc(stageName)).append("</title>")
+          .append("<style>").append(SECTION_CSS).append("</style>")
+          .append("</head><body>");
+
+        for (ReportRow r : stageRows) {
+            String cls = r.passed() ? "row pass" : "row fail";
+            sb.append("<div class='").append(cls).append("'>")
+              .append("<div class='row-meta'>")
+              .append("<span class='row-id'>").append(esc(r.label())).append("</span>")
+              .append("<span class='row-shape'>").append(esc(r.shapeName())).append("</span>")
+              .append("<span class='row-desc'>").append(esc(r.sceneDesc())).append("</span>");
+            if (!Double.isNaN(r.iou())) {
+                String ic = r.iou() >= 1.0 ? "iou-excellent"
+                          : r.iou() >= 0.8 ? "iou-good"
+                          : r.iou() >= 0.5 ? "iou-warn"
+                          : "iou-bad";
+                sb.append("<span class='iou-val ").append(ic).append("'>IoU ")
+                  .append(String.format("%.2f", r.iou())).append("</span>");
+            }
+            sb.append("<span class='timing-badge'>")
+              .append("desc:").append(r.descriptorMs()).append("ms")
+              .append(" match:").append(r.elapsedMs()).append("ms</span>")
+              .append("</div>");
+
+            TestDoc doc = docByLabel.get(r.label());
+            if (doc != null) {
+                sb.append("<div class='outcome-line'>")
+                  .append("<details class='outcome-details'><summary>Scenario: ")
+                  .append(esc(doc.displayName())).append("</summary>")
+                  .append("<span class='outcome-reason'>").append(esc(doc.reason())).append("</span>")
+                  .append("</details>")
+                  .append("</div>");
+            }
+
+            sb.append("<div class='pipeline-row'><div class='pipeline'>");
+            step(sb, r.refOrig(),    "Ref");
+            step(sb, r.refPoints(),  "Ref Points");
+            step(sb, r.sceneOrig(),  "Scene");
+            step(sb, r.allPoints(),  "Clusters (hue-coloured)");
+            step(sb, r.sceneAnnot(), "Match");
+            sb.append("</div>")
+              .append("<div class='pipeline-score'>")
+              .append("<span class='score-val ").append(r.score()>=70?"s-good":r.score()>=40?"s-warn":"s-bad").append("'>")
+              .append(String.format("%.1f%%",r.score())).append("</span>")
+              .append(bar(r.score()))
+              .append("</div></div></div>");
+        }
+
+        // Lightbox (self-contained per section)
         sb.append("<div id='lb' class='lb-overlay' onclick='closeLb()'>")
           .append("<div class='lb-box' onclick='event.stopPropagation()'>")
           .append("<button class='lb-close' onclick='closeLb()'>✕</button>")
           .append("<img id='lb-img' src='' alt='' class='lb-img'/>")
-          .append("<div id='lb-caption' class='lb-caption'></div></div></div>")
-          .append("<script>")
+          .append("<div id='lb-caption' class='lb-caption'></div></div></div>");
+
+        // Lightbox JS + report height to parent for iframe auto-sizing
+        sb.append("<script>")
           .append("function openLb(s,c){document.getElementById('lb-img').src=s;")
           .append("document.getElementById('lb-caption').textContent=c;")
           .append("document.getElementById('lb').classList.add('lb-visible');}")
           .append("function closeLb(){document.getElementById('lb').classList.remove('lb-visible');}")
           .append("document.addEventListener('keydown',e=>{if(e.key==='Escape')closeLb();});")
+          .append("function _reportH(){")
+          .append("  window.parent.postMessage({type:'section-resize',height:document.body.scrollHeight},'*');")
+          .append("}")
+          .append("window.addEventListener('load',_reportH);")
+          .append("new ResizeObserver(_reportH).observe(document.body);")
           .append("</script></body></html>");
         return sb.toString();
     }
@@ -659,7 +750,10 @@ public class MatchReportLibrary {
         return s==null?"":s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;");
     }
 
-    private static final String CSS = """
+    // ── Stylesheets ───────────────────────────────────────────────────────────
+
+    /** CSS for the main shell (report.html): header, legend, accordion, iframe wrappers. */
+    private static final String MAIN_CSS = """
         *{box-sizing:border-box;margin:0;padding:0}
         body{font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;padding:0 0 48px}
         .header{background:#161b22;padding:20px 32px 16px;border-bottom:1px solid #30363d;margin-bottom:20px}
@@ -676,6 +770,33 @@ public class MatchReportLibrary {
         .pass-pill{border-left-color:#238636;background:#0d2619;color:#56d364}
         .fail-pill{border-left-color:#da3633;background:#2b0c0c;color:#f85149}
         section{padding:0 24px 16px}
+        /* ── Collapsible stage sections ──────────────────────────────── */
+        .stage-details{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:12px}
+        .stage-summary{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;list-style:none;user-select:none;border-radius:8px}
+        .stage-summary::-webkit-details-marker{display:none}
+        .stage-summary:hover{background:#21262d}
+        .stage-details[open]>.stage-summary{border-bottom:1px solid #30363d;border-radius:8px 8px 0 0}
+        .stage-chevron{width:14px;height:14px;flex-shrink:0;border:2px solid #8b949e;border-radius:3px;position:relative;transition:transform .15s}
+        .stage-chevron::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-60%) rotate(45deg);width:5px;height:5px;border-right:2px solid #8b949e;border-bottom:2px solid #8b949e}
+        .stage-details[open]>.stage-summary .stage-chevron::after{transform:translate(-50%,-40%) rotate(-135deg)}
+        .stage-name{color:#79c0ff;font-size:.95rem;font-weight:700;white-space:nowrap}
+        .stage-stats{display:flex;align-items:center;gap:7px;font-size:.75rem;margin-left:4px}
+        .stat-pass{color:#56d364;font-weight:600}
+        .stat-fail{color:#f85149;font-weight:600}
+        .stat-total{color:#8b949e}
+        .stat-sep{color:#484f58}
+        .stage-bar-bg{flex:1;height:6px;background:#21262d;border-radius:3px;overflow:hidden;min-width:60px;margin-left:8px}
+        .stage-bar-fill{height:100%;background:#238636;border-radius:3px;transition:width .3s}
+        /* ── iframe section wrapper ──────────────────────────────────── */
+        .frame-wrap{position:relative;background:#0d1117}
+        .frame-loading{padding:20px;text-align:center;color:#8b949e;font-size:.82rem}
+        .section-frame{display:block;width:100%;border:none;overflow:hidden;background:#0d1117}
+        """;
+
+    /** CSS for section files (sections/*.html): rows, pipeline steps, scores, lightbox. */
+    private static final String SECTION_CSS = """
+        *{box-sizing:border-box;margin:0;padding:0}
+        body{font-family:system-ui,sans-serif;background:#0d1117;color:#c9d1d9;padding:4px 12px 12px}
         .row{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:8px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
         .row.pass{border-left:3px solid #238636}
         .row.fail{border-left:3px solid #da3633}
@@ -712,24 +833,6 @@ public class MatchReportLibrary {
         .lb-close:hover{color:#c9d1d9}
         .lb-img{display:block;max-width:100%;max-height:80vh;border-radius:4px}
         .lb-caption{font-size:.78rem;color:#8b949e;margin-top:8px;text-align:center}
-        /* ── Collapsible stage sections ──────────────────────────────────── */
-        .stage-details{background:#161b22;border:1px solid #30363d;border-radius:8px;margin-bottom:12px}
-        .stage-summary{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;list-style:none;user-select:none;border-radius:8px}
-        .stage-summary::-webkit-details-marker{display:none}
-        .stage-summary:hover{background:#21262d}
-        .stage-details[open]>.stage-summary{border-bottom:1px solid #30363d;border-radius:8px 8px 0 0}
-        .stage-chevron{width:14px;height:14px;flex-shrink:0;border:2px solid #8b949e;border-radius:3px;position:relative;transition:transform .15s}
-        .stage-chevron::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-60%) rotate(45deg);width:5px;height:5px;border-right:2px solid #8b949e;border-bottom:2px solid #8b949e}
-        .stage-details[open]>.stage-summary .stage-chevron::after{transform:translate(-50%,-40%) rotate(-135deg)}
-        .stage-name{color:#79c0ff;font-size:.95rem;font-weight:700;white-space:nowrap}
-        .stage-stats{display:flex;align-items:center;gap:7px;font-size:.75rem;margin-left:4px}
-        .stat-pass{color:#56d364;font-weight:600}
-        .stat-fail{color:#f85149;font-weight:600}
-        .stat-total{color:#8b949e}
-        .stat-sep{color:#484f58}
-        .stage-bar-bg{flex:1;height:6px;background:#21262d;border-radius:3px;overflow:hidden;min-width:60px;margin-left:8px}
-        .stage-bar-fill{height:100%;background:#238636;border-radius:3px;transition:width .3s}
-        .stage-rows{padding:8px 12px 12px}
         """;
 }
 

@@ -88,6 +88,21 @@ class VectorMatchingTest {
         report.scanTestAnnotations(VectorMatchingTest.class);
         Files.deleteIfExists(OUTPUT.resolve("report.html"));
         Files.deleteIfExists(OUTPUT.resolve("diagnostics.json"));
+        deleteTree(OUTPUT.resolve("sections"));   // stale section files from prior run
+    }
+
+    /**
+     * Recursively deletes {@code dir} and all its contents, silently doing nothing
+     * if the path does not exist.  Used to purge the {@code sections/} sub-directory
+     * before each run so renamed or removed stages leave no orphaned HTML files.
+     */
+    private static void deleteTree(Path dir) throws IOException {
+        if (!Files.exists(dir)) return;
+        try (var stream = Files.walk(dir)) {
+            stream.sorted(Comparator.reverseOrder()).forEach(p -> {
+                try { Files.delete(p); } catch (IOException ignored) {}
+            });
+        }
     }
 
     @AfterAll
