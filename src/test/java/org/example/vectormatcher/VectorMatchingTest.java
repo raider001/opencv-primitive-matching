@@ -430,10 +430,11 @@ class VectorMatchingTest {
     void arcHalfSelf() { assertSelfMatchAtLeast(ReferenceId.ARC_HALF, whiteArcHalfOnBlack(), 72.0); }
 
     @Test @Order(39) @DisplayName("ARC_QUARTER — quarter-circle arc on black")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
-                     reason = "Open quarter-circle arc: short incomplete contour with minimal circularity. " +
-                              "Observed score ~67.5%; asserting ≥ 65% to reflect this documented band.")
-    void arcQuarterSelf() { assertSelfMatchAtLeast(ReferenceId.ARC_QUARTER, whiteArcQuarterOnBlack(), 65.0); }
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Open quarter-circle arc: LINE_SEGMENT coherence boost + vertex-score fix " +
+                              "raise score from ~67.5% to ~85.6% by treating seg/topo failures as " +
+                              "scale-artifact noise when circularity, solidity, and AR agree strongly.")
+    void arcQuarterSelf() { assertSelfMatch(ReferenceId.ARC_QUARTER, whiteArcQuarterOnBlack()); }
 
     // =========================================================================
     // Core helper — run, record, assert
@@ -1662,6 +1663,151 @@ class VectorMatchingTest {
         assertCrossRejectOnBg(ReferenceId.LINE_CROSS, ReferenceId.POLYLINE_PLUS_SHAPE, BackgroundId.BG_RANDOM_LINES);
     }
 
+
+    // --- Additional clear discriminations on black background ---
+
+    @Test @Order(231) @Tag("cross-reject")
+    @DisplayName("CIRCLE_OUTLINE in STAR_5_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Smooth circle outline (CIRCLE type, circularity ≈ 1.0, no concavity) " +
+                              "vs 5-pointed star (CLOSED_CONCAVE_POLY, 10 vertices, deep concavity " +
+                              "defects, solidity ≈ 0.5). ShapeType gate, circularity and concavityRatio " +
+                              "all diverge — clean rejection expected.")
+    void circleOutlineShouldNotMatchStarScene() {
+        assertCrossReject(ReferenceId.CIRCLE_OUTLINE, ReferenceId.STAR_5_FILLED);
+    }
+
+    @Test @Order(232) @Tag("cross-reject")
+    @DisplayName("TRIANGLE_FILLED in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "3-vertex convex polygon (CLOSED_CONVEX_POLY, circularity ≈ 0.6, " +
+                              "3 acute-angle vertices) vs smooth filled circle (CIRCLE type, " +
+                              "circularity ≈ 1.0, zero vertex-angle variance). Type gate + vertex " +
+                              "count + circularity all diverge strongly.")
+    void triangleShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.TRIANGLE_FILLED, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(233) @Tag("cross-reject")
+    @DisplayName("RECT_FILLED in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Rectangle (4 right-angle vertices, CLOSED_CONVEX_POLY, solidity ≈ 1.0, " +
+                              "circularity ≈ 0.78) vs filled circle (CIRCLE type, circularity ≈ 1.0, " +
+                              "smooth boundary). ShapeType gate + circularity difference guarantee " +
+                              "clean rejection.")
+    void rectShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.RECT_FILLED, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(234) @Tag("cross-reject")
+    @DisplayName("LINE_H in PENTAGON_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Single horizontal line (LINE_SEGMENT type, AR ≥ 4.0, open topology) " +
+                              "vs convex 5-gon (CLOSED_CONVEX_POLY, 5 vertices, high solidity). " +
+                              "Type gate (LINE_SEGMENT vs CLOSED_CONVEX_POLY) plus vertex count " +
+                              "and solidity mismatch guarantee reliable rejection.")
+    void lineHShouldNotMatchPentagonScene() {
+        assertCrossReject(ReferenceId.LINE_H, ReferenceId.PENTAGON_FILLED);
+    }
+
+    @Test @Order(235) @Tag("cross-reject")
+    @DisplayName("ARC_HALF in TRIANGLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Open semicircle arc (LINE_SEGMENT/partial-curve type, no closure, " +
+                              "low solidity) vs closed filled triangle (CLOSED_CONVEX_POLY, 3 vertices, " +
+                              "high solidity ≈ 1.0). Type mismatch and open/closed topology divergence " +
+                              "guarantee rejection.")
+    void arcHalfShouldNotMatchTriangleScene() {
+        assertCrossReject(ReferenceId.ARC_HALF, ReferenceId.TRIANGLE_FILLED);
+    }
+
+    @Test @Order(236) @Tag("cross-reject")
+    @DisplayName("CONCAVE_MOON in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Crescent moon (CLOSED_CONCAVE_POLY, significant concave cutout, " +
+                              "solidity ≈ 0.55, low circularity) vs full filled circle (CIRCLE type, " +
+                              "circularity ≈ 1.0, solidity ≈ 1.0). Solidity, concavityRatio and " +
+                              "ShapeType all diverge heavily — rejection well within reach.")
+    void concaveMoonShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.CONCAVE_MOON, ReferenceId.CIRCLE_FILLED);
+    }
+
+
+    // --- Additional tests on BG_RANDOM_CIRCLES background ---
+
+    @Test @Order(241) @Tag("cross-reject")
+    @DisplayName("TRIANGLE_FILLED in RECT_FILLED — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Triangle (3 vertices, solidity ≈ 0.73) vs rectangle (4 right-angle " +
+                              "vertices, solidity ≈ 1.0) on circles background. Background circle " +
+                              "outlines do not share triangle vertex/solidity profile; vertex count " +
+                              "and angle structure discriminate reliably.")
+    void triangleShouldNotMatchRectOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.TRIANGLE_FILLED, ReferenceId.RECT_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+    }
+
+    @Test @Order(242) @Tag("cross-reject")
+    @DisplayName("STAR_5_FILLED in CIRCLE_FILLED — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "5-pointed star (CLOSED_CONCAVE_POLY, 10 vertices, solidity ≈ 0.5, " +
+                              "deep concavity defects) vs filled circle (CIRCLE type, circularity ≈ 1.0) " +
+                              "on circles background. Background circles reinforce the circle-scene score " +
+                              "but star reference has fundamentally different solidity/concavity profile " +
+                              "— ShapeType gate ensures rejection.")
+    void starShouldNotMatchCircleOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.STAR_5_FILLED, ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+    }
+
+
+    // --- Additional tests on BG_RANDOM_LINES background ---
+
+    @Test @Order(246) @Tag("cross-reject")
+    @DisplayName("CIRCLE_FILLED in RECT_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Filled circle (CIRCLE type, smooth boundary, circularity ≈ 1.0) vs " +
+                              "rectangle (4 right-angle vertices) with line background noise. " +
+                              "Background lines do not form closed circular shapes; ShapeType gate " +
+                              "and circularity difference survive the noise cleanly.")
+    void circleShouldNotMatchRectOnLines() {
+        assertCrossRejectOnBg(ReferenceId.CIRCLE_FILLED, ReferenceId.RECT_FILLED, BackgroundId.BG_RANDOM_LINES);
+    }
+
+    @Test @Order(247) @Tag("cross-reject")
+    @DisplayName("ARC_HALF in RECT_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Open semicircle arc (partial-curve, low solidity) vs closed filled " +
+                              "rectangle (CLOSED_CONVEX_POLY, 4 vertices, high solidity ≈ 1.0) with " +
+                              "line background noise. Type mismatch and open/closed topology hold " +
+                              "even under background line clutter.")
+    void arcHalfShouldNotMatchRectOnLines() {
+        assertCrossRejectOnBg(ReferenceId.ARC_HALF, ReferenceId.RECT_FILLED, BackgroundId.BG_RANDOM_LINES);
+    }
+
+
+    // --- Polygon-neighbour discriminations ---
+
+    @Test @Order(251) @Tag("cross-reject")
+    @DisplayName("PENTAGON_OUTLINE in HEPTAGON_OUTLINE scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Regular pentagon outline (5 vertices) vs regular heptagon outline " +
+                              "(7 vertices). Vertex ratio 5/7 ≈ 0.714 ≤ 0.80 threshold, so " +
+                              "vtxMultiplier = (5/7)^2.5 ≈ 0.279 strongly suppresses the geometry " +
+                              "score. Score expected well below 60% rejection threshold.")
+    void pentagonShouldNotMatchHeptagonScene() {
+        assertCrossReject(ReferenceId.PENTAGON_OUTLINE, ReferenceId.HEPTAGON_OUTLINE);
+    }
+
+    @Test @Order(252) @Tag("cross-reject")
+    @DisplayName("HEXAGON_OUTLINE in HEPTAGON_OUTLINE scene — known difficulty")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
+                     reason = "Known limitation: 6 vs 7 sides gives ratio 6/7 ≈ 0.857 which exceeds " +
+                              "the 0.80 vtxMultiplier gate threshold, so no vertex-count penalty fires. " +
+                              "Score is expected ~65–70% (above the 60% rejection threshold), producing " +
+                              "a false positive. Fix would require lowering the gate threshold to 0.90 " +
+                              "or adding a per-vertex-count lookup table — tracked as future improvement.")
+    void hexagonShouldNotMatchHeptagonScene() {
+        assertCrossReject(ReferenceId.HEXAGON_OUTLINE, ReferenceId.HEPTAGON_OUTLINE);
+    }
 
 
     // =========================================================================
