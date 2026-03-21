@@ -141,33 +141,44 @@ public final class SceneDescriptor {
     public static List<MatOfPoint> contoursFromMask(Mat mask) {
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
+        int W = mask.cols(), H = mask.rows();
+
         // Zero the 1px border in-place so any contour that literally touches the
         // image edge is disconnected — but thin interior strokes are untouched.
-        // Save only the 4 border strips (width + height bytes total) instead of
-        // cloning the whole W×H mask, then restore them after findContours so the
-        // caller's Mat is left unchanged.
-        Mat top    = mask.row(0).clone();
-        Mat bottom = mask.row(mask.rows() - 1).clone();
-        Mat left   = mask.col(0).clone();
-        Mat right  = mask.col(mask.cols() - 1).clone();
-        mask.row(0).setTo(Scalar.all(0));
-        mask.row(mask.rows() - 1).setTo(Scalar.all(0));
-        mask.col(0).setTo(Scalar.all(0));
-        mask.col(mask.cols() - 1).setTo(Scalar.all(0));
+        // OPT-A: Save/restore border via Java byte[] (2 JNI bulk reads + 2 writes)
+        // instead of 4 Mat.clone() + 4 Mat.copyTo() (8 JNI calls + 4 Mat allocs).
+        byte[] maskData = new byte[W * H];
+        mask.get(0, 0, maskData);
+
+        // Save border pixels
+        byte[] topRow    = new byte[W];
+        byte[] bottomRow = new byte[W];
+        byte[] leftCol   = new byte[H];
+        byte[] rightCol  = new byte[H];
+        System.arraycopy(maskData, 0, topRow, 0, W);
+        System.arraycopy(maskData, (H - 1) * W, bottomRow, 0, W);
+        for (int r = 0; r < H; r++) { leftCol[r] = maskData[r * W]; rightCol[r] = maskData[r * W + W - 1]; }
+
+        // Zero border pixels in the Mat
+        java.util.Arrays.fill(maskData, 0, W, (byte) 0);                       // top row
+        java.util.Arrays.fill(maskData, (H - 1) * W, H * W, (byte) 0);        // bottom row
+        for (int r = 0; r < H; r++) { maskData[r * W] = 0; maskData[r * W + W - 1] = 0; } // left + right cols
+        mask.put(0, 0, maskData);
+
         // RETR_LIST finds ALL contours including inner ones (COMPOUND shapes).
         Imgproc.findContours(mask, contours, hierarchy,
                 Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_SIMPLE);
         hierarchy.release();
-        // Restore border strips so the caller's mask is unmodified.
-        top.copyTo(mask.row(0));
-        bottom.copyTo(mask.row(mask.rows() - 1));
-        left.copyTo(mask.col(0));
-        right.copyTo(mask.col(mask.cols() - 1));
-        top.release(); bottom.release(); left.release(); right.release();
+
+        // Restore border pixels so the caller's mask is unmodified.
+        System.arraycopy(topRow, 0, maskData, 0, W);
+        System.arraycopy(bottomRow, 0, maskData, (H - 1) * W, W);
+        for (int r = 0; r < H; r++) { maskData[r * W] = leftCol[r]; maskData[r * W + W - 1] = rightCol[r]; }
+        mask.put(0, 0, maskData);
+
         // Single forward pass: compute area + boundingRect once per contour (one JNI
         // call each), apply area filter and frame-spanning filter inline, fill the
         // pre-cache arrays — zero additional JNI calls in the dedup step.
-        int W = mask.cols(), H = mask.rows();
         int raw = contours.size();
         Rect[]       bbs   = new Rect      [raw];
         double[]     cxs   = new double    [raw];

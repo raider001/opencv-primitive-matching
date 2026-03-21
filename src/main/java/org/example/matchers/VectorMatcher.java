@@ -85,6 +85,10 @@ public final class VectorMatcher {
     // ── Geometry constant ─────────────────────────────────────────────────────
     private static final double EPSILON = 0.04;   // single variant epsilon
 
+    // ── Debug flags — read once at class load ────────────────────────────────
+    private static final boolean VM_DEBUG      = System.getProperty("vm.debug") != null;
+    private static final boolean VM_BBOX_DEBUG = System.getProperty("vm.bbox.debug") != null;
+
     // ── Contour isolation constants ───────────────────────────────────────────
     /**
      * Minimum contour area as a fraction of the largest contour in the same
@@ -186,6 +190,13 @@ public final class VectorMatcher {
             RefCluster primaryRef = findPrimaryCluster(refClusters);
             int        refCount   = refClusters.size();
 
+            // Pre-compute invariants used per-anchor (avoid recomputing in hot loop)
+            boolean allAchromatic = true;
+            for (RefCluster rc : refClusters) { if (!rc.achromatic) { allAchromatic = false; break; } }
+
+            // Pre-compute the primary ref signature for early-exit type checks (OPT-G)
+            VectorSignature primaryRefSig = primaryRef.bestSig(EPSILON);
+
             // ── Stage 1: Connected-component filter ────────────────────────────
             // Per-cluster: drops isolated noise blobs whose area is < 10 % of that
             // cluster's largest contour.  Handles disconnected same-colour background
@@ -236,12 +247,13 @@ public final class VectorMatcher {
             SceneContourEntry bestAnchor = null;
 
             // Track all scored anchors for post-loop re-selection
-            List<double[]>          anchorScores = new ArrayList<>();
-            List<Rect>              anchorBboxes = new ArrayList<>();
-            List<SceneContourEntry> anchorEntries = new ArrayList<>();
+            List<double[]>          anchorScores      = new ArrayList<>();
+            List<Rect>              anchorBboxes      = new ArrayList<>();
+            List<SceneContourEntry> anchorEntries     = new ArrayList<>();
+            List<List<SceneContourEntry>> anchorMatchedSets = new ArrayList<>();
 
             for (SceneContourEntry anchor : candidates) {
-                Rect anchorBbox = Imgproc.boundingRect(anchor.contour);
+                Rect anchorBbox = anchor.bbox;
 
                 // ── Anchor-to-ref assignment ──────────────────────────────
                 // The anchor represents the ref cluster whose relative contour area
@@ -275,7 +287,7 @@ public final class VectorMatcher {
                         // Proximity gate (relaxed for multi-cluster patterns)
                         // Use regionBbox (growing bbox) instead of anchorBbox to allow expansion
                         // to distant components that are part of the same pattern
-                        double dist = centreDist(regionBbox, Imgproc.boundingRect(ce.contour));
+                        double dist = centreDist(regionBbox, ce.bbox);
                         if (dist > sceneDiag * proximityThreshold) continue;
 
                         // Relative size match — compare against candidate bbox so far
@@ -288,7 +300,7 @@ public final class VectorMatcher {
                         matched.add(best);
                         usedIdx.add(best.clusterIdx);
                         // Only expand regionBbox for non-background-scale contours
-                        Rect bestBb = Imgproc.boundingRect(best.contour);
+                        Rect bestBb = best.bbox;
                         double bestArea = (double) bestBb.width * bestBb.height;
                         if (bestArea < descriptor.sceneArea * 0.60) {
                             regionBbox = unionRect(regionBbox, bestBb);
@@ -300,18 +312,46 @@ public final class VectorMatcher {
                 // Collapse bright/dark achromatic pairs that trace the same physical edge
                 matched = deduplicateAchromaticPairs(matched);
 
-                // ── Score this candidate ──────────────────────────────────
-                double score = scoreRegion(refClusters, refCount, primaryRef,
-                        matched, descriptor, regionBbox);
+                // ── OPT-G: Early exit — skip scoring when type hard-gate ──
+                // When we already have a strong match and this anchor's shape type
+                // is incompatible with the primary ref, the max possible geometry
+                // score is 0.15 → combined max ≈ 0.49, well below bestScore.
+                double score = 0.0;
+                boolean skipped = false;
+                if (bestScore >= 0.70) {
+                    VectorSignature.ShapeType anchorType = anchor.sig.type;
+                    VectorSignature.ShapeType refType    = primaryRefSig.type;
+                    boolean typeCompat = (anchorType == refType)
+                            || (anchorType == VectorSignature.ShapeType.CLOSED_CONVEX_POLY
+                                && refType == VectorSignature.ShapeType.CLOSED_CONCAVE_POLY)
+                            || (anchorType == VectorSignature.ShapeType.CLOSED_CONCAVE_POLY
+                                && refType == VectorSignature.ShapeType.CLOSED_CONVEX_POLY)
+                            || (anchorType == VectorSignature.ShapeType.CIRCLE
+                                && refType == VectorSignature.ShapeType.CLOSED_CONVEX_POLY)
+                            || (anchorType == VectorSignature.ShapeType.CLOSED_CONVEX_POLY
+                                && refType == VectorSignature.ShapeType.CIRCLE)
+                            || anchorType == VectorSignature.ShapeType.COMPOUND
+                            || refType    == VectorSignature.ShapeType.COMPOUND;
+                    if (!typeCompat) {
+                        skipped = true;
+                    }
+                }
 
-                if (System.getProperty("vm.debug") != null) {
+                if (!skipped) {
+                    // ── Score this candidate ──────────────────────────────────
+                    score = scoreRegion(refClusters, refCount, primaryRef,
+                            matched, descriptor, regionBbox, allAchromatic);
+                }
+
+                if (VM_DEBUG) {
                     System.out.printf("[VM-ANCHOR] Anchor %s → matched=%d score=%.1f%% region=%s%n",
                             formatBbox(anchorBbox), matched.size(), score * 100, formatBbox(regionBbox));
                 }
 
-                anchorScores.add(new double[]{score, Imgproc.contourArea(anchor.contour)});
+                anchorScores.add(new double[]{score, anchor.area});
                 anchorBboxes.add(regionBbox);
                 anchorEntries.add(anchor);
+                anchorMatchedSets.add(matched);
 
                 if (score > bestScore) {
                     bestScore  = score;
@@ -337,7 +377,7 @@ public final class VectorMatcher {
             // This is purely geometry-driven — no colour terms involved.
             if (bestScore >= 0.60 && bestAnchor != null) {
                 double reselThreshold = bestScore * 0.85;
-                double reselBestArea  = Imgproc.contourArea(bestAnchor.contour);
+                double reselBestArea  = bestAnchor.area;
                 for (int ri = 0; ri < anchorScores.size(); ri++) {
                     double rScore = anchorScores.get(ri)[0];
                     double rArea  = anchorScores.get(ri)[1];
@@ -355,40 +395,11 @@ public final class VectorMatcher {
             if (bestBbox != null && bestAnchor != null && bestScore >= 0.80) {
                 Rect initialBbox = new Rect(bestBbox.x, bestBbox.y, bestBbox.width, bestBbox.height);
 
-                // ── Step A: Re-build the matched set for bestAnchor ──────────
-                Rect anchorBbox = Imgproc.boundingRect(bestAnchor.contour);
-                double anchorBboxArea = Math.max(1.0, (double) anchorBbox.width * anchorBbox.height);
-                RefCluster anchorRef = assignAnchorToRef(bestAnchor, anchorBboxArea, refClusters);
-
-                List<SceneContourEntry> matched = new ArrayList<>();
-                matched.add(bestAnchor);
-                Set<Integer> usedIdx = new HashSet<>();
-                usedIdx.add(bestAnchor.clusterIdx);
-
-                double proximityThreshold = (refClusters.size() > 2) ? 0.50 : PROXIMITY_THRESHOLD;
-                Rect regionBbox = anchorBbox;
-                for (RefCluster rc : refClusters) {
-                    if (rc == anchorRef) continue;
-                    double refFrac = refFraction(rc);
-                    SceneContourEntry best = null;
-                    double bestDiff = Double.MAX_VALUE;
-                    for (SceneContourEntry ce : candidates) {
-                        if (usedIdx.contains(ce.clusterIdx)) continue;
-                        double dist = centreDist(anchorBbox, Imgproc.boundingRect(ce.contour));
-                        if (dist > sceneDiag * proximityThreshold) continue;
-                        double ceFrac = sceneFraction(ce, regionBbox);
-                        double diff = Math.abs(refFrac - ceFrac);
-                        if (diff < bestDiff) { bestDiff = diff; best = ce; }
-                    }
-                    if (best != null) {
-                        matched.add(best);
-                        usedIdx.add(best.clusterIdx);
-                        Rect bestBb = Imgproc.boundingRect(best.contour);
-                        if ((double) bestBb.width * bestBb.height < descriptor.sceneArea * 0.60)
-                            regionBbox = unionRect(regionBbox, bestBb);
-                    }
-                }
-                matched = deduplicateAchromaticPairs(matched);
+                // ── Step A: Retrieve the stored matched set for bestAnchor ────
+                // (replaces the duplicated expansion loop — OPT-B)
+                Rect anchorBbox = bestAnchor.bbox;
+                int bestAnchorIdx = anchorEntries.indexOf(bestAnchor);
+                List<SceneContourEntry> matched = anchorMatchedSets.get(bestAnchorIdx);
 
                 // ── Step B: Compute reference full extent and scene scale ─────
                 // Full reference extent = union of every cluster's primary bbox.
@@ -513,7 +524,7 @@ public final class VectorMatcher {
                     }
                 }
                 double stepCCap = hasDistinctChromaticHues ? matchedUnionArea : anchorTrimArea;
-                if (System.getProperty("vm.bbox.debug") != null) {
+                if (VM_BBOX_DEBUG) {
                     System.out.printf("[STEP-C] %s chromaticClusters=%d hues=%s distinctHues=%b stepCCap=%.0f%n",
                         referenceId.name(), chromatics.size(),
                         chromatics.stream().map(rc -> String.format("%.1f", rc.hue)).toList(),
@@ -522,7 +533,7 @@ public final class VectorMatcher {
 
                 for (SceneContourEntry m : matched) {
                     if (m == bestAnchor) continue;
-                    Rect mBb = Imgproc.boundingRect(m.contour);
+                    Rect mBb = m.bbox;
                     double dist = centreDist(anchorBbox, mBb);
                     if (dist <= anchorDiag * 0.50) {
                         Rect candidate = unionRect(expandedBbox, mBb);
@@ -541,7 +552,7 @@ public final class VectorMatcher {
                     bestBbox = expandedBbox;
                 }
 
-                if (System.getProperty("vm.bbox.debug") != null) {
+                if (VM_BBOX_DEBUG) {
                     System.out.printf("[BBOX-DEBUG] %s: score=%.1f%% scale=%.2f refExt=%dx%d " +
                         "trim=%.0f union=%.0f sib=%.0f initial=(%d,%d %dx%d) expanded=(%d,%d %dx%d) %s%n",
                         referenceId.name(), bestScore * 100.0, estimatedScale,
@@ -590,13 +601,15 @@ public final class VectorMatcher {
      * @param matched      deduplicated scene entries selected for this candidate
      * @param descriptor   scene descriptor (for Fix B contamination)
      * @param regionBbox   candidate bounding box
+     * @param allAchromatic true when every ref cluster is achromatic (pre-computed)
      */
     private static double scoreRegion(List<RefCluster> refClusters,
                                       int refCount,
                                       RefCluster primaryRef,
                                       List<SceneContourEntry> matched,
                                       SceneDescriptor descriptor,
-                                      Rect regionBbox) {
+                                      Rect regionBbox,
+                                      boolean allAchromatic) {
 
         // ── Layer 1: boundary count ───────────────────────────────────────
         int matchedCount = matched.size();
@@ -614,7 +627,6 @@ public final class VectorMatcher {
         }
 
         // ── Fix B: chromatic contamination (achromatic refs only) ─────────
-        boolean allAchromatic = refClusters.stream().allMatch(rc -> rc.achromatic);
         if (allAchromatic && descriptor.combinedChromaticMask != null) {
             double bboxArea = (double) regionBbox.width * regionBbox.height;
             if (bboxArea > 0) {
@@ -648,7 +660,7 @@ public final class VectorMatcher {
                 continue;
             }
 
-            Rect   entryBb     = Imgproc.boundingRect(entry.contour);
+            Rect   entryBb     = entry.bbox;
             double dist         = centreDist(regionBbox, entryBb);
             double proxScore    = Math.max(0.0, 1.0 - dist / (sceneDiag * 0.30));
 
@@ -661,7 +673,7 @@ public final class VectorMatcher {
             double refBbArea    = Math.max(1.0, (double) refBb.width * refBb.height);
             double entryBbArea  = Math.max(1.0, (double) entryBb.width * entryBb.height);
             double refFrac      = rc.maxContourArea / refBbArea;
-            double sceneFrac    = contourArea(entry.contour) / entryBbArea;
+            double sceneFrac    = entry.area / entryBbArea;
             double covScore     = 1.0 - Math.min(1.0,
                     Math.abs(refFrac - sceneFrac) / Math.max(refFrac, 0.01));
 
@@ -723,7 +735,7 @@ public final class VectorMatcher {
                         + geomScore   * W_GEOM;
 
         // DEBUG — remove after diagnosis
-        if (combined > 0.4 && System.getProperty("vm.debug") != null) {
+        if (combined > 0.4 && VM_DEBUG) {
             VectorSignature rs = primaryRef != null ? primaryRef.bestSig(EPSILON) : null;
             SceneContourEntry ps = primaryScene != null ? primaryScene : null;
             System.out.printf("[VM-DEBUG] count=%.3f match=%.3f geom=%.3f combined=%.3f | refType=%s refCirc=%.3f refV=%d | sceneType=%s sceneCirc=%.3f sceneV=%d%n",
@@ -769,11 +781,11 @@ public final class VectorMatcher {
         List<SceneContourEntry> result = new ArrayList<>(entries);
 
         if (brightEntry != null && darkEntry != null) {
-            Rect   bb     = Imgproc.boundingRect(brightEntry.contour);
-            Rect   db     = Imgproc.boundingRect(darkEntry.contour);
+            Rect   bb     = brightEntry.bbox;
+            Rect   db     = darkEntry.bbox;
             double iou    = bboxIoU(bb, db);
-            double areaB  = contourArea(brightEntry.contour);
-            double areaD  = contourArea(darkEntry.contour);
+            double areaB  = brightEntry.area;
+            double areaD  = darkEntry.area;
             double ratio  = (areaB > 0 && areaD > 0)
                     ? Math.min(areaB, areaD) / Math.max(areaB, areaD) : 0.0;
 
@@ -791,13 +803,13 @@ public final class VectorMatcher {
         // to the chromatic entry so matchedCount stays in sync with a ref that has
         // already been deduped the same way.
         if (darkEntry != null) {
-            Rect   db    = Imgproc.boundingRect(darkEntry.contour);
-            double areaD = contourArea(darkEntry.contour);
+            Rect   db    = darkEntry.bbox;
+            double areaD = darkEntry.area;
             boolean shouldRemoveDark = false;
             for (SceneContourEntry e : result) {
                 if (e.achromatic) continue;
-                Rect   cb    = Imgproc.boundingRect(e.contour);
-                double areaC = contourArea(e.contour);
+                Rect   cb    = e.bbox;
+                double areaC = e.area;
                 double iou   = bboxIoU(cb, db);
                 double ratio = (areaC > 0 && areaD > 0)
                         ? Math.min(areaC, areaD) / Math.max(areaC, areaD) : 0.0;
@@ -939,10 +951,7 @@ public final class VectorMatcher {
 
     /** Returns the bounding rect of the primary (largest-area) contour in a ref cluster. */
     private static Rect primaryBbox(RefCluster rc) {
-        MatOfPoint primary = rc.contours.stream()
-                .max(java.util.Comparator.comparingDouble(Imgproc::contourArea))
-                .orElse(rc.contours.get(0));
-        return Imgproc.boundingRect(primary);
+        return rc.primaryBbox;
     }
 
     // =========================================================================
@@ -958,6 +967,8 @@ public final class VectorMatcher {
         final double  imageArea;
         /** Largest contour area in this cluster — the primary shape boundary. */
         final double  maxContourArea;
+        /** Bounding rect of the primary (largest-area) contour — cached. */
+        final Rect    primaryBbox;
 
         private VectorSignature cachedSig = null;
 
@@ -968,9 +979,15 @@ public final class VectorMatcher {
             this.brightAchromatic = brightAchromatic;
             this.contours         = contours;
             this.imageArea        = imageArea;
-            this.maxContourArea   = contours.stream()
-                    .mapToDouble(c -> Imgproc.contourArea(c))
-                    .max().orElse(0.0);
+            // Pre-compute max contour area and primary bbox in one pass
+            double bestArea = 0.0;
+            MatOfPoint primary = contours.get(0);
+            for (MatOfPoint c : contours) {
+                double a = Imgproc.contourArea(c);
+                if (a > bestArea) { bestArea = a; primary = c; }
+            }
+            this.maxContourArea = bestArea;
+            this.primaryBbox    = Imgproc.boundingRect(primary);
         }
 
         /** Returns the best (highest solidity) VectorSignature at fixed epsilon. */
@@ -1006,7 +1023,9 @@ public final class VectorMatcher {
             boolean    achromatic,
             boolean    brightAchromatic,
             double     clusterHue,
-            VectorSignature sig) {}
+            VectorSignature sig,
+            Rect       bbox,
+            double     area) {}
 
     // =========================================================================
     // Scene candidate collection
@@ -1026,9 +1045,10 @@ public final class VectorMatcher {
                 double bbArea = (double) bb.width * bb.height;
                 if (bbArea > descriptor.sceneArea * 0.50) continue;
 
+                double cArea = Imgproc.contourArea(c);
                 VectorSignature sig = VectorSignature.buildFromContour(c, EPSILON, descriptor.sceneArea);
                 out.add(new SceneContourEntry(c, ci, cc.achromatic, cc.brightAchromatic,
-                        cc.hue, sig));
+                        cc.hue, sig, bb, cArea));
             }
         }
         return out;
@@ -1045,7 +1065,7 @@ public final class VectorMatcher {
     private static RefCluster assignAnchorToRef(SceneContourEntry anchor,
                                                  double anchorBboxArea,
                                                  List<RefCluster> refClusters) {
-        double anchorFrac = contourArea(anchor.contour) / anchorBboxArea;
+        double anchorFrac = anchor.area / anchorBboxArea;
         RefCluster best    = refClusters.get(0);
         double     bestDiff = Math.abs(refFraction(refClusters.get(0)) - anchorFrac);
         for (int i = 1; i < refClusters.size(); i++) {
@@ -1081,9 +1101,9 @@ public final class VectorMatcher {
         SceneContourEntry best    = null;
         double            bestDiff = Double.MAX_VALUE;
         for (SceneContourEntry e : matched) {
-            Rect   eBb   = Imgproc.boundingRect(e.contour);
+            Rect   eBb   = e.bbox;
             double eBbA  = Math.max(1.0, (double) eBb.width * eBb.height);
-            double eFrac = contourArea(e.contour) / eBbA;
+            double eFrac = e.area / eBbA;
             double diff  = Math.abs(refFrac - eFrac);
             if (diff < bestDiff) { bestDiff = diff; best = e; }
         }
@@ -1098,7 +1118,7 @@ public final class VectorMatcher {
     /** Relative contour area of a scene entry vs the current candidate bbox area. */
     private static double sceneFraction(SceneContourEntry ce, Rect regionBbox) {
         double bboxArea = Math.max(1.0, (double) regionBbox.width * regionBbox.height);
-        return contourArea(ce.contour) / bboxArea;
+        return ce.area / bboxArea;
     }
 
     /** Enclosed geometric area of a contour (from contour points, not pixel count). */
@@ -1193,16 +1213,16 @@ public final class VectorMatcher {
         Map<Integer, Double> maxArea = new HashMap<>();
         Map<Integer, Rect>   maxBbox = new HashMap<>();
         for (SceneContourEntry ce : candidates) {
-            double area = Imgproc.contourArea(ce.contour);
+            double area = ce.area;
             if (area > maxArea.getOrDefault(ce.clusterIdx, 0.0)) {
                 maxArea.put(ce.clusterIdx, area);
-                maxBbox.put(ce.clusterIdx, Imgproc.boundingRect(ce.contour));
+                maxBbox.put(ce.clusterIdx, ce.bbox);
             }
         }
 
         List<SceneContourEntry> out = new ArrayList<>();
         for (SceneContourEntry ce : candidates) {
-            double area   = Imgproc.contourArea(ce.contour);
+            double area   = ce.area;
             double clsMax = maxArea.getOrDefault(ce.clusterIdx, 1.0);
 
             // Primary rule: area large enough relative to cluster max
@@ -1215,7 +1235,7 @@ public final class VectorMatcher {
             // → compound component (cross arm, inner ring, etc.), not background noise
             Rect mainBb = maxBbox.get(ce.clusterIdx);
             if (mainBb != null) {
-                Rect   ceBb = Imgproc.boundingRect(ce.contour);
+                Rect   ceBb = ce.bbox;
                 double ceCx = ceBb.x + ceBb.width  / 2.0;
                 double ceCy = ceBb.y + ceBb.height / 2.0;
                 if (ceCx >= mainBb.x && ceCx <= mainBb.x + mainBb.width
@@ -1262,14 +1282,14 @@ public final class VectorMatcher {
         if (candidates.size() <= 1) return candidates;
         double maxArea = 0.0;
         for (SceneContourEntry ce : candidates) {
-            double a = Imgproc.contourArea(ce.contour);
+            double a = ce.area;
             if (a > maxArea) maxArea = a;
         }
         if (maxArea <= 0.0) return candidates;
         final double minArea = maxArea * MIN_GLOBAL_AREA_RATIO;
         List<SceneContourEntry> out = new ArrayList<>();
         for (SceneContourEntry ce : candidates) {
-            if (Imgproc.contourArea(ce.contour) >= minArea) out.add(ce);
+            if (ce.area >= minArea) out.add(ce);
         }
         return out.isEmpty() ? candidates : out;  // never leave caller empty-handed
     }
@@ -1302,8 +1322,8 @@ public final class VectorMatcher {
                 for (SceneContourEntry ce : candidates) {
                     if (ce.clusterIdx != m.clusterIdx || ce == m) continue;
 
-                    Rect   ceBb         = Imgproc.boundingRect(ce.contour);
-                    double ceArea       = Imgproc.contourArea(ce.contour);
+                    Rect   ceBb         = ce.bbox;
+                    double ceArea       = ce.area;
                     double expandedArea = (double) expandedBbox.width * expandedBbox.height;
 
                     // Already at cap — no point continuing
@@ -1377,7 +1397,7 @@ public final class VectorMatcher {
 
         // Rank by contour area descending, pick top-K
         List<SceneContourEntry> byArea = new ArrayList<>(candidates);
-        byArea.sort(Comparator.comparingDouble(ce -> -Imgproc.contourArea(ce.contour)));
+        byArea.sort(Comparator.comparingDouble(ce -> -ce.area));
         Set<SceneContourEntry> topK = new LinkedHashSet<>();
         for (int i = 0; i < Math.min(EROSION_TOP_K, byArea.size()); i++)
             topK.add(byArea.get(i));
@@ -1440,7 +1460,7 @@ public final class VectorMatcher {
         if (newContours.isEmpty()) return candidate;  // fallback — original is unchanged
 
         // Pick the contour spatially closest to the original candidate
-        Rect   origBb = Imgproc.boundingRect(candidate.contour);
+        Rect   origBb = candidate.bbox;
         double origCx = origBb.x + origBb.width  / 2.0;
         double origCy = origBb.y + origBb.height / 2.0;
 
@@ -1454,13 +1474,15 @@ public final class VectorMatcher {
             if (dist < bestDist) { bestDist = dist; best = c; }
         }
 
+        Rect newBbox = Imgproc.boundingRect(best);
+        double newArea = Imgproc.contourArea(best);
         VectorSignature newSig = VectorSignature.buildFromContour(best, EPSILON, sceneArea);
 
         // Release unused contours to avoid native-memory accumulation
         for (MatOfPoint c : newContours) { if (c != best) c.release(); }
 
         return new SceneContourEntry(best, candidate.clusterIdx, candidate.achromatic,
-                candidate.brightAchromatic, candidate.clusterHue, newSig);
+                candidate.brightAchromatic, candidate.clusterHue, newSig, newBbox, newArea);
     }
 
     // =========================================================================

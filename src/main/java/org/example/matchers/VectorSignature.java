@@ -22,6 +22,9 @@ import java.util.List;
  */
 public final class VectorSignature {
 
+    // ── Debug flag — read once at class load ─────────────────────────────────
+    private static final boolean VM_DEBUG = System.getProperty("vm.debug") != null;
+
     // -------------------------------------------------------------------------
     // Shape type classification
     // -------------------------------------------------------------------------
@@ -173,24 +176,29 @@ public final class VectorSignature {
         Rect bb = Imgproc.boundingRect(contour);
         if (bb.width < 4 || bb.height < 4) return unknown();
 
+        // Hoist single toArray + shared MatOfPoint2f — avoids 3+ redundant copies
+        Point[] pts = contour.toArray();
+        MatOfPoint2f contour2f = new MatOfPoint2f(pts);
+
         // ── Step 1: Build SegmentDescriptor from the RAW contour BEFORE
         // approxPolyDP.  This preserves curved segments for ellipses and circles,
         // which approxPolyDP collapses to straight-segment polygons — causing an
         // isClosedCurve mismatch against the reference (built from a smooth mask
         // contour) and a segScore of 0.0.
-        double rawPerim = Imgproc.arcLength(new MatOfPoint2f(contour.toArray()), true);
+        double rawPerim = Imgproc.arcLength(contour2f, true);
         SegmentDescriptor rawSegDesc = SegmentDescriptor.build(contour, rawPerim);
 
         // ── Step 2: ApproxPolyDP reduction for polygon-based metrics (vertex
         // count, circularity, solidity, type classification, topology).
         double strictEps = Math.min(Math.max(0.01 * rawPerim, 1.5), 6.0);
         MatOfPoint2f approxF = new MatOfPoint2f();
-        Imgproc.approxPolyDP(new MatOfPoint2f(contour.toArray()), approxF, strictEps, true);
+        Imgproc.approxPolyDP(contour2f, approxF, strictEps, true);
+        contour2f.release();
         Point[] approxPts = approxF.toArray();
         approxF.release();
 
         // Fall back to raw if approx collapsed to < 3 points
-        Point[] renderPts = (approxPts.length >= 3) ? approxPts : contour.toArray();
+        Point[] renderPts = (approxPts.length >= 3) ? approxPts : pts;
 
         // ── Step 3: Render approxPolyDP polygon into crop for polygon metrics
         int pad = 2;
@@ -206,7 +214,8 @@ public final class VectorSignature {
         // ── Step 4: Build signature from the polygon crop, then override the
         // segmentDescriptor with the raw-contour version so curved shapes
         // (ellipses, circles) match their reference correctly.
-        VectorSignature sig = build(crop, epsilon, imageArea);
+        // crop is consumable — we own it and release it right after.
+        VectorSignature sig = buildInternal(crop, epsilon, imageArea, true);
         crop.release();
 
         // ── Step 5: Re-derive type from the raw SegmentDescriptor so that
@@ -243,12 +252,24 @@ public final class VectorSignature {
      * @return the computed signature, or an UNKNOWN signature on failure
      */
     public static VectorSignature build(Mat binaryMask, double epsilon, double imageArea) {
+        return buildInternal(binaryMask, epsilon, imageArea, false);
+    }
+
+    /**
+     * Internal build — when {@code consumable} is true the mask is used directly
+     * by {@code findContours} (which may modify it), avoiding a full clone.
+     * Only pass {@code true} when the caller owns the Mat and will release it
+     * immediately after this call.
+     */
+    private static VectorSignature buildInternal(Mat binaryMask, double epsilon,
+                                                  double imageArea, boolean consumable) {
         if (binaryMask == null || binaryMask.empty()) return unknown();
 
         List<MatOfPoint> contours = new ArrayList<>();
         Mat hierarchy = new Mat();
         try {
-            Imgproc.findContours(binaryMask.clone(), contours, hierarchy,
+            Imgproc.findContours(consumable ? binaryMask : binaryMask.clone(),
+                    contours, hierarchy,
                     Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
         } finally {
             hierarchy.release();
@@ -276,10 +297,14 @@ public final class VectorSignature {
     // -------------------------------------------------------------------------
 
     private static VectorSignature buildSingle(MatOfPoint contour, double epsilon, double imageArea) {
-        double area      = Imgproc.contourArea(contour);
-        double perimeter = Imgproc.arcLength(new MatOfPoint2f(contour.toArray()), true);
+        // Hoist single toArray + shared MatOfPoint2f — avoids 5+ redundant copies
+        Point[] allPts = contour.toArray();
+        MatOfPoint2f contour2f = new MatOfPoint2f(allPts);
 
-        if (perimeter < 1.0) return unknown();
+        double area      = Imgproc.contourArea(contour);
+        double perimeter = Imgproc.arcLength(contour2f, true);
+
+        if (perimeter < 1.0) { contour2f.release(); return unknown(); }
 
         // Circularity
         double circularity = (4.0 * Math.PI * area) / (perimeter * perimeter);
@@ -289,9 +314,7 @@ public final class VectorSignature {
         // Using minAreaRect instead of axis-aligned boundingRect ensures that a
         // triangle or ellipse rotated 45° keeps the same AR as at 0°, preventing
         // spurious AR-mismatch penalties in the similarity scorer.
-        MatOfPoint2f arPts = new MatOfPoint2f(contour.toArray());
-        RotatedRect minRect = Imgproc.minAreaRect(arPts);
-        arPts.release();
+        RotatedRect minRect = Imgproc.minAreaRect(contour2f);
         double w = minRect.size.width, h = minRect.size.height;
         double aspectRatio = (Math.max(w, h)) / Math.max(1.0, Math.min(w, h));
 
@@ -300,7 +323,6 @@ public final class VectorSignature {
         MatOfInt hullIdx = new MatOfInt();
         Imgproc.convexHull(contour, hullIdx, false);
         int[] idx = hullIdx.toArray();
-        Point[] allPts = contour.toArray();
         Point[] hullPtsArr = new Point[idx.length];
         for (int i = 0; i < idx.length; i++) hullPtsArr[i] = allPts[idx[i]];
         MatOfPoint hullMat = new MatOfPoint(hullPtsArr);
@@ -315,7 +337,6 @@ public final class VectorSignature {
 
         // Polygon approximation
         double eps = Math.min(Math.max(epsilon * perimeter, 2.0), 8.0);
-        MatOfPoint2f contour2f = new MatOfPoint2f(contour.toArray());
         MatOfPoint2f approx    = new MatOfPoint2f();
         Imgproc.approxPolyDP(contour2f, approx, eps, true);
         int vertexCount = (int) approx.total();
@@ -359,7 +380,7 @@ public final class VectorSignature {
         MatOfPoint2f cvApprox = new MatOfPoint2f();
         Imgproc.approxPolyDP(contour2f, cvApprox, cvEps, true);
         double edgeLengthCV = computeEdgeLengthCV(cvApprox);
-        if (System.getProperty("vm.debug") != null) {
+        if (VM_DEBUG) {
             System.out.printf("[EDGE-CV] perim=%.0f cvEps=%.1f vertices=%d CV=%.3f%n",
                 perimeter, cvEps, (int)cvApprox.total(), edgeLengthCV);
         }
@@ -412,9 +433,10 @@ public final class VectorSignature {
         double[] combined = new double[6];
         int counted = 0;
         for (MatOfPoint c : contours) {
-            double perim = Imgproc.arcLength(new MatOfPoint2f(c.toArray()), true);
+            Point[] cPts = c.toArray();
+            MatOfPoint2f c2f    = new MatOfPoint2f(cPts);
+            double perim = Imgproc.arcLength(c2f, true);
             double eps   = Math.min(Math.max(epsilon * perim, 2.0), 8.0);
-            MatOfPoint2f c2f    = new MatOfPoint2f(c.toArray());
             MatOfPoint2f approx = new MatOfPoint2f();
             Imgproc.approxPolyDP(c2f, approx, eps, true);
             double[] h = computeAngleHistogram(approx);
@@ -654,7 +676,7 @@ public final class VectorSignature {
                 hardGate  = true;
                 
                 // DEBUG logging
-                if (System.getProperty("vm.debug") != null) {
+                if (VM_DEBUG) {
                     System.out.printf("[POLY-GATE] Hard gate: %s vs %s | concav: %.3f vs %.3f | solid: %.3f vs %.3f%n",
                         this.type, ref.type, this.concavityRatio, ref.concavityRatio, this.solidity, ref.solidity);
                 }
@@ -829,7 +851,7 @@ public final class VectorSignature {
                             / (double) Math.max(this.vertexCount, ref.vertexCount);
             if (vtxRatio <= 0.80) {
                 vertexMultiplier = Math.pow(vtxRatio, 2.5);
-                if (System.getProperty("vm.debug") != null) {
+                if (VM_DEBUG) {
                     System.out.printf("[VTXMULT-GATE] type=%s/%s vtx=%d/%d ratio=%.3f mult=%.3f%n",
                         this.type, ref.type, this.vertexCount, ref.vertexCount,
                         vtxRatio, vertexMultiplier);
@@ -863,12 +885,12 @@ public final class VectorSignature {
                 && (ref.edgeLengthCV - this.edgeLengthCV) > 0.20) { // large, unambiguous difference
             double cvDiff = ref.edgeLengthCV - this.edgeLengthCV;
             edgeCVMultiplier = Math.max(0.25, Math.pow(1.0 - cvDiff, 2.5));
-            if (System.getProperty("vm.debug") != null) {
+            if (VM_DEBUG) {
                 System.out.printf("[EDGECV-GATE] type=%s/%s vtx=%d/%d thisCV=%.3f refCV=%.3f diff=%.3f mult=%.3f%n",
                     this.type, ref.type, this.vertexCount, ref.vertexCount,
                     this.edgeLengthCV, ref.edgeLengthCV, cvDiff, edgeCVMultiplier);
             }
-        } else if (System.getProperty("vm.debug") != null
+        } else if (VM_DEBUG
                 && this.type == ShapeType.CLOSED_CONVEX_POLY
                 && ref.type == ShapeType.CLOSED_CONVEX_POLY
                 && this.vertexCount > 0 && ref.vertexCount == this.vertexCount) {
@@ -989,7 +1011,7 @@ public final class VectorSignature {
         if (hardGate) result = Math.min(result, 0.15);
 
         // DEBUG — remove after diagnosis
-        if (result > 0.4 && System.getProperty("vm.debug") != null) {
+        if (result > 0.4 && VM_DEBUG) {
             System.out.printf("[SIG-DEBUG] result=%.3f hardGate=%b type=%s->%s typeScore=%.2f seg=%.3f topo=%.3f circ=%.3f(%.3f->%.3f) solid=%.3f vtx=%.2f angle=%.3f ar=%.3f%n",
                 result, hardGate, this.type, ref.type, typeScore, segScore, topoScore,
                 circScore, this.circularity, ref.circularity, solidityScore, vertexScore, angleScore, arMultiplier);
