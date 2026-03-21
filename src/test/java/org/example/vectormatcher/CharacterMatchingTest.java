@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * large enough for the VectorMatcher's contour pipeline to extract meaningful
  * shape descriptors.
  */
-@DisplayName("CharacterMatchingTest — Size 12 Mono characters (a–z, A–Z, 0–9, .,'\")")
+@DisplayName("CharacterMatchingTest \u2014 Size 12 Mono characters (a\u2013z, A\u2013Z, 0\u20139, period/comma/quote)")
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class CharacterMatchingTest {
@@ -234,7 +234,7 @@ class CharacterMatchingTest {
     }
 
     @Test @Order(4)
-    @DisplayName("Punctuation .,'\". — self-match on black background")
+    @DisplayName("Punctuation (.,'\") — self-match on black background")
     @ExpectedOutcome(
         value  = ExpectedOutcome.Result.PARTIAL,
         reason = "Punctuation glyphs are tiny even at large fontScale.  The period '.' and " +
@@ -375,7 +375,7 @@ class CharacterMatchingTest {
     }
 
     @Test @Order(13)
-    @DisplayName("Alphabet scene — find punctuation .,'\". in full alphabet string [DIAGNOSTIC]")
+    @DisplayName("Alphabet scene — find punctuation (.,'\") in full alphabet string [DIAGNOSTIC]")
     @ExpectedOutcome(
         value  = ExpectedOutcome.Result.DIAGNOSTIC,
         reason = "Same diagnostic approach as alphabetSceneLowercase, targeting punctuation. " +
