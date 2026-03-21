@@ -53,13 +53,24 @@ class VectorMatchingTest {
     private static final double DIAG_IOU_MARGIN  = 0.95;
     private static final double DIAG_FP_GATE     = 60.0;
 
-    /** All 14 single-colour shapes exercised by the diagnostic matrix. */
+    /** All 34 shapes exercised by the diagnostic matrix (original 14 + 20 extended). */
     private static final ReferenceId[] ALL_SHAPES = {
+        // ── Original 14 ──────────────────────────────────────────────────────
         ReferenceId.CIRCLE_FILLED,   ReferenceId.RECT_FILLED,      ReferenceId.TRIANGLE_FILLED,
         ReferenceId.HEXAGON_OUTLINE, ReferenceId.PENTAGON_FILLED,  ReferenceId.STAR_5_FILLED,
         ReferenceId.POLYLINE_DIAMOND, ReferenceId.POLYLINE_ARROW_RIGHT, ReferenceId.ELLIPSE_H,
         ReferenceId.OCTAGON_FILLED,  ReferenceId.POLYLINE_PLUS_SHAPE,
         ReferenceId.CONCAVE_ARROW_HEAD, ReferenceId.LINE_CROSS,   ReferenceId.RECT_ROTATED_45,
+        // ── Extended 20 ──────────────────────────────────────────────────────
+        ReferenceId.LINE_H,            ReferenceId.LINE_V,            ReferenceId.LINE_X,
+        ReferenceId.CIRCLE_OUTLINE,    ReferenceId.ELLIPSE_V,
+        ReferenceId.RECT_OUTLINE,      ReferenceId.RECT_SQUARE,
+        ReferenceId.HEXAGON_FILLED,    ReferenceId.STAR_5_OUTLINE,    ReferenceId.HEPTAGON_OUTLINE,
+        ReferenceId.POLYLINE_ARROW_LEFT, ReferenceId.POLYLINE_CHEVRON, ReferenceId.POLYLINE_T_SHAPE,
+        ReferenceId.ARC_HALF,          ReferenceId.ARC_QUARTER,
+        ReferenceId.CONCAVE_MOON,      ReferenceId.IRREGULAR_QUAD,
+        ReferenceId.COMPOUND_RECT_IN_CIRCLE, ReferenceId.COMPOUND_TRIANGLE_IN_CIRCLE,
+        ReferenceId.CROSSHAIR,
     };
 
     private static final int[] ROTATION_ANGLES = {0, 15, 30, 45, 90, 135, 180};
@@ -236,6 +247,37 @@ class VectorMatchingTest {
         assertSelfMatch(ReferenceId.RECT_ROTATED_45, whiteRot45RectOnBlack());
     }
 
+    @Test @Order(15) @DisplayName("LINE_H — single horizontal line on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Single thick horizontal line: extreme AR (>>2), thin bounding box. " +
+                              "LINE type with a single-component geometry should self-match cleanly " +
+                              "on an ideal black scene.")
+    void lineHSelf() { assertSelfMatch(ReferenceId.LINE_H, whiteLineHOnBlack()); }
+
+    @Test @Order(16) @DisplayName("LINE_V — single vertical line on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Single thick vertical line: extreme AR (<<1), thin bounding box. " +
+                              "Orthogonal to LINE_H; clearly distinct from 2D closed shapes.")
+    void lineVSelf() { assertSelfMatch(ReferenceId.LINE_V, whiteLineVOnBlack()); }
+
+    @Test @Order(17) @DisplayName("LINE_X — X-cross (two diagonals) on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Two diagonal lines crossing at centre: COMPOUND type, 2 components " +
+                              "at ±45°. Distinct from LINE_CROSS (axial) via orientation profile.")
+    void lineXSelf() { assertSelfMatch(ReferenceId.LINE_X, whiteLineXOnBlack()); }
+
+    @Test @Order(18) @DisplayName("CIRCLE_OUTLINE — circle outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Pure circle outline: circularity ≈ 1.0, CIRCLE type, single component. " +
+                              "Self-match should be strong — identical geometry class to the reference.")
+    void circleOutlineSelf() { assertSelfMatch(ReferenceId.CIRCLE_OUTLINE, whiteCircleOutlineOnBlack()); }
+
+    @Test @Order(19) @DisplayName("ELLIPSE_V — vertical ellipse outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Tall vertical ellipse outline, AR ≈ 0.5 (inverse of ELLIPSE_H). " +
+                              "Smooth closed contour with distinctive AR; all descriptor layers should agree.")
+    void ellipseVSelf() { assertSelfMatch(ReferenceId.ELLIPSE_V, whiteEllipseVOnBlack()); }
+
     // =========================================================================
     // Multi-colour shapes  (coloured graphic centred on black canvas)
     // =========================================================================
@@ -287,6 +329,38 @@ class VectorMatchingTest {
         assertSelfMatchAtLeast(ReferenceId.BICOLOUR_CHEVRON_FILLED, multiColourScene(ReferenceId.BICOLOUR_CHEVRON_FILLED), 80.0);
     }
 
+    @Test @Order(25) @DisplayName("RECT_OUTLINE — rectangle outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Rectangle outline: 4 right-angle vertices, hollow interior (solidity < 1). " +
+                              "All descriptor layers agree on a clean black scene.")
+    void rectOutlineSelf() { assertSelfMatch(ReferenceId.RECT_OUTLINE, whiteRectOutlineOnBlack()); }
+
+    @Test @Order(26) @DisplayName("RECT_SQUARE — perfect square outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Square outline: AR ≈ 1.0, 4 equal edges, right-angle vertices. " +
+                              "Clearly distinct from non-square rectangles via the AR descriptor.")
+    void rectSquareSelf() { assertSelfMatch(ReferenceId.RECT_SQUARE, whiteSquareOnBlack()); }
+
+    @Test @Order(27) @DisplayName("HEXAGON_FILLED — solid filled hexagon on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Solid hexagon: 6 vertices, circularity ≈ 0.83, solidity ≈ 1.0. " +
+                              "Distinct from HEXAGON_OUTLINE by high solidity; strong self-match expected.")
+    void hexagonFilledSelf() { assertSelfMatch(ReferenceId.HEXAGON_FILLED, whiteHexagonFilledOnBlack()); }
+
+    @Test @Order(28) @DisplayName("STAR_5_OUTLINE — 5-point star outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "10-vertex concave star outline (hollow). Similar to STAR_5_FILLED but the " +
+                              "hollow interior changes solidity; cyclic-alignment complexity expected ~83-88%.")
+    void star5OutlineSelf() {
+        assertSelfMatchAtLeast(ReferenceId.STAR_5_OUTLINE, whiteStar5OutlineOnBlack(), 82.0);
+    }
+
+    @Test @Order(29) @DisplayName("HEPTAGON_OUTLINE — 7-sided polygon outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "7-vertex convex polygon outline. Distinctive vertex count between hexagon (6) " +
+                              "and octagon (8); clean cyclic alignment on an ideal black scene.")
+    void heptagonOutlineSelf() { assertSelfMatch(ReferenceId.HEPTAGON_OUTLINE, whiteHeptagonOnBlack()); }
+
     // =========================================================================
     // Compound shapes
     // =========================================================================
@@ -318,6 +392,57 @@ class VectorMatchingTest {
                 multiColourScene(ReferenceId.COMPOUND_CROSS_IN_CIRCLE), 88.0);
     }
 
+    @Test @Order(33) @DisplayName("COMPOUND_RECT_IN_CIRCLE — rect inscribed in circle on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Two-component shape: outer circle enclosing inner rectangle. " +
+                              "Inverse spatial relationship of COMPOUND_CIRCLE_IN_RECT; " +
+                              "nested component geometry is highly distinctive.")
+    void compoundRectInCircleSelf() {
+        assertSelfMatch(ReferenceId.COMPOUND_RECT_IN_CIRCLE, multiColourScene(ReferenceId.COMPOUND_RECT_IN_CIRCLE));
+    }
+
+    @Test @Order(34) @DisplayName("COMPOUND_TRIANGLE_IN_CIRCLE — triangle inscribed in circle on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Two-component shape: outer circle enclosing inner triangle. " +
+                              "Strong multi-component structural signature with clearly distinct inner/outer geometries.")
+    void compoundTriangleInCircleSelf() {
+        assertSelfMatch(ReferenceId.COMPOUND_TRIANGLE_IN_CIRCLE, multiColourScene(ReferenceId.COMPOUND_TRIANGLE_IN_CIRCLE));
+    }
+
+    @Test @Order(35) @DisplayName("POLYLINE_ARROW_LEFT — left-pointing arrow on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Left-pointing concave arrow: mirror of POLYLINE_ARROW_RIGHT (which PASSes). " +
+                              "AR ≈ 1.25, CLOSED_CONCAVE_POLY type, distinctive notch defect.")
+    void polylineArrowLeftSelf() { assertSelfMatch(ReferenceId.POLYLINE_ARROW_LEFT, whiteArrowLeftOnBlack()); }
+
+    @Test @Order(36) @DisplayName("POLYLINE_CHEVRON — chevron shape on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Closed chevron/caret shape. V-profile provides strong shape cues; " +
+                              "reference-derived scene guarantees exact geometry match.")
+    void polylineChevronSelf() {
+        assertSelfMatch(ReferenceId.POLYLINE_CHEVRON, multiColourScene(ReferenceId.POLYLINE_CHEVRON));
+    }
+
+    @Test @Order(37) @DisplayName("POLYLINE_T_SHAPE — T-shape on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Asymmetric T-shaped closed polygon with concave notches at the base of the " +
+                              "T-top. Self-match expected ~85-90% due to complex vertex alignment.")
+    void polylineTShapeSelf() {
+        assertSelfMatchAtLeast(ReferenceId.POLYLINE_T_SHAPE, multiColourScene(ReferenceId.POLYLINE_T_SHAPE), 82.0);
+    }
+
+    @Test @Order(38) @DisplayName("ARC_HALF — semicircle arc on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Open semicircular arc: incomplete contour, lower circularity than a full circle. " +
+                              "Matcher detects the arc but with reduced confidence compared to closed shapes. " +
+                              "Expected ~80-90%.")
+    void arcHalfSelf() { assertSelfMatchAtLeast(ReferenceId.ARC_HALF, whiteArcHalfOnBlack(), 75.0); }
+
+    @Test @Order(39) @DisplayName("ARC_QUARTER — quarter-circle arc on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Open quarter-circle arc: short incomplete contour with minimal circularity. " +
+                              "Score expected below 90% due to sparse geometry; asserting ≥ 70%.")
+    void arcQuarterSelf() { assertSelfMatchAtLeast(ReferenceId.ARC_QUARTER, whiteArcQuarterOnBlack(), 70.0); }
 
     // =========================================================================
     // Core helper — run, record, assert
@@ -597,6 +722,118 @@ class VectorMatchingTest {
         return rotate(m, 45);
     }
 
+    // ── Extended scene builders ───────────────────────────────────────────────
+
+    private static Mat whiteLineHOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.line(m, new Point(100, 240), new Point(540, 240), new Scalar(255, 255, 255), 8);
+        return m;
+    }
+
+    private static Mat whiteLineVOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.line(m, new Point(320, 60), new Point(320, 420), new Scalar(255, 255, 255), 8);
+        return m;
+    }
+
+    private static Mat whiteLineXOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.line(m, new Point(180, 100), new Point(460, 380), new Scalar(255, 255, 255), 6);
+        Imgproc.line(m, new Point(460, 100), new Point(180, 380), new Scalar(255, 255, 255), 6);
+        return m;
+    }
+
+    private static Mat whiteCircleOutlineOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.circle(m, new Point(320, 240), 110, new Scalar(255, 255, 255), 5);
+        return m;
+    }
+
+    private static Mat whiteEllipseVOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.ellipse(m, new Point(320, 240), new Size(70, 140), 0, 0, 360, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    private static Mat whiteRectOutlineOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.rectangle(m, new Point(180, 130), new Point(460, 350), new Scalar(255, 255, 255), 5);
+        return m;
+    }
+
+    private static Mat whiteSquareOnBlack() {
+        // 260×260 perfect square centred at (320, 240)
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.rectangle(m, new Point(190, 110), new Point(450, 370), new Scalar(255, 255, 255), 5);
+        return m;
+    }
+
+    private static Mat whiteHexagonFilledOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Point[] pts = new Point[6];
+        for (int i = 0; i < 6; i++) {
+            double a = Math.toRadians(60 * i - 30);
+            pts[i] = new Point(320 + 100 * Math.cos(a), 240 + 100 * Math.sin(a));
+        }
+        Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255, 255, 255));
+        return m;
+    }
+
+    private static Mat whiteStar5OutlineOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Point[] pts = new Point[10];
+        for (int i = 0; i < 10; i++) {
+            double a = Math.toRadians(36 * i - 90);
+            int r = (i % 2 == 0) ? 100 : 40;
+            pts[i] = new Point(320 + r * Math.cos(a), 240 + r * Math.sin(a));
+        }
+        Imgproc.polylines(m, List.of(new MatOfPoint(pts)), true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    private static Mat whiteHeptagonOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Point[] pts = new Point[7];
+        for (int i = 0; i < 7; i++) {
+            double a = Math.toRadians(360.0 / 7 * i - 90);
+            pts[i] = new Point(320 + 95 * Math.cos(a), 240 + 95 * Math.sin(a));
+        }
+        Imgproc.polylines(m, List.of(new MatOfPoint(pts)), true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    private static Mat whiteArrowLeftOnBlack() {
+        // Mirror of whiteArrowOnBlack() — all X-coords reflected: new_x = 640 - old_x
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(455, 180), new Point(320, 180), new Point(320, 132),
+                new Point(185, 240),
+                new Point(320, 348), new Point(320, 300),
+                new Point(455, 300))),
+                true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    private static Mat whiteArcHalfOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.ellipse(m, new Point(320, 240), new Size(120, 120), 0, 0, 180, new Scalar(255, 255, 255), 5);
+        return m;
+    }
+
+    private static Mat whiteArcQuarterOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.ellipse(m, new Point(320, 240), new Size(130, 130), 0, 0, 90, new Scalar(255, 255, 255), 5);
+        return m;
+    }
+
+    private static Mat whiteCrosshairOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.line(m, new Point(320, 60),  new Point(320, 420), new Scalar(255, 255, 255), 2);
+        Imgproc.line(m, new Point(100, 240), new Point(540, 240), new Scalar(255, 255, 255), 2);
+        Imgproc.circle(m, new Point(320, 240), 4, new Scalar(255, 255, 255), -1);
+        return m;
+    }
+
     /**
      * Scales the 128×128 reference image 3× and centres it on a 640×480
      * black canvas, preserving its original colours.
@@ -809,6 +1046,131 @@ class VectorMatchingTest {
                               "confined; background line noise should not disrupt either component.")
     void compoundCrossInCircleOnLines() { assertBgMatch(ReferenceId.COMPOUND_CROSS_IN_CIRCLE, BackgroundId.BG_RANDOM_LINES); }
 
+    // ── Extended shapes — BG_RANDOM_LINES ─────────────────────────────────────
+
+    @Test @Order(100) @DisplayName("LINE_H — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Horizontal line on random-lines background — the most adversarial case for " +
+                              "line shapes. Background segments may score similarly to the foreground line. " +
+                              "Expected near 60% threshold; PARTIAL.")
+    void lineHOnLines() { assertBgMatch(ReferenceId.LINE_H, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(101) @DisplayName("LINE_V — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Vertical line on random-lines background. Randomly oriented background " +
+                              "segments make vertical-line detection ambiguous near the 60% threshold.")
+    void lineVOnLines() { assertBgMatch(ReferenceId.LINE_V, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(102) @DisplayName("LINE_X — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "X-cross (COMPOUND, 2 diagonal lines) on random-lines background. " +
+                              "Analogous to LINE_CROSS (order 52, ~68.6%); diagonal orientation may " +
+                              "offer slight advantage but score expected near threshold.")
+    void lineXOnLines() { assertBgMatch(ReferenceId.LINE_X, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(103) @DisplayName("CIRCLE_OUTLINE — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Circle outline on random lines. Smooth closed circular arc is " +
+                              "geometrically distinct from background straight line fragments.")
+    void circleOutlineOnLines() { assertBgMatch(ReferenceId.CIRCLE_OUTLINE, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(104) @DisplayName("ELLIPSE_V — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Vertical ellipse outline on random lines. Smooth closed contour with AR ≈ 0.5 " +
+                              "is clearly distinct from background straight line fragments.")
+    void ellipseVOnLines() { assertBgMatch(ReferenceId.ELLIPSE_V, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(105) @DisplayName("RECT_OUTLINE — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Rectangle outline on random lines. Four long closed right-angle edges are " +
+                              "distinguishable from scattered shorter background line segments.")
+    void rectOutlineOnLines() { assertBgMatch(ReferenceId.RECT_OUTLINE, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(106) @DisplayName("RECT_SQUARE — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Square outline on random lines. Closed square contour with AR ≈ 1.0 and " +
+                              "four equal edges is distinct from background line segments.")
+    void rectSquareOnLines() { assertBgMatch(ReferenceId.RECT_SQUARE, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(107) @DisplayName("HEXAGON_FILLED — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Solid hexagon on random lines. Large filled area dominates the contour " +
+                              "hierarchy and provides strong discrimination from background lines.")
+    void hexagonFilledOnLines() { assertBgMatch(ReferenceId.HEXAGON_FILLED, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(108) @DisplayName("STAR_5_OUTLINE — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "5-point star outline on random lines. Distinctive 10-vertex concave profile " +
+                              "is unlikely to be replicated by random line fragments.")
+    void star5OutlineOnLines() { assertBgMatch(ReferenceId.STAR_5_OUTLINE, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(109) @DisplayName("HEPTAGON_OUTLINE — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "7-sided polygon outline on random lines. Background segments are shorter " +
+                              "than heptagon edges; closed polygon contour should be extracted cleanly.")
+    void heptagonOutlineOnLines() { assertBgMatch(ReferenceId.HEPTAGON_OUTLINE, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(110) @DisplayName("COMPOUND_RECT_IN_CIRCLE — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Rect-in-circle compound shape on random lines. Circular outer boundary " +
+                              "and nested rectangle produce a distinctive multi-component spatial signature.")
+    void compoundRectInCircleOnLines() { assertBgMatch(ReferenceId.COMPOUND_RECT_IN_CIRCLE, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(111) @DisplayName("COMPOUND_TRIANGLE_IN_CIRCLE — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Triangle-in-circle compound shape on random lines. Circular outer boundary " +
+                              "anchors detection; inner triangle adds structural specificity.")
+    void compoundTriangleInCircleOnLines() { assertBgMatch(ReferenceId.COMPOUND_TRIANGLE_IN_CIRCLE, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(112) @DisplayName("POLYLINE_ARROW_LEFT — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Left arrow outline on random lines. Mirrors POLYLINE_ARROW_RIGHT (order 47) " +
+                              "which PASSes; distinctive notch defect and AR ≈ 1.25 survive line noise.")
+    void polylineArrowLeftOnLines() { assertBgMatch(ReferenceId.POLYLINE_ARROW_LEFT, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(113) @DisplayName("POLYLINE_CHEVRON — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Chevron shape on random lines. The V-profile silhouette is geometrically " +
+                              "distinct from background straight line segments.")
+    void polylineChevronOnLines() { assertBgMatch(ReferenceId.POLYLINE_CHEVRON, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(114) @DisplayName("POLYLINE_T_SHAPE — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "T-shape on random lines. Asymmetric T silhouette with flat top and " +
+                              "vertical stem is not replicated by background line segments.")
+    void polylineTShapeOnLines() { assertBgMatch(ReferenceId.POLYLINE_T_SHAPE, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(115) @DisplayName("ARC_HALF — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Semicircular arc on random lines. Smooth curved arc is geometrically " +
+                              "distinct from straight background line fragments.")
+    void arcHalfOnLines() { assertBgMatch(ReferenceId.ARC_HALF, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(116) @DisplayName("ARC_QUARTER — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Quarter-circle arc on random lines. Curved contour profile is distinct " +
+                              "from background straight lines.")
+    void arcQuarterOnLines() { assertBgMatch(ReferenceId.ARC_QUARTER, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(117) @DisplayName("CONCAVE_MOON — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Crescent/moon shape on random lines. Distinctive low-solidity concave " +
+                              "silhouette is not replicated by background straight line segments.")
+    void concaveMoonOnLines() { assertBgMatch(ReferenceId.CONCAVE_MOON, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(118) @DisplayName("IRREGULAR_QUAD — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Irregular quadrilateral on random lines. Closed polygon with asymmetric " +
+                              "edges is distinguishable from scattered background line fragments.")
+    void irregularQuadOnLines() { assertBgMatch(ReferenceId.IRREGULAR_QUAD, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(119) @DisplayName("CROSSHAIR — on random-lines background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Fine crosshair (thin H+V lines + centre dot) on random-lines background. " +
+                              "Thin lines are stylistically similar to background segments; precise X/Y " +
+                              "alignment and centre dot provide partial discrimination near the 60% threshold.")
+    void crosshairOnLines() { assertBgMatch(ReferenceId.CROSSHAIR, BackgroundId.BG_RANDOM_LINES); }
+
     // =========================================================================
     // BG_RANDOM_CIRCLES background — self-match (≥ 60 %)
     // =========================================================================
@@ -959,6 +1321,155 @@ class VectorMatchingTest {
                               "than background circles; the inner cross creates a unique compound " +
                               "signature that background circle outlines cannot reproduce.")
     void compoundCrossInCircleOnCircles() { assertBgMatch(ReferenceId.COMPOUND_CROSS_IN_CIRCLE, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    // ── Extended shapes — BG_RANDOM_CIRCLES ───────────────────────────────────
+
+    @Test @Order(120) @DisplayName("LINE_H — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Horizontal line on random circles. Extreme AR of the horizontal line " +
+                              "is wholly distinct from the near-circular AR ≈ 1 background outlines.")
+    void lineHOnCircles() { assertBgMatch(ReferenceId.LINE_H, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(121) @DisplayName("LINE_V — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Vertical line on random circles. Like LINE_H, extreme AR clearly " +
+                              "distinguishes it from circular background shapes.")
+    void lineVOnCircles() { assertBgMatch(ReferenceId.LINE_V, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(122) @DisplayName("LINE_X — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "X-cross (COMPOUND, 2 diagonals) on random circles. COMPOUND type with " +
+                              "diagonal orientation is geometrically distinct from circular background outlines.")
+    void lineXOnCircles() { assertBgMatch(ReferenceId.LINE_X, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(123) @DisplayName("CIRCLE_OUTLINE — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Circle outline among random circle outlines — same geometry class as background. " +
+                              "The central circle is larger and more prominent, but the matcher lacks a clear " +
+                              "geometric discriminator. Score may sit near or below 60%.")
+    void circleOutlineOnCircles() { assertBgMatch(ReferenceId.CIRCLE_OUTLINE, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(124) @DisplayName("ELLIPSE_V — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Vertical ellipse on random circles. Background circles have AR ≈ 1.0; " +
+                              "the central ellipse has AR ≈ 0.5, making AR-based gating reliable.")
+    void ellipseVOnCircles() { assertBgMatch(ReferenceId.ELLIPSE_V, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(125) @DisplayName("RECT_OUTLINE — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Rectangle outline on random circles. Rectangular type with right-angle " +
+                              "vertices is clearly distinct from curved circular background outlines.")
+    void rectOutlineOnCircles() { assertBgMatch(ReferenceId.RECT_OUTLINE, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(126) @DisplayName("RECT_SQUARE — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Square outline on random circles. Straight edges and right angles " +
+                              "are clearly distinct from curved circular outlines.")
+    void rectSquareOnCircles() { assertBgMatch(ReferenceId.RECT_SQUARE, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(127) @DisplayName("HEXAGON_FILLED — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Solid hexagon on random circles. Straight polygonal edges distinguish " +
+                              "it from circular background outlines despite similar near-circular bounding box.")
+    void hexagonFilledOnCircles() { assertBgMatch(ReferenceId.HEXAGON_FILLED, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(128) @DisplayName("STAR_5_OUTLINE — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "5-point star outline on random circles. Concavity defects and 10-vertex " +
+                              "profile are not replicated by closed circular background outlines.")
+    void star5OutlineOnCircles() { assertBgMatch(ReferenceId.STAR_5_OUTLINE, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(129) @DisplayName("HEPTAGON_OUTLINE — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "7-sided polygon outline on random circles. Straight polygonal edges " +
+                              "distinguish the heptagon from curved circular background outlines.")
+    void heptagonOutlineOnCircles() { assertBgMatch(ReferenceId.HEPTAGON_OUTLINE, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(130) @DisplayName("COMPOUND_RECT_IN_CIRCLE — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Rect-in-circle compound shape on random circles. Inner rectangle creates " +
+                              "a two-component signature that background circle outlines cannot replicate.")
+    void compoundRectInCircleOnCircles() { assertBgMatch(ReferenceId.COMPOUND_RECT_IN_CIRCLE, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(131) @DisplayName("COMPOUND_TRIANGLE_IN_CIRCLE — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Triangle-in-circle compound shape on random circles. Inner triangle " +
+                              "provides structural specificity that background circle outlines lack.")
+    void compoundTriangleInCircleOnCircles() { assertBgMatch(ReferenceId.COMPOUND_TRIANGLE_IN_CIRCLE, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(132) @DisplayName("POLYLINE_ARROW_LEFT — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Left arrow on random circles. Concave notch and directional AR are " +
+                              "geometrically distinct from circular background outlines.")
+    void polylineArrowLeftOnCircles() { assertBgMatch(ReferenceId.POLYLINE_ARROW_LEFT, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(133) @DisplayName("POLYLINE_CHEVRON — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Chevron on random circles. The V-shaped silhouette is geometrically " +
+                              "distinct from circular background outlines.")
+    void polylineChevronOnCircles() { assertBgMatch(ReferenceId.POLYLINE_CHEVRON, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(134) @DisplayName("POLYLINE_T_SHAPE — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "T-shape on random circles. The asymmetric T silhouette provides " +
+                              "structural cues that circular background outlines cannot reproduce.")
+    void polylineTShapeOnCircles() { assertBgMatch(ReferenceId.POLYLINE_T_SHAPE, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(135) @DisplayName("ARC_HALF — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Semicircle arc on random circles. Background shapes are complete closed " +
+                              "outlines; the open semicircular arc has distinct incomplete geometry.")
+    void arcHalfOnCircles() { assertBgMatch(ReferenceId.ARC_HALF, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(136) @DisplayName("ARC_QUARTER — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Quarter-circle arc on random circles. The short open curved arc differs " +
+                              "from closed background circle outlines.")
+    void arcQuarterOnCircles() { assertBgMatch(ReferenceId.ARC_QUARTER, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(137) @DisplayName("CONCAVE_MOON — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Crescent/moon shape on random circles. Concave cutout creates a low-solidity " +
+                              "shape clearly different from closed background circle outlines.")
+    void concaveMoonOnCircles() { assertBgMatch(ReferenceId.CONCAVE_MOON, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(138) @DisplayName("IRREGULAR_QUAD — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Irregular quadrilateral on random circles. Straight polygonal edges " +
+                              "with irregular angles are clearly distinct from circular background outlines.")
+    void irregularQuadOnCircles() { assertBgMatch(ReferenceId.IRREGULAR_QUAD, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    @Test @Order(139) @DisplayName("CROSSHAIR — on random-circles background")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Fine crosshair on random circles. Thin line profile is geometrically " +
+                              "distinct from circular background outlines.")
+    void crosshairOnCircles() { assertBgMatch(ReferenceId.CROSSHAIR, BackgroundId.BG_RANDOM_CIRCLES); }
+
+    // =========================================================================
+    // Extended self-match — concave, irregular, pattern shapes
+    // =========================================================================
+
+    @Test @Order(92) @DisplayName("CONCAVE_MOON — crescent/moon shape on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Crescent shape with distinctive concave cutout: low solidity, " +
+                              "CLOSED_CONCAVE_POLY type. Reference-derived scene guarantees geometry match.")
+    void concaveMoonSelf() {
+        assertSelfMatch(ReferenceId.CONCAVE_MOON, multiColourScene(ReferenceId.CONCAVE_MOON));
+    }
+
+    @Test @Order(93) @DisplayName("IRREGULAR_QUAD — irregular quadrilateral on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Irregular quadrilateral with no parallel sides. Asymmetric vertex angles " +
+                              "produce a unique descriptor; reference-derived scene for exact geometry match.")
+    void irregularQuadSelf() {
+        assertSelfMatch(ReferenceId.IRREGULAR_QUAD, multiColourScene(ReferenceId.IRREGULAR_QUAD));
+    }
+
+    @Test @Order(94) @DisplayName("CROSSHAIR — fine crosshair with centre dot on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Fine crosshair (thin H+V lines) with a centre dot: COMPOUND type, " +
+                              "distinctive from LINE_CROSS by finer stroke weight and centre dot.")
+    void crosshairSelf() { assertSelfMatch(ReferenceId.CROSSHAIR, whiteCrosshairOnBlack()); }
 
     // =========================================================================
     // Cross-reference rejection tests
@@ -1201,10 +1712,11 @@ class VectorMatchingTest {
     @DisplayName("Diagnostic: full shape × background matrix")
     @ExpectedOutcome(
         value  = ExpectedOutcome.Result.PARTIAL,
-        reason = "81/84 correct. 3 known FP: HEXAGON_OUTLINE, OCTAGON_FILLED on " +
-                 "random-circles (background circles share geometry), POLYLINE_PLUS_SHAPE on " +
-                 "random-mixed. HEXAGON_OUTLINE and STAR_5_FILLED sit at ~86-87% across all " +
-                 "backgrounds due to contour-approximation variance at the 128px ref scale.")
+        reason = "34 shapes × 6 backgrounds = 204 total (expanded from 84). Original 14 shapes: " +
+                 "~81/84 correct; 3 known FPs (HEXAGON_OUTLINE, OCTAGON_FILLED on random-circles; " +
+                 "POLYLINE_PLUS_SHAPE on random-mixed). Extended 20 shapes: LINE_H/V/X expected " +
+                 "near-threshold on random-lines; CIRCLE_OUTLINE expected PARTIAL on random-circles " +
+                 "(same geometry class). All other extended shapes expected to pass at ≥ 60%.")
     void runDiagnosticMatrix() {
         for (BgSpec bg : BgSpec.values()) {
             for (ReferenceId refId : ALL_SHAPES) {
@@ -1402,12 +1914,12 @@ class VectorMatchingTest {
      * <p>Annotated PNGs are saved to
      * {@code test_output/vector_matching/annotated/VECTOR_NORMAL/}.
      *
-     * <p>Expected: ~65/98 (66%) pass.  Symmetric shapes (circle, pentagon,
-     * octagon, triangle, arrow, cross) pass at all angles.  AR-sensitive shapes
-     * (ELLIPSE_H, RECT_FILLED, RECT_ROTATED_45, POLYLINE_DIAMOND) legitimately
-     * fail at diagonal rotations because the bounding-box AR changes.
+     * <p>Expected: ~65/98 (66%) pass on original 14 shapes; expanded to 34 shapes × 7 = 238 total.
+     * Symmetric shapes (circle, pentagon, octagon, triangle, arrow, cross) pass at all angles.
+     * AR-sensitive shapes (ELLIPSE_H/V, RECT_FILLED, RECT_ROTATED_45, POLYLINE_DIAMOND, LINE_H, LINE_V)
+     * legitimately fail at rotations that flip their aspect ratio.
      * POLYLINE_PLUS_SHAPE drops at 15°/30°.  HEXAGON_OUTLINE and STAR_5_FILLED
-     * are below the ceiling at all angles — pre-existing limitation.
+     * below ceiling at all angles.  ARC shapes expected partial-pass due to open contours.
      */
     @Test @Order(330)
     @DisplayName("Rotation robustness: all shapes × 0°/15°/30°/45°/90°/135°/180° on black")

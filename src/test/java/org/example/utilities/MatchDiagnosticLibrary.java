@@ -237,6 +237,27 @@ public class MatchDiagnosticLibrary {
             case CONCAVE_ARROW_HEAD   -> concaveArrowhead();
             case LINE_CROSS           -> cross();
             case RECT_ROTATED_45      -> rot45Rect();
+            // ── Extended 20 ───────────────────────────────────────────────
+            case LINE_H                       -> lineH();
+            case LINE_V                       -> lineV();
+            case LINE_X                       -> lineX();
+            case CIRCLE_OUTLINE               -> circleOutline();
+            case ELLIPSE_V                    -> ellipseV();
+            case RECT_OUTLINE                 -> rectOutline();
+            case RECT_SQUARE                  -> rectSquare();
+            case HEXAGON_FILLED               -> hexagonFilled();
+            case STAR_5_OUTLINE               -> star5Outline();
+            case HEPTAGON_OUTLINE             -> heptagonOutline();
+            case POLYLINE_ARROW_LEFT          -> arrowLeft();
+            case POLYLINE_CHEVRON             -> chevron();
+            case POLYLINE_T_SHAPE             -> tShape();
+            case ARC_HALF                     -> arcHalf();
+            case ARC_QUARTER                  -> arcQuarter();
+            case CONCAVE_MOON                 -> concaveMoon();
+            case IRREGULAR_QUAD               -> irregularQuad();
+            case COMPOUND_RECT_IN_CIRCLE      -> compoundRectInCircle();
+            case COMPOUND_TRIANGLE_IN_CIRCLE  -> compoundTriangleInCircle();
+            case CROSSHAIR                    -> crosshair();
             default                   -> Mat.zeros(480, 640, CvType.CV_8UC3);
         };
     }
@@ -389,6 +410,175 @@ public class MatchDiagnosticLibrary {
         Imgproc.warpAffine(m, dst, rotM, m.size());
         rotM.release(); m.release();
         return dst;
+    }
+
+    // ── Extended shape-mat helpers (×3 from 128×128 ref, centred at 320,240) ─
+    // Formula: screen(x,y) = (128 + 3*ref_x , 48 + 3*ref_y)
+
+    private static Mat lineH() {
+        // Ref: line (8,64)→(119,64), th=2.  ×3.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.line(m, new Point(152, 240), new Point(485, 240), new Scalar(255,255,255), 6);
+        return m;
+    }
+    private static Mat lineV() {
+        // Ref: line (64,8)→(64,119), th=2.  ×3.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.line(m, new Point(320, 72), new Point(320, 405), new Scalar(255,255,255), 6);
+        return m;
+    }
+    private static Mat lineX() {
+        // Ref: two diagonals (8,8)→(119,119) and (119,8)→(8,119), th=2.  ×3.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.line(m, new Point(152, 72),  new Point(485, 405), new Scalar(255,255,255), 6);
+        Imgproc.line(m, new Point(485, 72),  new Point(152, 405), new Scalar(255,255,255), 6);
+        return m;
+    }
+    private static Mat circleOutline() {
+        // Ref: circle(centre, r=56, th=2).  ×3 → r=168.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.circle(m, new Point(320, 240), 168, new Scalar(255,255,255), 6);
+        return m;
+    }
+    private static Mat ellipseV() {
+        // Ref: ellipse(centre, Size(28,56), th=2).  ×3 → axes(84,168).
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.ellipse(m, new Point(320, 240), new Size(84, 168), 0, 0, 360,
+                new Scalar(255,255,255), 6);
+        return m;
+    }
+    private static Mat rectOutline() {
+        // Ref: rect (12,24)→(115,103), th=2.  ×3 → (164,120)→(473,357).
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.rectangle(m, new Point(164, 120), new Point(473, 357),
+                new Scalar(255,255,255), 6);
+        return m;
+    }
+    private static Mat rectSquare() {
+        // Ref: square (16,16)→(111,111), th=2.  ×3 → (176,96)→(461,381).
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.rectangle(m, new Point(176, 96), new Point(461, 381),
+                new Scalar(255,255,255), 6);
+        return m;
+    }
+    private static Mat hexagonFilled() {
+        // Ref: drawRegularPolygon(6, r=54, filled, start=-90°).  ×3 → r=162.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Point[] pts = new Point[6];
+        for (int i = 0; i < 6; i++) {
+            double a = Math.toRadians(-90 + 60.0 * i);
+            pts[i] = new Point(320 + 162 * Math.cos(a), 240 + 162 * Math.sin(a));
+        }
+        Imgproc.fillPoly(m, List.of(new MatOfPoint(pts)), new Scalar(255,255,255));
+        return m;
+    }
+    private static Mat star5Outline() {
+        // Ref: drawStar(5, outerR=54, innerR=21.6, outline, start=-90°).  ×3.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Point[] pts = new Point[10];
+        for (int i = 0; i < 10; i++) {
+            double a = Math.toRadians(-90 + 36.0 * i);
+            double r = (i % 2 == 0) ? 162 : 65;
+            pts[i] = new Point(320 + r * Math.cos(a), 240 + r * Math.sin(a));
+        }
+        Imgproc.polylines(m, List.of(new MatOfPoint(pts)), true, new Scalar(255,255,255), 3);
+        return m;
+    }
+    private static Mat heptagonOutline() {
+        // Ref: drawRegularPolygon(7, r=54, outline, start=-90°).  ×3 → r=162.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Point[] pts = new Point[7];
+        for (int i = 0; i < 7; i++) {
+            double a = Math.toRadians(-90 + 360.0 / 7 * i);
+            pts[i] = new Point(320 + 162 * Math.cos(a), 240 + 162 * Math.sin(a));
+        }
+        Imgproc.polylines(m, List.of(new MatOfPoint(pts)), true, new Scalar(255,255,255), 3);
+        return m;
+    }
+    private static Mat arrowLeft() {
+        // Ref: drawArrow(false): cx=64,cy=64, hw=45,hh=20,headH=36.  ×3.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(455, 180), new Point(320, 180), new Point(320, 132),
+                new Point(185, 240),
+                new Point(320, 348), new Point(320, 300),
+                new Point(455, 300))),
+                true, new Scalar(255,255,255), 3);
+        return m;
+    }
+    private static Mat chevron() {
+        // Ref: drawChevron pts (16,64),(64,16),(112,64),(112,112),(64,84),(16,112).  ×3.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(176, 240), new Point(320,  96), new Point(464, 240),
+                new Point(464, 384), new Point(320, 300), new Point(176, 384))),
+                true, new Scalar(255,255,255), 3);
+        return m;
+    }
+    private static Mat tShape() {
+        // Ref: drawTShape pts (16,16),(112,16),(112,44),(76,44),(76,112),(52,112),(52,44),(16,44). ×3.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(176,  96), new Point(464,  96), new Point(464, 180),
+                new Point(356, 180), new Point(356, 384), new Point(284, 384),
+                new Point(284, 180), new Point(176, 180))),
+                true, new Scalar(255,255,255), 3);
+        return m;
+    }
+    private static Mat arcHalf() {
+        // Ref: ellipse(centre, Size(54,54), 0, 0°→180°, th=2).  ×3 → r=162.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.ellipse(m, new Point(320, 240), new Size(162, 162), 0, 0, 180,
+                new Scalar(255,255,255), 6);
+        return m;
+    }
+    private static Mat arcQuarter() {
+        // Ref: ellipse(centre, Size(54,54), 0, 0°→90°, th=2).  ×3 → r=162.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.ellipse(m, new Point(320, 240), new Size(162, 162), 0, 0, 90,
+                new Scalar(255,255,255), 6);
+        return m;
+    }
+    private static Mat concaveMoon() {
+        // Ref: filled circle(r=54) then black-erase offset circle(centre=(79,64), r=50). ×3.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.circle(m, new Point(320, 240), 162, new Scalar(255,255,255), -1);
+        Imgproc.circle(m, new Point(365, 240), 150, new Scalar(0,0,0),       -1);
+        return m;
+    }
+    private static Mat irregularQuad() {
+        // Ref: drawIrregularQuad pts (18,22),(102,14),(112,96),(30,110).  ×3.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(182, 114), new Point(434,  90),
+                new Point(464, 336), new Point(218, 378))),
+                true, new Scalar(255,255,255), 3);
+        return m;
+    }
+    private static Mat compoundRectInCircle() {
+        // Ref: circle(r=54) + rect((28,28)→(99,99)).  ×3.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.circle(m, new Point(320, 240), 162, new Scalar(255,255,255), 3);
+        Imgproc.rectangle(m, new Point(212, 132), new Point(425, 345),
+                new Scalar(255,255,255), 3);
+        return m;
+    }
+    private static Mat compoundTriangleInCircle() {
+        // Ref: circle(r=54) + triangle outline (tip(0,-54), br(54,54), bl(-54,54)).  ×3.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.circle(m, new Point(320, 240), 162, new Scalar(255,255,255), 3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(320, 78), new Point(482, 402), new Point(158, 402))),
+                true, new Scalar(255,255,255), 3);
+        return m;
+    }
+    private static Mat crosshair() {
+        // Ref: H+V lines th=1, filled circle r=3.  ×3 → th=3, r=9.
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.line(m, new Point(152, 240), new Point(485, 240), new Scalar(255,255,255), 3);
+        Imgproc.line(m, new Point(320,  72), new Point(320, 405), new Scalar(255,255,255), 3);
+        Imgproc.circle(m, new Point(320, 240), 9, new Scalar(255,255,255), -1);
+        return m;
     }
 
     // ── Fast-path recorder — uses pre-computed results ────────────────────────
