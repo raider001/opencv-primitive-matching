@@ -1042,8 +1042,16 @@ public final class VectorSignature {
         //   • Only CLOSED_CONVEX_POLY — LINE_SEGMENT, CIRCLE, CLOSED_CONCAVE_POLY use
         //     different discrimination mechanisms and must not be affected.
         double angleMultiplier = 1.0;
+        // ── Thin/arc shape guard — same rationale as VTXMULT-SKIP-THIN ──
+        // For thin open shapes (arcs, crescents, thin strokes) the angle histogram
+        // depends entirely on vertex count, which is scale-dependent (ref=8 vs
+        // scene=18 for ARC_HALF at different resolutions).  Disjoint histograms
+        // are a scale artifact, not a structural difference — skip the gate.
+        boolean angleThinGuard = this.circularity < 0.15 && ref.circularity < 0.15
+                              && this.solidity < 0.30 && ref.solidity < 0.30;
         if (this.type == ShapeType.CLOSED_CONVEX_POLY && ref.type == ShapeType.CLOSED_CONVEX_POLY
-                && angleScore < 0.10) {
+                && angleScore < 0.10
+                && !angleThinGuard) {
             // Scale linearly: 0.0 at angleScore=0 → 1.0 at angleScore=0.10, floor 0.25
             angleMultiplier = Math.max(0.25, angleScore / 0.10);
             if (VM_DEBUG) {
@@ -1051,6 +1059,10 @@ public final class VectorSignature {
                     this.type, ref.type, this.vertexCount, ref.vertexCount,
                     angleScore, angleMultiplier);
             }
+        } else if (angleThinGuard && angleScore < 0.10 && VM_DEBUG) {
+            System.out.printf("[ANGLE-GATE-SKIP-THIN] type=%s/%s vtx=%d/%d circ=%.3f/%.3f solid=%.3f/%.3f angleScore=%.3f%n",
+                this.type, ref.type, this.vertexCount, ref.vertexCount,
+                this.circularity, ref.circularity, this.solidity, ref.solidity, angleScore);
         }
 
         // ── LINE_SEGMENT coherence boost ────────────────────────────────
