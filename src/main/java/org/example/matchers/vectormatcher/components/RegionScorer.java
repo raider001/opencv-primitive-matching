@@ -287,6 +287,9 @@ public final class RegionScorer {
     // Layer 3 — Primary boundary geometry
     // =========================================================================
 
+    // ── Debug flag for CAS diagnostic — read once at class load ──────────────
+    private static final boolean CAS_DEBUG = System.getProperty("vm.cas.debug") != null;
+
     /**
      * Computes the Layer-3 geometry score.
      *
@@ -301,6 +304,20 @@ public final class RegionScorer {
      * purely structural — it finds the best structural alignment regardless of
      * cluster origin or solidity ranking.
      *
+     * <p><b>BAS boost (boundary alignment):</b> When the best VectorSignature
+     * geometry score is degraded (&lt; 0.60) but boundary alignment shows the
+     * reference's vertices lie on the scene contour boundary (BAS boundary
+     * ≥ 0.75), the geometry score is floored at {@code boundaryMatch × 0.70}.
+     * This recovers from background-contaminated contours (e.g. IRREGULAR_QUAD
+     * on BG_RANDOM_LINES) where extra vertices from background line merges
+     * degrade VectorSignature.similarity() but the physical shape corners are
+     * still present on the contour boundary.  Only fires for CLOSED_CONVEX_POLY
+     * with 3–12 vertices — BAS is unreliable for circles, lines, and high-vertex
+     * shapes.
+     *
+     * <p><b>CAS diagnostic:</b> When {@code -Dvm.cas.debug} is set, also logs
+     * vertex-to-vertex CAS and boundary BAS for the best-scoring pair.
+     *
      * @param refClusters all reference clusters
      * @param matched     scene contour entries in the matched set
      * @param epsilon     epsilon factor for VectorSignature building
@@ -310,6 +327,13 @@ public final class RegionScorer {
                                 List<SceneContourEntry> matched,
                                 double epsilon) {
         double bestGeom = -1.0;
+        MatOfPoint bestRefContour   = null;
+        SceneContourEntry bestScene = null;
+        VectorSignature bestRefSig  = null;
+
+        // Also track the best BAS-boosted geometry across ALL pairs
+        double bestBasBoost = -1.0;
+
         for (RefCluster rc : refClusters) {
             for (MatOfPoint refContour : rc.contours) {
                 VectorSignature rcSig = VectorSignature.buildFromContour(
@@ -317,12 +341,85 @@ public final class RegionScorer {
                 for (SceneContourEntry e : matched) {
                     double sim = rcSig.similarity(e.sig());
                     if (sim > bestGeom) {
-                        bestGeom = sim;
+                        bestGeom       = sim;
+                        bestRefContour = refContour;
+                        bestScene      = e;
+                        bestRefSig     = rcSig;
+                    }
+
+                    // ── BAS probe: check boundary alignment for degraded pairs ──
+                    // Only compute BAS when:
+                    // 1. VectorSignature is degraded (sim < 0.60) — contaminated
+                    // 2. Ref is a convex polygon with well-defined vertices (3–12)
+                    // 3. Scene is also a convex polygon (not circle/line/compound)
+                    // 4. Scene has at least as many vertices as ref (contamination
+                    //    adds vertices, doesn't remove them) and not too many more
+                    //    (≤ 2× ref count — beyond that it's a different shape)
+                    VectorSignature eSig = e.sig();
+                    if (sim < 0.60
+                            && rcSig.type == VectorSignature.ShapeType.CLOSED_CONVEX_POLY
+                            && rcSig.vertexCount >= 3 && rcSig.vertexCount <= 12
+                            && eSig != null
+                            && eSig.type == VectorSignature.ShapeType.CLOSED_CONVEX_POLY
+                            && eSig.vertexCount >= rcSig.vertexCount
+                            && eSig.vertexCount <= rcSig.vertexCount * 2) {
+                        var bas = GeometryUtils.computeBoundaryAlignment(
+                                refContour, e.contour(), epsilon);
+                        // Require BOTH high boundary match AND strong angle agreement.
+                        // Angle agreement ≥ 0.65 separates true contamination cases
+                        // (angle ~0.77 for IRREGULAR_QUAD) from regular polygon false
+                        // matches where vertices trivially land on a higher-order
+                        // polygon's boundary (hexagon→octagon: angle ~0.57).
+                        if (bas != null
+                                && bas.boundaryMatch() >= 0.75
+                                && bas.angleMatch() >= 0.65) {
+                            // Floor: combined × 0.70 — uses both position AND angle
+                            double boost = bas.combined() * 0.70;
+                            if (boost > bestBasBoost) {
+                                bestBasBoost = boost;
+                            }
+                        }
                     }
                 }
             }
         }
-        return (bestGeom >= 0.0) ? bestGeom : 0.0;
+
+        // ── Apply BAS boost if it exceeds the best VectorSignature score ──
+        double finalGeom = (bestGeom >= 0.0) ? bestGeom : 0.0;
+        if (bestBasBoost > finalGeom) {
+            if (CAS_DEBUG) {
+                System.out.printf("[BAS-BOOST] geom %.3f → %.3f%n", finalGeom, bestBasBoost);
+            }
+            finalGeom = bestBasBoost;
+        }
+
+        // ── CAS/BAS diagnostic probe ────────────────────────────────────
+        if (CAS_DEBUG && bestRefContour != null) {
+            var cas = GeometryUtils.computeAlignment(
+                    bestRefContour, bestScene.contour(), epsilon);
+            var bas = GeometryUtils.computeBoundaryAlignment(
+                    bestRefContour, bestScene.contour(), epsilon);
+            VectorSignature sSig = bestScene.sig();
+            String refInfo = bestRefSig.type + "(v" + bestRefSig.vertexCount
+                    + ",cv" + String.format("%.3f", bestRefSig.edgeLengthCV) + ")";
+            String sceneInfo = (sSig != null ? sSig.type : "?") + "(v"
+                    + (sSig != null ? sSig.vertexCount : 0) + ",cv"
+                    + String.format("%.3f", sSig != null ? sSig.edgeLengthCV : 0.0) + ")";
+            if (cas != null) {
+                System.out.printf("[CAS-DEBUG] geom=%.3f | pos=%.3f angle=%.3f cas=%.3f | rot=%.1f° scale=%.2f | ref=%s scene=%s%n",
+                        bestGeom, cas.positionMatch(), cas.angleMatch(),
+                        cas.combined(), cas.rotationDeg(), cas.scale(),
+                        refInfo, sceneInfo);
+            }
+            if (bas != null) {
+                System.out.printf("[BAS-DEBUG] geom=%.3f | bnd=%.3f angle=%.3f bas=%.3f | rot=%.1f° scale=%.2f | ref=%s scene=%s%n",
+                        bestGeom, bas.boundaryMatch(), bas.angleMatch(),
+                        bas.combined(), bas.rotationDeg(), bas.scale(),
+                        refInfo, sceneInfo);
+            }
+        }
+
+        return finalGeom;
     }
 
     // =========================================================================

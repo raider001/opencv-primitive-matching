@@ -167,6 +167,7 @@ public final class VectorMatcher {
                 return zeroResult(variant, referenceId, scene, descriptor, t0);
             }
 
+
             // ── Stage 2: Reference-adaptive morphological opening ──────────────
             // Skipped for outline/line references (computeErosionDepth always returns 0).
             int erosionDepth = CandidateFilter.computeErosionDepth(primaryRef);

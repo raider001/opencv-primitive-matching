@@ -1197,8 +1197,11 @@ class VectorMatchingTest {
     @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
                      reason = "Irregular quadrilateral has very generic geometry (4 vertices, moderate " +
                               "circularity/solidity). On a lines background, random connected line " +
-                              "intersections form similar 4-vertex polygons — shape is geometrically " +
-                              "indistinguishable from background noise. Score ~42.6%.")
+                              "intersections merge with shape edges, creating 7-vertex contaminated " +
+                              "contours. BAS (Boundary Alignment Score) detects that 3/4 of the ref's " +
+                              "vertices lie on the contaminated contour boundary with good angle " +
+                              "agreement, boosting L3 from ~13% to ~40%. Score ~64% (up from ~43% " +
+                              "pre-BAS), still below the 70% detection pass threshold.")
     void irregularQuadOnLines() { recordBgMatch(ReferenceId.IRREGULAR_QUAD, BackgroundId.BG_RANDOM_LINES); }
 
     @Test @Order(119) @DisplayName("CROSSHAIR — on random-lines background")

@@ -858,12 +858,31 @@ public final class VectorSignature {
             segScore = Math.max(segScore, circScore);
         }
 
+        // ── 5c. Extended CIRCLE coherence — partial seg/topo rescue ──────
+        // When both sides are circle-like and circularity agrees strongly but
+        // seg/topo are in the partial-failure zone (0.10–0.40), the degradation
+        // is almost certainly a scale artifact from CHAIN_APPROX_SIMPLE
+        // compression (different vertex densities at 128×128 vs 640×480).
+        // Use circularity agreement as a proxy floor.
+        if (bothCircleLike && circScore >= 0.90) {
+            if (segScore < 0.40) {
+                segScore = Math.max(segScore, circScore * 0.85);
+            }
+        }
+
         // ── 6. Topology — legacy connected edge structure ─────────────────
         double topoScore;
         if (this.topology != null && ref.topology != null) {
             topoScore = this.topology.similarity(ref.topology);
         } else {
             topoScore = 0.0;
+        }
+
+        // ── 6b. Extended CIRCLE topo rescue ──────────────────────────────
+        // Mirrors the 5c seg rescue: when both sides are circle-like with strong
+        // circularity agreement, partially-failed topo is a scale artifact.
+        if (bothCircleLike && circScore >= 0.90 && topoScore < 0.40) {
+            topoScore = Math.max(topoScore, circScore * 0.80);
         }
 
         // ── 7. Angle histogram intersection — rotation invariant ──────────
@@ -1432,6 +1451,50 @@ public final class VectorSignature {
                         this.circularity, ref.circularity, this.solidity, ref.solidity,
                         segScore, 0.45, topoScore, 0.45);
                 }
+            }
+        }
+
+        // ── Filled solid polygon coherence boost ─────────────────────────────
+        // For FILLED shapes (solidity > 0.80) with strong global metric agreement,
+        // seg/topo failure (< 0.40) is almost always a scale-dependent artifact:
+        //   • Ref (128×128) and scene (640×480) contours have different vertex
+        //     densities from CHAIN_APPROX_SIMPLE compression.
+        //   • Rotated shapes have different pixel-grid alignment, causing vertex
+        //     position shifts that break segment continuity and topology matching.
+        //
+        // This complements the outline coherence boost (for solidity < 0.40) and
+        // the LINE_SEGMENT/thin-open boosts.  Without it, basic filled shapes like
+        // RECT_FILLED, TRIANGLE_FILLED, PENTAGON_FILLED lose 15-25% on L3 at
+        // rotation angles where seg/topo partially fail.
+        //
+        // Safety gates (prevent false positives):
+        //   • typeScore = 1.0 (exact type match)
+        //   • Both shapes are solid (solidity > 0.80 — not outlines, not thin open)
+        //   • circScore ≥ 0.85 — shape roundness agrees
+        //   • solidityScore ≥ 0.85 — fill ratio agrees
+        //   • vertexScore ≥ 0.80 — vertex count approximately matches
+        //   • aspectScore ≥ 0.70 — shape proportions agree
+        //   • BOTH seg < 0.40 AND topo < 0.40 — both descriptors degraded
+        //
+        // Does NOT fire when the outline boost already applied (bothOutlineShapes).
+        boolean bothFilledSolid = this.solidity > 0.80 && ref.solidity > 0.80;
+        if (bothFilledSolid && !bothOutlineShapes && typeScore >= 1.0
+                && circScore     >= 0.85
+                && solidityScore >= 0.85
+                && vertexScore   >= 0.80
+                && aspectScore   >= 0.70
+                && segScore      <  0.40
+                && topoScore     <  0.40) {
+            // Tier 1: Strong — all metrics near-perfect
+            if (circScore >= 0.95 && solidityScore >= 0.95 && vertexScore >= 0.95
+                    && aspectScore >= 0.80 && angleScore >= 0.80) {
+                segScore  = Math.max(segScore,  0.65);
+                topoScore = Math.max(topoScore, 0.65);
+            }
+            // Tier 2: Moderate — metrics agree well but not perfectly
+            else if (angleScore >= 0.60) {
+                segScore  = Math.max(segScore,  0.50);
+                topoScore = Math.max(topoScore, 0.50);
             }
         }
 
