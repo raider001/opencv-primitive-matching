@@ -13,7 +13,14 @@
 ## Execution-Relevant Files (read first)
 - `src/test/java/org/example/vectormatcher/VectorMatchingTest.java`
 - `src/test/java/org/example/vectormatcher/CrossRejectDiagnosticTest.java` (focused cross-rejection diagnostics)
-- `src/main/java/org/example/matchers/VectorMatcher.java`
+- `src/main/java/org/example/matchers/vectormatcher/VectorMatcher.java`
+- `src/main/java/org/example/matchers/vectormatcher/README.md` (package architecture & design — **keep in sync**, see Maintenance Rules)
+- `src/main/java/org/example/matchers/vectormatcher/components/RegionScorer.java`, `RegionScore.java`
+- `src/main/java/org/example/matchers/vectormatcher/components/CandidateFilter.java`
+- `src/main/java/org/example/matchers/vectormatcher/components/AnchorMatcher.java`
+- `src/main/java/org/example/matchers/vectormatcher/components/BboxExpander.java`
+- `src/main/java/org/example/matchers/vectormatcher/components/RefCluster.java`
+- `src/main/java/org/example/matchers/vectormatcher/components/GeometryUtils.java`
 - `src/main/java/org/example/matchers/SceneDescriptor.java`
 - `src/main/java/org/example/matchers/VectorSignature.java`
 - `src/main/java/org/example/matchers/SegmentDescriptor.java` and `src/main/java/org/example/matchers/ContourTopology.java`
@@ -72,6 +79,10 @@
 - Forbidden: adding colour-dependent terms to final score computation in `VectorMatcher` or signature similarity in `VectorSignature`.
 - Forbidden: selecting final winning candidate primarily by hue/colour identity instead of structural similarity.
 - If a score term uses colour metadata, document why geometry-only alternatives are insufficient and get explicit approval before merging.
+
+## Maintenance Rules
+- **`vectormatcher/README.md` must stay current.** After any change to files in `src/main/java/org/example/matchers/vectormatcher/` or its `components/` sub-package — including adding/removing/renaming classes, changing constants, altering pipeline stages, modifying scoring formulas, or changing data model fields — update `src/main/java/org/example/matchers/vectormatcher/README.md` to reflect the new state. Sections to check: Package Map, Pipeline Architecture, Three-Layer Scoring, Data Model, Constants Reference, Performance Optimisations, and any affected prose.
+- Treat a stale README as a documentation regression: verify the README matches the code before marking a task as done.
 
 ## Regression Targets / Baselines
 - Use expectations already documented in `VectorMatchingTest` as the baseline contract for this suite.
