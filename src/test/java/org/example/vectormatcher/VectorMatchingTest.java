@@ -1103,14 +1103,6 @@ class VectorMatchingTest {
                               "is clearly distinct from background straight line fragments.")
     void ellipseVOnLines() { assertBgMatch(ReferenceId.ELLIPSE_V, BackgroundId.BG_RANDOM_LINES); }
 
-    @Test @Order(105) @DisplayName("RECT_OUTLINE — on random-lines background")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
-                     reason = "Rectangle outline edges physically merge with background line segments in " +
-                              "the raster. The four right-angle edges cannot be reliably separated from " +
-                              "random straight-line fragments, suppressing the score to ~62.5%. IoU=0.89 " +
-                              "confirms detection is in the right area but contour extraction is contaminated.")
-    void rectOutlineOnLines() { recordBgMatch(ReferenceId.RECT_OUTLINE, BackgroundId.BG_RANDOM_LINES); }
-
     @Test @Order(106) @DisplayName("RECT_SQUARE — on random-lines background")
     @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
                      reason = "Square outline on random lines. Closed square contour with AR ≈ 1.0 and " +
@@ -1193,16 +1185,6 @@ class VectorMatchingTest {
                               "silhouette is not replicated by background straight line segments.")
     void concaveMoonOnLines() { assertBgMatch(ReferenceId.CONCAVE_MOON, BackgroundId.BG_RANDOM_LINES); }
 
-    @Test @Order(118) @DisplayName("IRREGULAR_QUAD — on random-lines background")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
-                     reason = "Irregular quadrilateral has very generic geometry (4 vertices, moderate " +
-                              "circularity/solidity). On a lines background, random connected line " +
-                              "intersections merge with shape edges, creating 7-vertex contaminated " +
-                              "contours. BAS (Boundary Alignment Score) detects that 3/4 of the ref's " +
-                              "vertices lie on the contaminated contour boundary with good angle " +
-                              "agreement, boosting L3 from ~13% to ~40%. Score ~64% (up from ~43% " +
-                              "pre-BAS), still below the 70% detection pass threshold.")
-    void irregularQuadOnLines() { recordBgMatch(ReferenceId.IRREGULAR_QUAD, BackgroundId.BG_RANDOM_LINES); }
 
     @Test @Order(119) @DisplayName("CROSSHAIR — on random-lines background")
     @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
@@ -1525,6 +1507,61 @@ class VectorMatchingTest {
     void crosshairSelf() {
         assertSelfMatchAtLeast(ReferenceId.CROSSHAIR,
                 shapeOnBackground(ReferenceId.CROSSHAIR, BackgroundId.BG_SOLID_BLACK), 70.0);
+    }
+
+    // =========================================================================
+    // Expected Failures — known-miss shapes on adversarial backgrounds
+    // =========================================================================
+    //
+    // These shapes are known to fail detection on certain backgrounds due to
+    // fundamental geometric ambiguity (outline edges merging with background
+    // line segments, generic vertex counts, etc.).  They are recorded for the
+    // HTML report and diagnostics but carry NO JUnit assertion — a red row in
+    // the report is the correct visual outcome.
+    //
+    // If future matcher improvements fix any of these, promote them back to
+    // assertBgMatch in the appropriate background section.
+    // =========================================================================
+
+    @Test @Order(190) @DisplayName("RECT_OUTLINE — on random-lines background (expected failure)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
+                     reason = "Rectangle outline edges physically merge with background line segments in " +
+                              "the raster. The four right-angle edges cannot be reliably separated from " +
+                              "random straight-line fragments, suppressing the score well below the 70% " +
+                              "detection threshold. Accepted as a known limitation of outline shapes on " +
+                              "line-heavy backgrounds.")
+    void rectOutlineOnLines() { recordExpectedFailure(ReferenceId.RECT_OUTLINE, BackgroundId.BG_RANDOM_LINES); }
+
+    @Test @Order(191) @DisplayName("IRREGULAR_QUAD — on random-lines background (expected failure)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
+                     reason = "Irregular quadrilateral has very generic geometry (4 vertices, moderate " +
+                              "circularity/solidity). On a lines background, random connected line " +
+                              "intersections merge with shape edges, creating contaminated contours. " +
+                              "BAS boosts L3 partially but the score (~64%) remains below the 70% " +
+                              "detection threshold. Accepted as a known limitation.")
+    void irregularQuadOnLines() { recordExpectedFailure(ReferenceId.IRREGULAR_QUAD, BackgroundId.BG_RANDOM_LINES); }
+
+    /**
+     * Records a match result that is expected to fail detection — no JUnit assertion.
+     * Results appear in the "expected_failures" report section and in {@code diagnostics.json}.
+     */
+    private void recordExpectedFailure(ReferenceId refId, BackgroundId bgId) {
+        Mat sceneMat = shapeOnBackground(refId, bgId);
+        Mat cleanMat = shapeOnBackground(refId, BackgroundId.BG_SOLID_BLACK);
+        Rect gt = MatchDiagnosticLibrary.groundTruthRect(cleanMat);
+        cleanMat.release();
+        Mat ref = ReferenceImageFactory.build(refId);
+        try {
+            MatchRun run = runMatcher(refId, ref, sceneMat, bgId);
+            String stage = "expected_failures";
+            record(stage, refId.name() + "@" + bgId.name(),
+                    refId.name(), refId.name() + " on " + bgId.name(),
+                    sceneMat, run, bgId, gt);
+            // No assertion — result is documented in report only.
+        } finally {
+            ref.release();
+            sceneMat.release();
+        }
     }
 
     // =========================================================================

@@ -203,9 +203,23 @@ public final class BboxExpander {
             expandedBbox = new Rect(cx - tw / 2, cy - th / 2, tw, th);
         }
 
-        // Determine cap based on chromatic diversity
+        // Determine cap based on chromatic diversity and reference shape elongation.
+        // For elongated shapes (refAR > 1.8), use the tighter dimension-aware
+        // siblingExpArea instead of the square-based anchorTrimArea.  The square-based
+        // cap is computed as (maxDim * scale * 1.05)², which for an arc (104×52) at
+        // 3× scale gives 107K — but the actual ref bbox area × scale² is only 48K.
+        // The inflated cap allows background noise contours on BG_RANDOM_LINES to
+        // expand the bbox by 1.6-1.7× GT area, exceeding the 1.30 IoU upper cap.
         boolean hasDistinctChromaticHues = hasDistinctChromaticHues(refClusters);
-        double stepCCap = hasDistinctChromaticHues ? caps.matchedUnionArea : caps.anchorTrimArea;
+        double stepCCap;
+        if (hasDistinctChromaticHues) {
+            stepCCap = caps.matchedUnionArea;
+        } else if (refAR > 1.8) {
+            // Elongated shape: use dimension-aware cap (exact ref bbox area at scale)
+            stepCCap = caps.siblingExpArea;
+        } else {
+            stepCCap = caps.anchorTrimArea;
+        }
 
         if (VM_BBOX_DEBUG) {
             List<RefCluster> chromatics = refClusters.stream()
