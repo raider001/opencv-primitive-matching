@@ -48,26 +48,6 @@ import java.util.*;
  */
 public final class VectorMatcher {
 
-    // ── Layer weights — must sum to 1.0 ──────────────────────────────────────
-    private static final double W_COUNT = 0.15;   // Layer 1: boundary count match
-    private static final double W_MATCH = 0.25;   // Layer 2: structural coherence
-    private static final double W_GEOM  = 0.60;   // Layer 3: primary geometry
-
-    // ── Layer 1 constants ─────────────────────────────────────────────────────
-    /** Exponential decay rate for extra boundaries (scene has more than ref). */
-    private static final double CLUSTER_PENALTY_K      = 0.10;
-    /**
-     * Decay rate for missing boundaries (scene has fewer than ref).
-     * Kept gentler because border-pixel extraction can split/merge one boundary
-     * differently between 128x128 refs and larger scene renders.
-     */
-    private static final double CLUSTER_PENALTY_K_MISS = 0.10;
-    /** Minimum Layer-1 score when only missing-boundary mismatch is present. */
-    private static final double MIN_COUNT_SCORE_MISS   = 0.45;
-
-    // ── Layer 2 constants ─────────────────────────────────────────────────────
-    /** Weight of secondary (non-primary) boundaries in Layer 2. */
-    private static final double SECONDARY_WEIGHT = 0.30;
 
     // ── Deduplication constants ───────────────────────────────────────────────
     /**
@@ -242,14 +222,18 @@ public final class VectorMatcher {
 
                 if (!skipped) {
                     // ── Score this candidate ──────────────────────────────────
-                    double[] scoreArr = scoreRegion(refClusters, refCount, primaryRef,
-                            matched, descriptor, regionBbox, allAchromatic, sceneDiag);
-                    score = scoreArr[0];
+                    RegionScore regionScore = RegionScorer.score(refClusters, refCount,
+                            primaryRef, matched, descriptor, regionBbox, allAchromatic,
+                            sceneDiag, EPSILON);
+                    score = regionScore.combined();
                     if (score > bestScore) {
                         bestScore       = score;
                         bestBbox        = regionBbox;
                         bestAnchor      = anchor;
-                        bestLayerScores = new double[]{scoreArr[1], scoreArr[2], scoreArr[3]};
+                        bestLayerScores = new double[]{
+                                regionScore.countScore(),
+                                regionScore.matchScore(),
+                                regionScore.geomScore()};
                     }
                 }
 
@@ -310,202 +294,6 @@ public final class VectorMatcher {
         }
     }
 
-    // =========================================================================
-    // Scoring
-    // =========================================================================
-
-    /**
-     * Three-layer score for a candidate matched set.
-     *
-     * <p>Returns {@code double[]{combined, countScore, matchScore, geomScore}} — all in [0,1].
-     * Index 0 is the weighted combined score; indices 1-3 are the raw per-layer scores
-     * (before weighting) for Layer 1 (Boundary Count), Layer 2 (Structural), Layer 3 (Geometry).
-     */
-    private static double[] scoreRegion(List<RefCluster> refClusters,
-                                        int refCount,
-                                        RefCluster primaryRef,
-                                        List<SceneContourEntry> matched,
-                                        SceneDescriptor descriptor,
-                                        Rect regionBbox,
-                                        boolean allAchromatic,
-                                        double sceneDiag) {
-
-        // ── Layer 1: boundary count ───────────────────────────────────────
-        int matchedCount = matched.size();
-        double countScore;
-        if (refCount == 0) {
-            countScore = 1.0;
-        } else {
-            int diff = matchedCount - refCount;
-            if (diff > 0) {
-                countScore = Math.exp(-CLUSTER_PENALTY_K * diff);              // extra — over-segmentation
-            } else {
-                countScore = Math.exp(-CLUSTER_PENALTY_K_MISS * Math.abs(diff));
-                countScore = Math.max(countScore, MIN_COUNT_SCORE_MISS);
-            }
-        }
-
-        // ── Fix B: chromatic contamination (achromatic refs only) ─────────
-        // Achromatic references (white/grey on black) should not score highly on
-        // regions dominated by chromatic content.  The check measures the fraction
-        // of chromatic pixels inside the candidate bbox.
-        //
-        // Floor (0.70): random-line backgrounds produce 40–80+ % chromatic coverage
-        // inside a bbox even when the detected shape itself is purely achromatic.
-        // Only extreme contamination (> 70 %) is penalised.
-        //
-        // Cap (0.30): the contamination-adjusted countScore is floored at 0.30
-        // so background noise never destroys Layer 1.  Combined with the
-        // topology-validated seg rescue in VectorSignature (which boosts
-        // Layer 3 geometry to ~0.92 for genuine matches), a 0.30 floor gives
-        // combined scores ≥ 85 % for correct self-matches.  A higher floor
-        // (e.g. 0.60) can let background candidates outscore the real shape
-        // for thin/ambiguous shapes like ARC_HALF.
-        if (allAchromatic && descriptor.combinedChromaticMask != null) {
-            double bboxArea = (double) regionBbox.width * regionBbox.height;
-            if (bboxArea > 0) {
-                Rect clamped = clampRect(regionBbox, descriptor.combinedChromaticMask);
-                if (clamped.width > 0 && clamped.height > 0) {
-                    Mat roi = descriptor.combinedChromaticMask.submat(clamped);
-                    double contamination = Core.countNonZero(roi) / bboxArea;
-                    double CONTAM_FLOOR = 0.70;
-                    if (contamination > CONTAM_FLOOR) {
-                        double excess = (contamination - CONTAM_FLOOR) / (1.0 - CONTAM_FLOOR);
-                        countScore *= Math.pow(1.0 - excess, 1.5);
-                    }
-                    // Never let contamination alone crush countScore below 0.30
-                    countScore = Math.max(countScore, 0.30);
-                }
-            }
-        }
-
-        // ── Layer 2: structural coherence ────────────────────────────────
-        double sumContrib  = 0.0;
-        double sumWeights  = 0.0;
-
-        for (RefCluster rc : refClusters) {
-            double weight = (rc == primaryRef) ? 1.0 : SECONDARY_WEIGHT;
-            sumWeights += weight;
-
-            // Find best matched entry for this ref cluster by relative area closeness
-            SceneContourEntry entry = findMatchedEntryForRef(rc, matched);
-            if (entry == null) {
-                // Missing cluster — zero contribution, weight still in denominator
-                continue;
-            }
-
-            Rect   entryBb     = entry.bbox();
-            double dist         = GeometryUtils.centreDist(regionBbox, entryBb);
-            double proxScore    = Math.max(0.0, 1.0 - dist / (sceneDiag * 0.30));
-
-            // Coverage score: compare shape-fill ratios normalised by each
-            // contour's OWN bounding box — scale and position invariant.
-            // Both sides converge to π/4 for circles, 1.0 for rectangles, etc.
-            // Using refImageArea for the ref denominator causes a systematic
-            // mismatch (circle fills 30% of 128×128 image but 78.5% of its bbox).
-            //
-            // LINE_SEGMENT guard: when either the ref or scene contour has extreme
-            // aspect ratio (> 4:1), the axis-aligned bounding box is unreliable for
-            // coverage/scale comparison — a thin line rotated 45° has an AABB much
-            // larger than its actual extent.  Use contour area directly for scale
-            // comparison and skip covScore (which compares fill fractions).
-            Rect   refBb        = primaryBbox(rc);
-            double refBbArea    = Math.max(1.0, (double) refBb.width * refBb.height);
-            double entryBbArea  = Math.max(1.0, (double) entryBb.width * entryBb.height);
-
-            double refBbAR      = Math.max(refBb.width, refBb.height)
-                                / Math.max(1.0, Math.min(refBb.width, refBb.height));
-            double entryBbAR    = Math.max(entryBb.width, entryBb.height)
-                                / Math.max(1.0, Math.min(entryBb.width, entryBb.height));
-            boolean lineSegLike = refBbAR > 4.0 || entryBbAR > 4.0;
-
-            double covScore;
-            double scaleScore = 1.0;
-
-            if (lineSegLike) {
-                // For LINE_SEGMENT-like shapes: use contour area ratio for scale.
-                // AABB-based coverage is meaningless for rotated thin shapes.
-                covScore = 1.0;   // skip — contour fill ratio varies with rotation
-                double refArea2   = Math.max(1.0, rc.maxContourArea);
-                double sceneArea2 = Math.max(1.0, entry.area());
-                double areaSizeRatio = Math.sqrt(sceneArea2 / refArea2);
-                if (areaSizeRatio > 6.0 || areaSizeRatio < (1.0/6.0)) {
-                    scaleScore = 0.25;
-                } else if (areaSizeRatio > 4.5 || areaSizeRatio < (1.0/4.5)) {
-                    scaleScore = 0.70;
-                }
-            } else {
-                double refFrac   = rc.maxContourArea / refBbArea;
-                double sceneFrac = entry.area() / entryBbArea;
-                covScore  = 1.0 - Math.min(1.0,
-                        Math.abs(refFrac - sceneFrac) / Math.max(refFrac, 0.01));
-
-                // Absolute scale check: penalize when bbox sizes differ significantly.
-                // Even if shapes are geometrically similar (diamond vs rotated rect),
-                // extreme scale differences may indicate wrong match.
-                // Uses square-root ratio to account for area growing quadratically.
-                // Expected scale: scene is typically 3x scaled from 128x128 ref → ratio ≈ 3.0
-                double refBboxDim   = Math.sqrt(refBbArea);
-                double sceneBboxDim = Math.sqrt(entryBbArea);
-                double sizeRatio    = sceneBboxDim / Math.max(refBboxDim, 1.0);
-                if (sizeRatio > 6.0 || sizeRatio < (1.0/6.0)) {
-                    scaleScore = 0.25;
-                } else if (sizeRatio > 4.5 || sizeRatio < (1.0/4.5)) {
-                    scaleScore = 0.70;
-                }
-            }
-
-            sumContrib += weight * (proxScore * 0.40 + covScore * 0.40 + scaleScore * 0.20);
-        }
-
-        double matchScore = (sumWeights > 0) ? sumContrib / sumWeights : 0.0;
-
-        // ── Layer 3: primary boundary geometry ───────────────────────────
-        // Try ALL contour signatures from every ref cluster against every matched
-        // scene entry.  Using only bestSig (max solidity) per cluster can miss the
-        // correct pairing in compound shapes — e.g. a circle-outline cluster's
-        // bestSig might be a co-located triangle (higher solidity), causing the
-        // circle-ref to compare against the triangle scene contour instead of the
-        // circle scene contour.
-        //
-        // Using the best geometry across ALL ref contours × ALL scene entries is
-        // purely structural — it finds the best structural alignment regardless of
-        // cluster origin or solidity ranking.
-        double geomScore = 0.0;
-        double bestGeom = -1.0;
-        for (RefCluster rc : refClusters) {
-            for (MatOfPoint refContour : rc.contours) {
-                VectorSignature rcSig = VectorSignature.buildFromContour(
-                        refContour, EPSILON, Double.NaN);
-                for (SceneContourEntry e : matched) {
-                    double sim = rcSig.similarity(e.sig());
-                    if (sim > bestGeom) {
-                        bestGeom = sim;
-                    }
-                }
-            }
-        }
-        if (bestGeom >= 0.0) {
-            geomScore = bestGeom;
-        }
-
-        // If geometry and structural coherence are both near-perfect, do not let
-        // count-only over-segmentation suppress an otherwise clear true match.
-        if (geomScore >= 0.95 && matchScore >= 0.95) {
-            countScore = Math.max(countScore, 0.45);
-        }
-
-        double combined = countScore * W_COUNT
-                        + matchScore  * W_MATCH
-                        + geomScore   * W_GEOM;
-
-        return new double[]{
-                Math.max(0.0, Math.min(1.0, combined)),
-                countScore,
-                matchScore,
-                geomScore
-        };
-    }
 
     // =========================================================================
     // Deduplication
@@ -818,28 +606,6 @@ public final class VectorMatcher {
         return primary;
     }
 
-    /**
-     * Finds the matched entry that best represents the given ref cluster,
-     * using bbox-normalised fill ratios for both sides so scale differences
-     * between ref (128×128) and scene (640×480) do not affect assignment.
-     */
-    private static SceneContourEntry findMatchedEntryForRef(RefCluster rc,
-                                                             List<SceneContourEntry> matched) {
-        Rect   refBb     = primaryBbox(rc);
-        double refBbArea = Math.max(1.0, (double) refBb.width * refBb.height);
-        double refFrac   = rc.maxContourArea / refBbArea;
-
-        SceneContourEntry best    = null;
-        double            bestDiff = Double.MAX_VALUE;
-        for (SceneContourEntry e : matched) {
-            Rect   eBb   = e.bbox();
-            double eBbA  = Math.max(1.0, (double) eBb.width * eBb.height);
-            double eFrac = e.area() / eBbA;
-            double diff  = Math.abs(refFrac - eFrac);
-            if (diff < bestDiff) { bestDiff = diff; best = e; }
-        }
-        return best;
-    }
 
     // =========================================================================
     // Geometry / bbox helpers
@@ -956,13 +722,6 @@ public final class VectorMatcher {
     }
 
 
-    private static Rect clampRect(Rect r, Mat img) {
-        int x  = Math.max(0, r.x);
-        int y  = Math.max(0, r.y);
-        int x2 = Math.min(img.cols(), r.x + r.width);
-        int y2 = Math.min(img.rows(), r.y + r.height);
-        return new Rect(x, y, Math.max(0, x2 - x), Math.max(0, y2 - y));
-    }
 
     // =========================================================================
     // Utility
