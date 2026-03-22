@@ -66,8 +66,6 @@ public final class VectorMatcher {
     private static final double MIN_COUNT_SCORE_MISS   = 0.45;
 
     // ── Layer 2 constants ─────────────────────────────────────────────────────
-    /** Max centre-to-centre distance as a fraction of scene diagonal for expansion. */
-    private static final double PROXIMITY_THRESHOLD = 0.35;
     /** Weight of secondary (non-primary) boundaries in Layer 2. */
     private static final double SECONDARY_WEIGHT = 0.30;
 
@@ -86,33 +84,8 @@ public final class VectorMatcher {
     // ── Geometry constant ─────────────────────────────────────────────────────
     private static final double EPSILON = 0.04;   // single variant epsilon
 
-    // ── Debug flags — read once at class load ────────────────────────────────
-    private static final boolean VM_DEBUG      = System.getProperty("vm.debug") != null;
-    private static final boolean VM_BBOX_DEBUG = System.getProperty("vm.bbox().debug") != null;
-
-    // ── Contour isolation constants ───────────────────────────────────────────
-    /**
-     * Minimum contour area as a fraction of the largest contour in the same
-     * cluster.  Contours below this ratio are isolated noise blobs and are
-     * dropped by the connected-component filter before scoring.
-     */
-    private static final double CC_AREA_RATIO_MIN = 0.10;
-    /**
-     * Minimum contour area as a fraction of the GLOBAL largest contour across
-     * all clusters (Stage 3 filter).  Drops tiny background elements — e.g.
-     * random background circles (20–60 px, ~2–5% of scene target area) —
-     * that would otherwise outscore the actual target shape in Layer 2/3 and
-     * produce wrong-location detections.
-     *
-     * Set to 8%: inner rings of COMPOUND_BULLSEYE (~20–25% of outer) are kept;
-     * background 30 px circles (~2–4% of a 150 px target) are dropped.
-     */
-    private static final double MIN_GLOBAL_AREA_RATIO = 0.08;
-    /**
-     * Number of top candidates (by raw contour area) to re-extract with
-     * morphological opening during reference-adaptive erosion (Stage 2).
-     */
-    private static final int    EROSION_TOP_K     = 3;
+    // ── Debug flag — read once at class load ─────────────────────────────
+    private static final boolean VM_DEBUG = System.getProperty("vm.debug") != null;
 
     private VectorMatcher() {}
 
@@ -199,37 +172,22 @@ public final class VectorMatcher {
             VectorSignature primaryRefSig = primaryRef.bestSig(EPSILON);
 
             // ── Stage 1: Connected-component filter ────────────────────────────
-            // Per-cluster: drops isolated noise blobs whose area is < 10 % of that
-            // cluster's largest contour.  Handles disconnected same-colour background
-            // fragments without requiring any reference geometry knowledge.
-            candidates = applyConnectedComponentFilter(candidates);
+            candidates = CandidateFilter.applyConnectedComponentFilter(candidates);
             if (candidates.isEmpty()) {
                 return zeroResult(variant, referenceId, scene, descriptor, t0);
             }
 
             // ── Stage 1b: Global minimum-size filter ───────────────────────────
-            // Drops candidates whose contour area is below MIN_GLOBAL_AREA_RATIO of
-            // the scene-wide largest contour (across all clusters).  This eliminates
-            // tiny background elements — random circles (20–60 px), short line
-            // segments — that survive the per-cluster CC filter but would still
-            // outscore the actual target in Layer 2/3 due to incidentally matching
-            // geometry (a 30 px circle classified as CLOSED_CONVEX_POLY with
-            // 8 vertices scores ~97 % against an octagon reference).
-            // Inner components of compound shapes (cross inside circle, inner bullseye
-            // rings) are retained because they are ≥ 15–25 % of the outer contour.
-            candidates = applyGlobalSizeFilter(candidates);
+            candidates = CandidateFilter.applyGlobalSizeFilter(candidates);
             if (candidates.isEmpty()) {
                 return zeroResult(variant, referenceId, scene, descriptor, t0);
             }
 
             // ── Stage 2: Reference-adaptive morphological opening ──────────────
-            // Re-extracts the top-K candidates with a morphological open sized to
-            // the reference fill density, severing thin background-line arms that
-            // are physically connected to the main shape.
-            // Skipped entirely for outline/line references (solidity < 0.30).
-            int erosionDepth = computeErosionDepth(primaryRef);
+            // Skipped for outline/line references (computeErosionDepth always returns 0).
+            int erosionDepth = CandidateFilter.computeErosionDepth(primaryRef);
             if (erosionDepth > 0) {
-                candidates = reExtractTopCandidates(candidates, scene, erosionDepth, descriptor);
+                candidates = CandidateFilter.reExtractTopCandidates(candidates, scene, erosionDepth, descriptor);
             }
 
             // ── OPT-R: Build signatures only for surviving candidates ───
@@ -264,57 +222,14 @@ public final class VectorMatcher {
                 Rect anchorBbox = anchor.bbox();
 
                 // ── Anchor-to-ref assignment ──────────────────────────────
-                // The anchor represents the ref cluster whose relative contour area
-                // (vs ref image) most closely matches the anchor's (vs its own bbox area).
                 double anchorBboxArea = Math.max(1.0, (double) anchorBbox.width * anchorBbox.height);
-                RefCluster anchorRef  = assignAnchorToRef(anchor, anchorBboxArea, refClusters);
+                RefCluster anchorRef  = AnchorMatcher.assignAnchorToRef(anchor, anchorBboxArea, refClusters);
 
-                // ── Expansion loop ────────────────────────────────────────
-                // Select additional scene clusters by proximity + relative size only.
-                // No colour, no geometry.
-                // For multi-cluster refs (>2), use larger proximity threshold to handle
-                // patterns like BICOLOUR_CROSSHAIR_RING where components may be far apart.
-                double proximityThreshold = (refClusters.size() > 2) ? 0.50 : PROXIMITY_THRESHOLD;
-                
-                Rect regionBbox = anchorBbox;
-                List<SceneContourEntry> matched = new ArrayList<>();
-                matched.add(anchor);
-                Set<Integer> usedIdx = new HashSet<>();
-                usedIdx.add(anchor.clusterIdx());
-
-                for (RefCluster rc : refClusters) {
-                    if (rc == anchorRef) continue;   // anchor already covers this one
-
-                    double refFrac = refFraction(rc);
-                    SceneContourEntry best    = null;
-                    double            bestDiff = Double.MAX_VALUE;
-
-                    for (SceneContourEntry ce : candidates) {
-                        if (usedIdx.contains(ce.clusterIdx())) continue;
-
-                        // Proximity gate (relaxed for multi-cluster patterns)
-                        // Use regionBbox (growing bbox) instead of anchorBbox to allow expansion
-                        // to distant components that are part of the same pattern
-                        double dist = GeometryUtils.centreDist(regionBbox, ce.bbox());
-                        if (dist > sceneDiag * proximityThreshold) continue;
-
-                        // Relative size match — compare against candidate bbox so far
-                        double ceFrac = sceneFraction(ce, regionBbox);
-                        double diff   = Math.abs(refFrac - ceFrac);
-                        if (diff < bestDiff) { bestDiff = diff; best = ce; }
-                    }
-
-                    if (best != null) {
-                        matched.add(best);
-                        usedIdx.add(best.clusterIdx());
-                        // Only expand regionBbox for non-background-scale contours
-                        Rect bestBb = best.bbox();
-                        double bestArea = (double) bestBb.width * bestBb.height;
-                        if (bestArea < descriptor.sceneArea * 0.60) {
-                            regionBbox = GeometryUtils.unionRect(regionBbox, bestBb);
-                        }
-                    }
-                }
+                // ── Expansion from anchor ─────────────────────────────────
+                AnchorMatcher.MatchResult result = AnchorMatcher.expandFromAnchor(
+                        anchor, anchorRef, candidates, refClusters, sceneDiag);
+                List<SceneContourEntry> matched = result.matched();
+                Rect regionBbox = result.regionBbox();
 
                 // ── Deduplication ─────────────────────────────────────────
                 // Collapse bright/dark achromatic pairs that trace the same physical edge
@@ -450,175 +365,10 @@ public final class VectorMatcher {
             // ── Post-score bbox expansion ─────────────────────────────────
             // Only expand when the match is confident (score ≥ 75%).
             if (bestBbox != null && bestAnchor != null && bestScore >= 0.75) {
-                Rect initialBbox = new Rect(bestBbox.x, bestBbox.y, bestBbox.width, bestBbox.height);
-
-                // ── Step A: Retrieve the stored matched set for bestAnchor ────
-                // (replaces the duplicated expansion loop — OPT-B)
-                Rect anchorBbox = bestAnchor.bbox();
                 int bestAnchorIdx = anchorEntries.indexOf(bestAnchor);
                 List<SceneContourEntry> matched = anchorMatchedSets.get(bestAnchorIdx);
-
-                // ── Step B: Compute reference full extent and scene scale ─────
-                // Full reference extent = union of every cluster's primary bbox.
-                Rect refFullBbox = primaryBbox(refClusters.get(0));
-                for (RefCluster rc : refClusters) {
-                    refFullBbox = GeometryUtils.unionRect(refFullBbox, primaryBbox(rc));
-                }
-
-                // Estimate scene-to-reference scale by searching ALL contours across
-                // ALL ref clusters — not just the primary one.  For compound shapes
-                // (BULLSEYE), the scoring loop may select an INNER ring as the best
-                // anchor.  Using only the outer primary bbox underestimates the scale
-                // (middle-ring anchor at scene-207px / outer-ring-ref-113px = 1.83×
-                // instead of the true 3×).
-                //
-                // Strategy: for each ref contour with diagonal ≥ 6px, compute a
-                // candidate scale = anchorDiag / refContourDiag.  Select the
-                // candidate whose deviation from the nearest 0.5-step value is
-                // smallest (e.g. 2.88 → 3.0, dev=0.12; 1.83 → 2.0, dev=0.17).
-                // Half-step quantisation reflects natural scene scales used in this
-                // test suite (1×, 1.5×, 2×, 3×). Fallback: 3.0.
-                double anchorDiag    = Math.hypot(anchorBbox.width, anchorBbox.height);
-                double estimatedScale = 3.0;
-                double bestRatioDev   = Double.MAX_VALUE;
-                for (RefCluster rc : refClusters) {
-                    for (int ri = 0; ri < rc.contours.size(); ri++) {
-                        Rect   rcBb      = rc.contourBboxes[ri];  // OPT-E: cached
-                        double rcDiag    = Math.hypot(rcBb.width, rcBb.height);
-                        if (rcDiag < 6.0) continue;
-                        double candidate = anchorDiag / rcDiag;
-                        if (candidate < 1.0 || candidate > 8.0) continue;
-                        double dev = Math.abs(candidate - Math.round(candidate * 2.0) / 2.0);
-                        if (dev < bestRatioDev) { bestRatioDev = dev; estimatedScale = candidate; }
-                    }
-                }
-                estimatedScale = Math.min(8.0, Math.max(1.0, estimatedScale));
-
-                // Three area limits derived from the reference geometry:
-                //
-                //  anchorTrimArea  (5%)  — cap used to trim the initial anchor bbox
-                //    when background noise has inflated it beyond the reference shape's
-                //    expected footprint.  Uses the max dimension squared so that an
-                //    elongated reference (e.g. horizontal ellipse) is not over-trimmed
-                //    when detected at a diagonal rotation (where its AABB is roughly
-                //    square rather than elongated).  For square-ish references this
-                //    gives the same result as width*height.
-                //
-                //  matchedUnionArea (15%) — generous cap used when unioning already-
-                //    scored matched contours in Step C.  These contours were vetted
-                //    by the scoring loop, so slight over-estimate is acceptable and
-                //    necessary for bicolour shapes whose second half pushes the bbox
-                //    ~10–15 % beyond the reference extent.
-                //
-                //  siblingExpArea   (5%)  — tight cap for Step D sibling expansion.
-                //    Siblings are unverified — they may include background circles
-                //    that happen to overlap the anchor cluster.
-                double refMaxDim       = Math.max(refFullBbox.width, refFullBbox.height);
-                double anchorTrimSide  = refMaxDim * estimatedScale * 1.05;
-                double anchorTrimArea  = anchorTrimSide * anchorTrimSide;
-
-                double matchedUnionW    = refFullBbox.width  * estimatedScale * 1.15;
-                double matchedUnionH    = refFullBbox.height * estimatedScale * 1.15;
-                double matchedUnionArea = Math.max(matchedUnionW * matchedUnionH,
-                        anchorTrimArea * 1.15);
-
-                double siblingExpArea   = anchorTrimArea;   // same 5 % budget
-
-                // ── Step C: Union co-located matched contours ─────────────────
-                // Start from the anchor bbox, but trim it when it already exceeds
-                // anchorTrimArea (background pixels may have inflated it).
-                Rect expandedBbox;
-                double anchorBoxArea = (double) anchorBbox.width * anchorBbox.height;
-                if (anchorBoxArea <= anchorTrimArea) {
-                    expandedBbox = new Rect(anchorBbox.x, anchorBbox.y,
-                            anchorBbox.width, anchorBbox.height);
-                } else {
-                    // Trim proportionally, keeping the anchor centroid fixed
-                    double trimRatio = Math.sqrt(anchorTrimArea / anchorBoxArea);
-                    int tw = (int)(anchorBbox.width  * trimRatio);
-                    int th = (int)(anchorBbox.height * trimRatio);
-                    int cx = anchorBbox.x + anchorBbox.width  / 2;
-                    int cy = anchorBbox.y + anchorBbox.height / 2;
-                    expandedBbox = new Rect(cx - tw / 2, cy - th / 2, tw, th);
-                }
-                // Union with each other matched contour (already scored) using a
-                // cap that depends on whether the reference has TWO DISTINCTLY
-                // DIFFERENT chromatic clusters (a genuine bicolour shape):
-                //
-                //   • Two+ clusters with clearly different hues (bicolour): use
-                //     matchedUnionArea (15 %).  The second colour half is a legitimate
-                //     spatial extension.
-                //
-                //   • Otherwise (single-colour, achromatic, or red-hue-wrapped):
-                //     use anchorTrimArea (5 %).  The second matched entry is the dark
-                //     border side of the same contour or a spurious background blob.
-                //
-                // Hue distance threshold: 20 degrees on the [0,180) OpenCV scale,
-                // accounting for the 0/179 wrap-around (red appears at both ends).
-                // Spatial guard: the two chromatic clusters must also occupy distinct
-                // regions (primary bbox IoU < 0.50).  Without this, border-pixel
-                // extraction artifacts on single-colour shapes (e.g. red triangle)
-                // falsely trigger the generous bicolour cap because the anti-aliased
-                // edge produces two chromatic clusters with different hues at the
-                // SAME physical location.
-                boolean hasDistinctChromaticHues = false;
-                List<RefCluster> chromatics = refClusters.stream()
-                        .filter(rc -> !rc.achromatic)
-                        .toList();
-                outer:
-                for (int ci = 0; ci < chromatics.size(); ci++) {
-                    for (int cj = ci + 1; cj < chromatics.size(); cj++) {
-                        double diff = Math.abs(chromatics.get(ci).hue - chromatics.get(cj).hue);
-                        if (Math.min(diff, 180.0 - diff) > 20.0) {
-                            // Also require spatially distinct regions
-                            Rect bi = primaryBbox(chromatics.get(ci));
-                            Rect bj = primaryBbox(chromatics.get(cj));
-                            if (GeometryUtils.bboxIoU(bi, bj) < 0.50) {
-                                hasDistinctChromaticHues = true;
-                                break outer;
-                            }
-                        }
-                    }
-                }
-                double stepCCap = hasDistinctChromaticHues ? matchedUnionArea : anchorTrimArea;
-                if (VM_BBOX_DEBUG) {
-                    System.out.printf("[STEP-C] %s chromaticClusters=%d hues=%s distinctHues=%b stepCCap=%.0f%n",
-                        referenceId.name(), chromatics.size(),
-                        chromatics.stream().map(rc -> String.format("%.1f", rc.hue)).toList(),
-                        hasDistinctChromaticHues, stepCCap);
-                }
-
-                for (SceneContourEntry m : matched) {
-                    if (m == bestAnchor) continue;
-                    Rect mBb = m.bbox();
-                    double dist = GeometryUtils.centreDist(anchorBbox, mBb);
-                    if (dist <= anchorDiag * 0.50) {
-                        Rect candidate = GeometryUtils.unionRect(expandedBbox, mBb);
-                        if ((double) candidate.width * candidate.height <= stepCCap)
-                            expandedBbox = candidate;
-                    }
-                }
-
-                // ── Step D: Sibling expansion, capped at siblingExpArea (5%) ─
-                expandedBbox = unionConcentricAndOverlappingSiblings(
-                        expandedBbox, matched, candidates, siblingExpArea);
-
-                // Sanity check: reject if frame-spanning (> 80 % scene area)
-                double expandedArea = (double) expandedBbox.width * expandedBbox.height;
-                if (expandedArea <= descriptor.sceneArea * 0.80) {
-                    bestBbox = expandedBbox;
-                }
-
-                if (VM_BBOX_DEBUG) {
-                    System.out.printf("[BBOX-DEBUG] %s: score=%.1f%% scale=%.2f refExt=%dx%d " +
-                        "trim=%.0f union=%.0f sib=%.0f initial=(%d,%d %dx%d) expanded=(%d,%d %dx%d) %s%n",
-                        referenceId.name(), bestScore * 100.0, estimatedScale,
-                        refFullBbox.width, refFullBbox.height,
-                        anchorTrimArea, matchedUnionArea, siblingExpArea,
-                        initialBbox.x, initialBbox.y, initialBbox.width, initialBbox.height,
-                        expandedBbox.x, expandedBbox.y, expandedBbox.width, expandedBbox.height,
-                        (expandedArea <= descriptor.sceneArea * 0.80) ? "ACCEPTED" : "REJECTED");
-                }
+                bestBbox = BboxExpander.expandBbox(bestBbox, bestAnchor, matched,
+                        candidates, refClusters, referenceId.name(), descriptor.sceneArea);
             }
             // else: low-confidence match → keep conservative scored bbox
 
@@ -1166,22 +916,6 @@ public final class VectorMatcher {
     // Selection helpers
     // =========================================================================
 
-    /**
-     * Assigns the anchor contour to the ref cluster whose relative contour area
-     * (vs ref image area) most closely matches the anchor's (vs its own bbox area).
-     */
-    private static RefCluster assignAnchorToRef(SceneContourEntry anchor,
-                                                 double anchorBboxArea,
-                                                 List<RefCluster> refClusters) {
-        double anchorFrac = anchor.area() / anchorBboxArea;
-        RefCluster best    = refClusters.get(0);
-        double     bestDiff = Math.abs(refFraction(refClusters.get(0)) - anchorFrac);
-        for (int i = 1; i < refClusters.size(); i++) {
-            double diff = Math.abs(refFraction(refClusters.get(i)) - anchorFrac);
-            if (diff < bestDiff) { bestDiff = diff; best = refClusters.get(i); }
-        }
-        return best;
-    }
 
     /**
      * Returns the primary ref cluster — the one with the largest contour area.
@@ -1218,35 +952,9 @@ public final class VectorMatcher {
         return best;
     }
 
-    /** Relative contour area of a ref cluster's primary contour vs ref image area. */
-    private static double refFraction(RefCluster rc) {
-        return rc.cachedRefFraction;
-    }
-
-    /** Relative contour area of a scene entry vs the current candidate bbox area. */
-    private static double sceneFraction(SceneContourEntry ce, Rect regionBbox) {
-        double bboxArea = Math.max(1.0, (double) regionBbox.width * regionBbox.height);
-        return ce.area() / bboxArea;
-    }
-
-    /** Enclosed geometric area of a contour (from contour points, not pixel count). */
-    private static double contourArea(MatOfPoint c) {
-        return Imgproc.contourArea(c);
-    }
-
     // =========================================================================
     // Geometry / bbox helpers
     // =========================================================================
-
-    private static Point rectCentre(Rect r) {
-        return new Point(r.x + r.width / 2.0, r.y + r.height / 2.0);
-    }
-
-    /** Returns true if the two rectangles overlap (share any area). */
-    private static boolean rectsIntersect(Rect a, Rect b) {
-        return a.x < b.x + b.width  && b.x < a.x + a.width
-            && a.y < b.y + b.height && b.y < a.y + a.height;
-    }
 
     /** Returns true if the shape type is any closed polygon variant. */
     private static boolean isClosedPoly(VectorSignature.ShapeType t) {
@@ -1297,303 +1005,6 @@ public final class VectorMatcher {
                 AnalysisResult.ScoringLayers.ZERO);
     }
 
-    // =========================================================================
-    // Contour isolation helpers (Stage 1 + 2)
-    // =========================================================================
-
-    /**
-     * Connected-component filter (Stage 1).
-     *
-     * <p>For each cluster, retains only contours whose area is at least
-     * {@value #CC_AREA_RATIO_MIN} × the largest contour in that cluster.
-     * Contours below that threshold are <em>also</em> kept when their bounding-box
-     * centre falls inside the main (largest) contour's bounding box — these are
-     * compound-shape components (e.g. cross arms inside a circle, ring sections)
-     * rather than isolated background noise blobs.
-     *
-     * <p>This ensures COMPOUND shapes like {@code COMPOUND_CROSS_IN_CIRCLE} keep
-     * all their components while scattered same-colour background fragments (whose
-     * centres are outside the main shape's bbox) are dropped.
-     */
-    private static List<SceneContourEntry> applyConnectedComponentFilter(
-            List<SceneContourEntry> candidates) {
-        if (candidates.size() <= 1) return candidates;
-
-        // Largest contour area and its bbox, keyed by clusterIdx
-        Map<Integer, Double> maxArea = new HashMap<>();
-        Map<Integer, Rect>   maxBbox = new HashMap<>();
-        for (SceneContourEntry ce : candidates) {
-            double area = ce.area();
-            if (area > maxArea.getOrDefault(ce.clusterIdx(), 0.0)) {
-                maxArea.put(ce.clusterIdx(), area);
-                maxBbox.put(ce.clusterIdx(), ce.bbox());
-            }
-        }
-
-        List<SceneContourEntry> out = new ArrayList<>();
-        for (SceneContourEntry ce : candidates) {
-            double area   = ce.area();
-            double clsMax = maxArea.getOrDefault(ce.clusterIdx(), 1.0);
-
-            // Primary rule: area large enough relative to cluster max
-            // Relaxed threshold for achromatic clusters (0.05 vs 0.10) to preserve
-            // thin outline rings in compound shapes like COMPOUND_BULLSEYE
-            double threshold = ce.achromatic() ? 0.05 : CC_AREA_RATIO_MIN;
-            if (area >= clsMax * threshold) { out.add(ce); continue; }
-
-            // Secondary rule: small but spatially inside the main shape's bbox
-            // → compound component (cross arm, inner ring, etc.), not background noise
-            Rect mainBb = maxBbox.get(ce.clusterIdx());
-            if (mainBb != null) {
-                Rect   ceBb = ce.bbox();
-                double ceCx = ceBb.x + ceBb.width  / 2.0;
-                double ceCy = ceBb.y + ceBb.height / 2.0;
-                if (ceCx >= mainBb.x && ceCx <= mainBb.x + mainBb.width
-                 && ceCy >= mainBb.y && ceCy <= mainBb.y + mainBb.height) {
-                    out.add(ce);
-                }
-            }
-        }
-        return out;
-    }
-
-    /**
-     * Returns the morphological-opening depth suited to the reference fill density.
-     *
-     * <p>Currently returns 0 for all shapes.  Applying MORPH_OPEN — even at 1 px —
-     * rounds the corners of triangular colour sections and hexagon/circle outline
-     * strokes enough to shift their {@link VectorSignature} vertex angles, causing
-     * regressions on {@code TRICOLOUR_TRIANGLE}, {@code HEXAGON_OUTLINE} and
-     * {@code BICOLOUR_CIRCLE_RING}.  Background-line tests already pass at the
-     * 60 % threshold without erosion.  Re-enable if a stricter contamination
-     * metric is added that guards against corner-rounding on outline shapes.
-     */
-    private static int computeErosionDepth(RefCluster primaryRef) {
-        return 0;
-    }
-
-    /**
-     * Stage 1b — Global minimum-size filter.
-     *
-     * <p>Drops any candidate whose contour area is below
-     * {@value #MIN_GLOBAL_AREA_RATIO} × the area of the globally largest
-     * contour (across all clusters).  This eliminates small background elements
-     * — random circles (20–60 px) and short line segments — that survive the
-     * per-cluster connected-component filter but would still outscore the actual
-     * target shape by incidentally matching its geometry at a tiny scale.
-     *
-     * <p>Inner components of compound shapes (inner cross of
-     * COMPOUND_CROSS_IN_CIRCLE, inner rings of COMPOUND_BULLSEYE) are
-     * safely retained because their areas are typically ≥ 15–25 % of the
-     * outer/primary contour.
-     */
-    private static List<SceneContourEntry> applyGlobalSizeFilter(
-            List<SceneContourEntry> candidates) {
-        if (candidates.size() <= 1) return candidates;
-        double maxArea = 0.0;
-        for (SceneContourEntry ce : candidates) {
-            double a = ce.area();
-            if (a > maxArea) maxArea = a;
-        }
-        if (maxArea <= 0.0) return candidates;
-        final double minArea = maxArea * MIN_GLOBAL_AREA_RATIO;
-        List<SceneContourEntry> out = new ArrayList<>();
-        for (SceneContourEntry ce : candidates) {
-            if (ce.area() >= minArea) out.add(ce);
-        }
-        return out.isEmpty() ? candidates : out;  // never leave caller empty-handed
-    }
-
-    /**
-     * Unions same-cluster siblings of each matched entry into {@code expandedBbox}
-     * when the sibling is spatially related to the current result region:
-     *
-     * <ul>
-     *   <li><b>Concentric:</b> sibling centre is within 35 % of the sibling's own
-     *       diagonal from the expandedBbox centre (concentric rings, bullseye).</li>
-     *   <li><b>Overlapping:</b> sibling bbox intersects the current expandedBbox
-     *       (adjacent components, enclosed pieces).</li>
-     * </ul>
-     *
-     * <p>Hard cap: the resulting bbox area must not exceed {@code maxAllowedArea},
-     * which is computed from the reference full extent × estimated scene scale × 1.15.
-     * This prevents absorption of background circles whose combined bbox would
-     * exceed what the actual reference shape could ever occupy in the scene.
-     */
-    private static Rect unionConcentricAndOverlappingSiblings(
-            Rect expandedBbox,
-            List<SceneContourEntry> matched,
-            List<SceneContourEntry> candidates,
-            double maxAllowedArea) {
-
-        for (int pass = 0; pass < 4; pass++) {
-            Rect before = expandedBbox;
-            for (SceneContourEntry m : matched) {
-                for (SceneContourEntry ce : candidates) {
-                    if (ce.clusterIdx() != m.clusterIdx() || ce == m) continue;
-
-                    Rect   ceBb         = ce.bbox();
-                    double ceArea       = ce.area();
-                    double expandedArea = (double) expandedBbox.width * expandedBbox.height;
-
-                    // Already at cap — no point continuing
-                    if (expandedArea >= maxAllowedArea) break;
-
-                    // Guard: sibling must be substantial relative to current bbox
-                    if (ceArea < expandedArea * 0.10) continue;
-
-                    // Criterion 1 — concentric
-                    double ceDiag      = Math.hypot(ceBb.width, ceBb.height);
-                    boolean concentric = GeometryUtils.centreDist(expandedBbox, ceBb) <= ceDiag * 0.35;
-
-                    // Criterion 2 — overlapping
-                    boolean overlapping = rectsIntersect(expandedBbox, ceBb);
-
-                    if (concentric || overlapping) {
-                        Rect candidate     = GeometryUtils.unionRect(expandedBbox, ceBb);
-                        double candidateArea = (double) candidate.width * candidate.height;
-                        if (candidateArea <= maxAllowedArea) {
-                            expandedBbox = candidate;
-                        } else if (concentric) {
-                            // ── Tightly concentric override ────────────────────
-                            // When a same-cluster sibling is VERY precisely centered
-                            // on the anchor (center-to-center distance < 5% of
-                            // anchor diagonal), it is almost certainly an outer ring
-                            // of a compound shape (e.g. COMPOUND_BULLSEYE outer ring
-                            // when the anchor is the middle ring).
-                            //
-                            // The normal cap (based on estimated scale) can be too
-                            // tight when the scale estimation picks a ref contour
-                            // at the wrong nesting level.  Allow expansion up to
-                            // 3× the current bbox area for tightly concentric
-                            // siblings — generous enough for outer rings, but still
-                            // capped to prevent absorption of large background noise.
-                            double ancDiag = Math.hypot(expandedBbox.width, expandedBbox.height);
-                            double dist    = GeometryUtils.centreDist(expandedBbox, ceBb);
-                            if (dist <= ancDiag * 0.05
-                                    && candidateArea <= expandedArea * 3.0) {
-                                expandedBbox = candidate;
-                            }
-                        }
-                    }
-                }
-            }
-            if (expandedBbox.x == before.x && expandedBbox.y == before.y
-                    && expandedBbox.width == before.width
-                    && expandedBbox.height == before.height) break;
-        }
-        return expandedBbox;
-    }
-
-    /**
-     * Reference-adaptive erosion (Stage 2).
-     *
-     * <p>Identifies the top-{@value #EROSION_TOP_K} candidates by raw contour
-     * area and re-extracts each one from {@code scene.sceneMat()} with a
-     * morphological open of {@code erosionDepth} px.  The opening severs thin
-     * background-line arms that are physically connected to the main shape
-     * boundary — the root cause of wrong-bbox returns on line-texture backgrounds.
-     *
-     * <p>For chromatic candidates the full hue-range mask is re-extracted and
-     * opened.  For achromatic candidates the bright/dark full-pixel mask is used,
-     * then a gradient is applied after opening to restore the border-pixel
-     * representation used by {@link SceneDescriptor}.
-     */
-    private static List<SceneContourEntry> reExtractTopCandidates(
-            List<SceneContourEntry> candidates, SceneEntry scene,
-            int erosionDepth, SceneDescriptor descriptor) {
-        Mat sceneMat = scene.sceneMat();
-        if (sceneMat == null || sceneMat.empty()) return candidates;
-
-        // Rank by contour area descending, pick top-K
-        List<SceneContourEntry> byArea = new ArrayList<>(candidates);
-        byArea.sort(Comparator.comparingDouble(ce -> -ce.area()));
-        Set<SceneContourEntry> topK = new LinkedHashSet<>();
-        for (int i = 0; i < Math.min(EROSION_TOP_K, byArea.size()); i++)
-            topK.add(byArea.get(i));
-
-        double sceneArea = descriptor.sceneArea;
-        List<SceneContourEntry> result = new ArrayList<>(candidates.size());
-        for (SceneContourEntry ce : candidates) {
-            result.add(topK.contains(ce)
-                    ? reExtractCandidate(ce, sceneMat, erosionDepth, sceneArea)
-                    : ce);
-        }
-        return result;
-    }
-
-    /**
-     * Re-extracts a single candidate cluster from the scene BGR image, applying
-     * a morphological open of {@code erosionDepth} px to sever thin line arms.
-     *
-     * <p>Spatial matching: the returned entry targets the new contour whose
-     * bounding-box centre is closest to the original candidate's centre.
-     * Falls back to the original candidate when re-extraction yields no contours.
-     */
-    private static SceneContourEntry reExtractCandidate(
-            SceneContourEntry candidate, Mat sceneBgr,
-            int erosionDepth, double sceneArea) {
-        Mat hsv = new Mat();
-        Imgproc.cvtColor(sceneBgr, hsv, Imgproc.COLOR_BGR2HSV);
-
-        // Build full pixel mask for this cluster's colour
-        Mat fullMask = candidate.achromatic()
-                ? SceneColourClusters.buildAchromaticMask(hsv, candidate.brightAchromatic())
-                : SceneColourClusters.buildHueMask(hsv, candidate.clusterHue(),
-                        SceneColourClusters.HUE_TOLERANCE);
-        hsv.release();
-
-        // Apply morphological opening — severs arms thinner than erosionDepth px
-        int kSize = erosionDepth * 2 + 1;
-        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(kSize, kSize));
-        Mat opened = new Mat();
-        Imgproc.morphologyEx(fullMask, opened, Imgproc.MORPH_OPEN, kernel);
-        kernel.release();
-        fullMask.release();
-
-        // Achromatic clusters are stored as gradient (border) masks in SceneDescriptor;
-        // apply gradient AFTER opening so the border reflects the cleaned shape.
-        Mat maskForContours;
-        if (candidate.achromatic()) {
-            Mat gradKernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
-            maskForContours = new Mat();
-            Imgproc.morphologyEx(opened, maskForContours, Imgproc.MORPH_GRADIENT, gradKernel);
-            gradKernel.release();
-            opened.release();
-        } else {
-            maskForContours = opened;
-        }
-
-        List<MatOfPoint> newContours = SceneDescriptor.contoursFromMask(maskForContours);
-        maskForContours.release();
-
-        if (newContours.isEmpty()) return candidate;  // fallback — original is unchanged
-
-        // Pick the contour spatially closest to the original candidate
-        Rect   origBb = candidate.bbox();
-        double origCx = origBb.x + origBb.width  / 2.0;
-        double origCy = origBb.y + origBb.height / 2.0;
-
-        MatOfPoint best     = newContours.get(0);
-        double     bestDist = Double.MAX_VALUE;
-        for (MatOfPoint c : newContours) {
-            Rect   bb   = Imgproc.boundingRect(c);
-            double cx   = bb.x + bb.width  / 2.0;
-            double cy   = bb.y + bb.height / 2.0;
-            double dist = Math.hypot(cx - origCx, cy - origCy);
-            if (dist < bestDist) { bestDist = dist; best = c; }
-        }
-
-        Rect newBbox = Imgproc.boundingRect(best);
-        double newArea = Imgproc.contourArea(best);
-        VectorSignature newSig = VectorSignature.buildFromContour(best, EPSILON, sceneArea);
-
-        // Release unused contours to avoid native-memory accumulation
-        for (MatOfPoint c : newContours) { if (c != best) c.release(); }
-
-        return new SceneContourEntry(best, candidate.clusterIdx(), candidate.achromatic(),
-                candidate.brightAchromatic(), candidate.clusterHue(), newSig, newBbox, newArea);
-    }
 
     // =========================================================================
     // Annotation writer

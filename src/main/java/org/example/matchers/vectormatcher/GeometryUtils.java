@@ -71,6 +71,14 @@ public final class GeometryUtils {
         return String.format("(%d,%d %dx%d)", r.x, r.y, r.width, r.height);
     }
 
+    /**
+     * Returns {@code true} if the two rectangles overlap (share any area).
+     */
+    public static boolean rectsIntersect(Rect a, Rect b) {
+        return a.x < b.x + b.width  && b.x < a.x + a.width
+            && a.y < b.y + b.height && b.y < a.y + a.height;
+    }
+
     private GeometryUtils() {}  // static utility class
 }
 

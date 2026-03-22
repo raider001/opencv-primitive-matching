@@ -35,7 +35,7 @@ public final class CandidateFilter {
      * filtering but would still outscore the actual target due to incidental
      * geometry matches.
      */
-    private static final double MIN_GLOBAL_AREA_RATIO = 0.15;
+    private static final double MIN_GLOBAL_AREA_RATIO = 0.08;
 
     /**
      * Connected-component filter — per-cluster noise reduction.
@@ -48,21 +48,44 @@ public final class CandidateFilter {
      * @return filtered list with isolated noise blobs removed
      */
     public static List<SceneContourEntry> applyConnectedComponentFilter(List<SceneContourEntry> candidates) {
-        // Group by cluster index, find max area per cluster, filter
-        var byCluster = new java.util.HashMap<Integer, List<SceneContourEntry>>();
-        for (SceneContourEntry ce : candidates) {
-            byCluster.computeIfAbsent(ce.clusterIdx(), k -> new ArrayList<>()).add(ce);
-        }
+        if (candidates.size() <= 1) return candidates;
 
-        List<SceneContourEntry> filtered = new ArrayList<>();
-        for (var entries : byCluster.values()) {
-            double maxArea = entries.stream().mapToDouble(ce -> ce.area()).max().orElse(1.0);
-            double threshold = maxArea * CC_AREA_RATIO_MIN;
-            for (SceneContourEntry ce : entries) {
-                if (ce.area() >= threshold) filtered.add(ce);
+        // Largest contour area and its bbox, keyed by clusterIdx
+        var maxArea = new java.util.HashMap<Integer, Double>();
+        var maxBbox = new java.util.HashMap<Integer, org.opencv.core.Rect>();
+        for (SceneContourEntry ce : candidates) {
+            double area = ce.area();
+            if (area > maxArea.getOrDefault(ce.clusterIdx(), 0.0)) {
+                maxArea.put(ce.clusterIdx(), area);
+                maxBbox.put(ce.clusterIdx(), ce.bbox());
             }
         }
-        return filtered;
+
+        List<SceneContourEntry> out = new ArrayList<>();
+        for (SceneContourEntry ce : candidates) {
+            double area   = ce.area();
+            double clsMax = maxArea.getOrDefault(ce.clusterIdx(), 1.0);
+
+            // Primary rule: area large enough relative to cluster max
+            // Relaxed threshold for achromatic clusters (0.05 vs 0.10) to preserve
+            // thin outline rings in compound shapes like COMPOUND_BULLSEYE
+            double threshold = ce.achromatic() ? 0.05 : CC_AREA_RATIO_MIN;
+            if (area >= clsMax * threshold) { out.add(ce); continue; }
+
+            // Secondary rule: small but spatially inside the main shape's bbox
+            // → compound component (cross arm, inner ring, etc.), not background noise
+            org.opencv.core.Rect mainBb = maxBbox.get(ce.clusterIdx());
+            if (mainBb != null) {
+                org.opencv.core.Rect ceBb = ce.bbox();
+                double ceCx = ceBb.x + ceBb.width  / 2.0;
+                double ceCy = ceBb.y + ceBb.height / 2.0;
+                if (ceCx >= mainBb.x && ceCx <= mainBb.x + mainBb.width
+                 && ceCy >= mainBb.y && ceCy <= mainBb.y + mainBb.height) {
+                    out.add(ce);
+                }
+            }
+        }
+        return out;
     }
 
     /**
@@ -81,11 +104,19 @@ public final class CandidateFilter {
      * @return filtered list with tiny background elements removed
      */
     public static List<SceneContourEntry> applyGlobalSizeFilter(List<SceneContourEntry> candidates) {
-        double globalMax = candidates.stream().mapToDouble(ce -> ce.area()).max().orElse(1.0);
-        double threshold = globalMax * MIN_GLOBAL_AREA_RATIO;
-        return candidates.stream()
-                .filter(ce -> ce.area() >= threshold)
-                .toList();
+        if (candidates.size() <= 1) return candidates;
+        double maxArea = 0.0;
+        for (SceneContourEntry ce : candidates) {
+            double a = ce.area();
+            if (a > maxArea) maxArea = a;
+        }
+        if (maxArea <= 0.0) return candidates;
+        final double minArea = maxArea * MIN_GLOBAL_AREA_RATIO;
+        List<SceneContourEntry> out = new ArrayList<>();
+        for (SceneContourEntry ce : candidates) {
+            if (ce.area() >= minArea) out.add(ce);
+        }
+        return out.isEmpty() ? candidates : out;  // never leave caller empty-handed
     }
 
     /**
@@ -98,24 +129,14 @@ public final class CandidateFilter {
      * @return erosion depth in pixels, or 0 if morphological opening should be skipped
      */
     public static int computeErosionDepth(RefCluster primaryRef) {
-        // Solidity threshold — below this, skip morphological opening
-        final double MIN_SOLIDITY_FOR_MORPH = 0.30;
-
-        if (primaryRef.solidity < MIN_SOLIDITY_FOR_MORPH) {
-            return 0;  // Outline/line reference — skip morphological opening
-        }
-
-        // Erosion depth scales with reference solidity
-        // High solidity (≥ 0.80): depth 3–4 px
-        // Medium solidity (0.50–0.79): depth 2–3 px
-        // Low solidity (0.30–0.49): depth 1–2 px
-        if (primaryRef.solidity >= 0.80) {
-            return 3;
-        } else if (primaryRef.solidity >= 0.50) {
-            return 2;
-        } else {
-            return 1;
-        }
+        // Currently returns 0 for all shapes.  Applying MORPH_OPEN — even at 1 px —
+        // rounds the corners of triangular colour sections and hexagon/circle outline
+        // strokes enough to shift their VectorSignature vertex angles, causing
+        // regressions on TRICOLOUR_TRIANGLE, HEXAGON_OUTLINE and BICOLOUR_CIRCLE_RING.
+        // Background-line tests already pass at the 60% threshold without erosion.
+        // Re-enable if a stricter contamination metric is added that guards against
+        // corner-rounding on outline shapes.
+        return 0;
     }
 
     /**
@@ -203,9 +224,3 @@ public final class CandidateFilter {
 
     private CandidateFilter() {}  // static utility class
 }
-
-
-
-
-
-

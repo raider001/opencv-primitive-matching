@@ -215,30 +215,73 @@ public final class BboxExpander {
         return false;
     }
 
-    private static Rect unionConcentricAndOverlappingSiblings(Rect bbox,
+    /**
+     * Unions same-cluster siblings of each matched entry into {@code expandedBbox}
+     * when the sibling is spatially related to the current result region:
+     *
+     * <ul>
+     *   <li><b>Concentric:</b> sibling centre is within 35% of the sibling's own
+     *       diagonal from the expandedBbox centre (concentric rings, bullseye).</li>
+     *   <li><b>Overlapping:</b> sibling bbox intersects the current expandedBbox
+     *       (adjacent components, enclosed pieces).</li>
+     * </ul>
+     *
+     * <p>Hard cap: the resulting bbox area must not exceed {@code maxAllowedArea}.
+     * A tightly-concentric override (centre distance ≤ 5% of anchor diagonal,
+     * area ≤ 3× current) allows compound-shape outer rings (e.g. COMPOUND_BULLSEYE)
+     * to expand past the normal cap.
+     */
+    private static Rect unionConcentricAndOverlappingSiblings(Rect expandedBbox,
                                                                List<SceneContourEntry> matched,
                                                                List<SceneContourEntry> candidates,
-                                                               double maxArea) {
-        // Find sibling contours (same cluster as matched, but not in matched set)
-        var matchedSet = new java.util.HashSet<>(matched);
-        var matchedClusters = matched.stream()
-                .map(m -> m.clusterIdx())
-                .collect(java.util.stream.Collectors.toSet());
+                                                               double maxAllowedArea) {
 
-        List<SceneContourEntry> siblings = candidates.stream()
-                .filter(c -> matchedClusters.contains(c.clusterIdx()) && !matchedSet.contains(c))
-                .toList();
+        for (int pass = 0; pass < 4; pass++) {
+            Rect before = expandedBbox;
+            for (SceneContourEntry m : matched) {
+                for (SceneContourEntry ce : candidates) {
+                    if (ce.clusterIdx() != m.clusterIdx() || ce == m) continue;
 
-        Rect expanded = bbox;
-        for (SceneContourEntry sib : siblings) {
-            Rect candidate = GeometryUtils.unionRect(expanded, sib.bbox());
-            double candidateArea = (double) candidate.width * candidate.height;
-            if (candidateArea <= maxArea) {
-                expanded = candidate;
+                    Rect   ceBb         = ce.bbox();
+                    double ceArea       = ce.area();
+                    double expandedArea = (double) expandedBbox.width * expandedBbox.height;
+
+                    // Already at cap — no point continuing
+                    if (expandedArea >= maxAllowedArea) break;
+
+                    // Guard: sibling must be substantial relative to current bbox
+                    if (ceArea < expandedArea * 0.10) continue;
+
+                    // Criterion 1 — concentric
+                    double ceDiag      = Math.hypot(ceBb.width, ceBb.height);
+                    boolean concentric = GeometryUtils.centreDist(expandedBbox, ceBb) <= ceDiag * 0.35;
+
+                    // Criterion 2 — overlapping
+                    boolean overlapping = GeometryUtils.rectsIntersect(expandedBbox, ceBb);
+
+                    if (concentric || overlapping) {
+                        Rect candidate     = GeometryUtils.unionRect(expandedBbox, ceBb);
+                        double candidateArea = (double) candidate.width * candidate.height;
+                        if (candidateArea <= maxAllowedArea) {
+                            expandedBbox = candidate;
+                        } else if (concentric) {
+                            // Tightly concentric override — allows outer rings of compound
+                            // shapes (e.g. COMPOUND_BULLSEYE) to expand past the normal cap.
+                            double ancDiag = Math.hypot(expandedBbox.width, expandedBbox.height);
+                            double dist    = GeometryUtils.centreDist(expandedBbox, ceBb);
+                            if (dist <= ancDiag * 0.05
+                                    && candidateArea <= expandedArea * 3.0) {
+                                expandedBbox = candidate;
+                            }
+                        }
+                    }
+                }
             }
+            if (expandedBbox.x == before.x && expandedBbox.y == before.y
+                    && expandedBbox.width == before.width
+                    && expandedBbox.height == before.height) break;
         }
-
-        return expanded;
+        return expandedBbox;
     }
 
     private record AreaCaps(double anchorTrimArea, double matchedUnionArea, double siblingExpArea) {}
