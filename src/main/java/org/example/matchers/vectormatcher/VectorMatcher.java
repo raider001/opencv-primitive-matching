@@ -1,11 +1,15 @@
-package org.example.matchers;
+package org.example.matchers.vectormatcher;
 
 import org.example.analytics.AnalysisResult;
 import org.example.colour.ColourCluster;
 import org.example.colour.ExperimentalSceneColourClusters;
 import org.example.colour.SceneColourClusters;
 import org.example.factories.ReferenceId;
-import org.example.matchers.vectormatcher.*;
+import org.example.matchers.SceneContourEntry;
+import org.example.matchers.SceneDescriptor;
+import org.example.matchers.VectorSignature;
+import org.example.matchers.VectorVariant;
+import org.example.matchers.vectormatcher.components.*;
 import org.example.scene.SceneEntry;
 import org.opencv.core.*;
 import org.opencv.imgcodecs.Imgcodecs;

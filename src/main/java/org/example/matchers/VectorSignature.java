@@ -1,5 +1,6 @@
 package org.example.matchers;
 
+import org.example.matchers.vectormatcher.VectorMatcher;
 import org.opencv.core.*;
 import org.opencv.imgproc.Imgproc;
 
@@ -163,7 +164,7 @@ public final class VectorSignature {
     /**
      * Builds directly from an already-extracted {@link MatOfPoint} contour,
      * bypassing the mask-render + findContours round-trip.
-     * This is the fast path used by {@link org.example.matchers.VectorMatcher}
+     * This is the fast path used by {@link VectorMatcher}
      * when scoring candidate contours from a scene.
      *
      * @param contour   a single contour (from findContours on the scene)

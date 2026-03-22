@@ -1,4 +1,4 @@
-package org.example.matchers.vectormatcher;
+package org.example.matchers.vectormatcher.components;
 
 import org.opencv.core.Rect;
 

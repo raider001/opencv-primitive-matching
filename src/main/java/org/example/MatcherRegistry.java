@@ -3,6 +3,7 @@ package org.example;
 import org.example.analytics.AnalysisResult;
 import org.example.factories.ReferenceId;
 import org.example.matchers.*;
+import org.example.matchers.vectormatcher.VectorMatcher;
 import org.example.scene.SceneEntry;
 import org.opencv.core.Mat;
 

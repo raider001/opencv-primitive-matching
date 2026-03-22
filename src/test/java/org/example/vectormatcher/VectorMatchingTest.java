@@ -9,7 +9,7 @@ import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
 import org.example.factories.ReferenceImageFactory;
 import org.example.matchers.SceneDescriptor;
-import org.example.matchers.VectorMatcher;
+import org.example.matchers.vectormatcher.VectorMatcher;
 import org.example.matchers.VectorSignature;
 import org.example.matchers.VectorVariant;
 import org.example.scene.SceneCategory;

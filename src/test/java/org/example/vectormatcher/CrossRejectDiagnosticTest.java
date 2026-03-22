@@ -5,7 +5,7 @@ import org.example.analytics.AnalysisResult;
 import org.example.factories.BackgroundId;
 import org.example.factories.ReferenceId;
 import org.example.factories.ReferenceImageFactory;
-import org.example.matchers.VectorMatcher;
+import org.example.matchers.vectormatcher.VectorMatcher;
 import org.example.scene.SceneCategory;
 import org.example.scene.SceneEntry;
 import org.junit.jupiter.api.BeforeAll;
