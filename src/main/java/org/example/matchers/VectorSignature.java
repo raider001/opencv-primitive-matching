@@ -894,6 +894,18 @@ public final class VectorSignature {
         double aspectScore = 1.0 - Math.abs(arA - arB) / Math.max(arA, arB);
         double arMultiplier = aspectScore >= 0.70 ? 1.0 : Math.pow(aspectScore / 0.70, 2.0);
 
+        // ── 8b. LINE_SEGMENT AR relaxation ───────────────────────────────
+        // For LINE_SEGMENT × LINE_SEGMENT pairs, the exact aspect ratio from
+        // minAreaRect is unreliable across scales because thin shapes (8 px tall
+        // at 128×128 vs 24 px tall at 640×480) have pixel-level variations that
+        // amplify the AR difference (e.g. AR 14 vs 9).  Both sides are already
+        // confirmed as thin shapes (AR > 4.0 — that's the LINE_SEGMENT gate).
+        // The structural similarity is captured by circularity and solidity
+        // (both scale-invariant ratios).  Skip the AR penalty entirely.
+        if (this.type == ShapeType.LINE_SEGMENT && ref.type == ShapeType.LINE_SEGMENT) {
+            arMultiplier = 1.0;
+        }
+
         // ── 9. Vertex count multiplicative gate ──────────────────────────
         // When two CLOSED_CONVEX_POLY shapes have different vertex counts the
         // mismatch is structurally significant (hexagon ≠ octagon, triangle ≠ pentagon).
@@ -1148,6 +1160,29 @@ public final class VectorSignature {
                     angleScore  = Math.max(angleScore,  0.45);
                 }
             }
+        }
+
+        // ── LINE_SEGMENT topology-validated seg rescue (partial failure) ───
+        // When both sides are LINE_SEGMENT with strong topology agreement
+        // (topo ≥ 0.80) but SegmentDescriptor is in the partial-failure zone
+        // (0.10 ≤ seg < 0.50), the degradation is a scale artifact: at ref
+        // scale (128×128) the CHAIN_APPROX_SIMPLE contour produces different
+        // segment counts/lengths than at scene scale (640×480), but the cyclic
+        // topology (edge-length/angle pairs) is more robust.
+        //
+        // Safety gates:
+        //   • Both sides are LINE_SEGMENT (same structural type)
+        //   • circScore ≥ 0.90 — circularity agrees well
+        //   • solidityScore ≥ 0.85 — fill ratio agrees
+        //   • topoScore ≥ 0.80 — topology validates the structural match
+        //   • segScore in [0.10, 0.50) — partial failure (not total)
+        if (bothLineSeg && typeScore >= 1.0
+                && circScore     >= 0.90
+                && solidityScore >= 0.85
+                && topoScore     >= 0.80
+                && segScore      >= 0.10
+                && segScore      <  0.50) {
+            segScore = Math.max(segScore, topoScore * 0.85);
         }
 
         // ── Thin/open shape coherence boost ──────────────────────────────
@@ -1495,6 +1530,55 @@ public final class VectorSignature {
             else if (angleScore >= 0.60) {
                 segScore  = Math.max(segScore,  0.50);
                 topoScore = Math.max(topoScore, 0.50);
+            }
+        }
+
+        // ── Moderate-circularity polygon coherence boost ──────────────────
+        // For CLOSED_CONVEX_POLY pairs where both sides have moderate-to-high
+        // circularity (≥ 0.55), the polygon approximation (approxPolyDP) is
+        // inherently unstable across scales: a round-ish shape at 128×128 might
+        // get 7 vertices while the same shape at 640×480 gets 11 vertices.
+        // This causes:
+        //   • vertexScore to drop (e.g. 7/11 = 0.64)
+        //   • angleScore to drop (different vertex counts → different angle bins)
+        //   • segScore/topoScore to completely fail (different segment structures)
+        //
+        // When circScore and solidityScore are very high (the shapes ARE the same
+        // round-ish form), these vertex-count-dependent failures are scale artifacts,
+        // not true structural differences.
+        //
+        // Primary case: circle contour from compound shapes (e.g. COMPOUND_TRIANGLE_IN_CIRCLE)
+        // classified as CLOSED_CONVEX_POLY with circularity ~0.72 (ring/outline-like).
+        //
+        // Safety gates (prevent false positives):
+        //   • typeScore = 1.0 (exact type match)
+        //   • Both circularities ≥ 0.55 (moderately round — not angular shapes)
+        //   • circScore ≥ 0.90 — the shapes have very similar roundness
+        //   • solidityScore ≥ 0.85 — fill ratios agree
+        //   • BOTH segScore < 0.10 AND topoScore < 0.10 — both structural descriptors
+        //     completely failed (not just partially degraded), confirming a scale artifact
+        //   • aspectScore ≥ 0.85 — shape proportions agree well
+        //
+        // Does NOT fire when either circularity > 0.82 (handled by "near-circular
+        // coherence" boost above with stricter circularity agreement thresholds).
+        boolean bothModCirc = this.circularity >= 0.55 && ref.circularity >= 0.55
+                && this.circularity < 0.82 && ref.circularity < 0.82;
+        if (bothModCirc && typeScore >= 1.0
+                && this.type == ShapeType.CLOSED_CONVEX_POLY
+                && ref.type  == ShapeType.CLOSED_CONVEX_POLY
+                && circScore     >= 0.90
+                && solidityScore >= 0.85
+                && aspectScore   >= 0.85
+                && segScore      <  0.10
+                && topoScore     <  0.10) {
+            segScore    = Math.max(segScore,    circScore * 0.60);
+            topoScore   = Math.max(topoScore,   circScore * 0.55);
+            vertexScore = Math.max(vertexScore,  0.75);
+            angleScore  = Math.max(angleScore,   0.55);
+            if (VM_DEBUG) {
+                System.out.printf("[MOD-CIRC-BOOST] circ=%.3f/%.3f circScore=%.3f solidScore=%.3f seg->%.3f topo->%.3f vtx->%.3f angle->%.3f%n",
+                    this.circularity, ref.circularity, circScore, solidityScore,
+                    segScore, topoScore, vertexScore, angleScore);
             }
         }
 

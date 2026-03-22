@@ -28,7 +28,7 @@ vectormatcher/
     ├── AnchorMatcher.java          # Stage 3: anchor assignment + expansion
     ├── RegionScorer.java           # Stage 4: three-layer scoring (L1/L2/L3)
     ├── BboxExpander.java           # Stage 5: post-score bounding box refinement
-    └── GeometryUtils.java          # Shared bbox arithmetic (union, IoU, intersect)
+    └── GeometryUtils.java          # Shared bbox arithmetic (union, IoU, intersect) + CAS + BAS diagnostic
 ```
 
 ---
@@ -230,11 +230,13 @@ The scoring model uses three independent layers, each measuring a different stru
 
 | Layer | Weight | What it measures |
 |---|---|---|
-| **L1 — Boundary count** | `W_COUNT = 0.15` | Does the candidate region have the same number of distinct colour-edge boundaries as the reference? |
+| **L1 — Boundary count** | `W_COUNT = 0.05` | Does the candidate region have the same number of distinct colour-edge boundaries as the reference? |
 | **L2 — Structural coherence** | `W_MATCH = 0.25` | Are the matched boundaries spatially co-located, size-consistent, and at the right scale? |
-| **L3 — Primary geometry** | `W_GEOM = 0.60` | How similar is the best ref contour to the best scene contour (via `VectorSignature.similarity`)? |
+| **L3 — Primary geometry** | `W_GEOM = 0.70` | How similar is the best ref contour to the best scene contour (via `VectorSignature.similarity`), with BAS contamination recovery? |
 
-**Combined = L1 × 0.15 + L2 × 0.25 + L3 × 0.60**, clamped to [0, 1].
+**Combined = L1 × 0.05 + L2 × 0.25 + L3 × 0.70**, clamped to [0, 1].
+
+> **Weight rationale:** L1 is minimised at 0.05 because noisy backgrounds cause over-segmentation (extra colour clusters), penalizing true positives. Geometry (L3 at 0.70) is the dominant discriminator — it's purely structural and colour-agnostic.
 
 ### Layer 1 — Boundary Count
 
@@ -268,6 +270,24 @@ Computes `VectorSignature.similarity(refSig, sceneSig)` for every (ref contour, 
 This all-pairs approach is necessary for compound shapes — e.g. a circle-outline cluster's `bestSig` might be a co-located triangle (higher solidity), causing incorrect pairing if only per-cluster best signatures were used.
 
 **Outline coherence boost (in `VectorSignature.similarity`):** For outline shapes (both sides have solidity < 0.40) on busy backgrounds, background contours physically merge with the shape edges, causing `segScore` and `topoScore` to fail even when global geometric metrics (type, circularity, solidity, vertex count, AR) agree well. When all global metrics agree above safety thresholds, seg and topo are floored to prevent contamination-induced score collapse. Three tiers: Strong (floor 0.65), Moderate (floor 0.55), Weak (floor 0.45). This is a geometry-only mechanism — it fires on the structural agreement of the shape itself, not on colour.
+
+**BAS (Boundary Alignment Score) boost:** When `VectorSignature.similarity` produces a degraded score (< 0.60) due to background contamination adding extra vertices, BAS provides a geometry floor by verifying that the reference's vertices physically lie on the scene contour boundary.
+
+Algorithm:
+1. Estimate rotation + scale from `minAreaRect` (same as CAS, 4 rotation hypotheses).
+2. Project ref's `approxPolyDP` vertices into scene space via affine transform.
+3. Check if each projected vertex falls near the raw scene contour boundary (3% of perimeter tolerance).
+4. At each boundary-matched point, measure the local contour turn angle using multi-scale windows (2.5%, 5%, 10% of contour points) and compare against the ref vertex angle. Best agreement across window scales is used — this is critical for contaminated contours where a single window may span a background-line junction.
+5. If boundary match ≥ 75% AND angle agreement ≥ 0.65, the geometry score is floored at `combined × 0.70`.
+
+Gating conditions (safety):
+- Only fires when `VectorSignature.similarity` < 0.60 (contaminated pair)
+- Ref must be `CLOSED_CONVEX_POLY` with 3–12 vertices
+- Scene must also be `CLOSED_CONVEX_POLY`
+- Scene vertex count ≥ ref count (contamination adds vertices) and ≤ 2× ref count
+- Angle agreement threshold (0.65) prevents boosts for regular polygon false matches (e.g. hexagon→octagon: angle ≈ 0.57, pentagon→heptagon: angle ≈ 0.59)
+
+Example: IRREGULAR_QUAD on BG_RANDOM_LINES — the contaminated contour has 7 vertices (3 from background lines) but BAS detects that 3 of 4 ref corners land on the boundary with angle agreement 0.77, boosting L3 from 13.4% to 40.5% and overall score from ~43% to ~64%.
 
 ---
 
@@ -350,9 +370,9 @@ Both ref-side and scene-side share the same two-pass deduplication logic:
 
 | Constant | Value | Purpose |
 |---|---|---|
-| `W_COUNT` | `0.15` | Layer 1 weight |
+| `W_COUNT` | `0.05` | Layer 1 weight (minimal — over-segmentation from noisy backgrounds) |
 | `W_MATCH` | `0.25` | Layer 2 weight |
-| `W_GEOM` | `0.60` | Layer 3 weight |
+| `W_GEOM` | `0.70` | Layer 3 weight (dominant discriminator) |
 | `CLUSTER_PENALTY_K` | `0.10` | Extra-boundary decay rate |
 | `CLUSTER_PENALTY_K_MISS` | `0.10` | Missing-boundary decay rate |
 | `MIN_COUNT_SCORE_MISS` | `0.45` | Floor for missing-boundary case |

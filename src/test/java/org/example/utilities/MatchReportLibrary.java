@@ -697,9 +697,9 @@ public class MatchReportLibrary {
               .append(String.format("%.1f%%",r.score())).append("</span>")
               .append(bar(r.score()))
               .append("<div class='layers-breakdown'>")
-              .append(layerRow("Boundary Count", r.layerBoundaryCount(), "×0.15"))
+              .append(layerRow("Boundary Count", r.layerBoundaryCount(), "×0.05"))
               .append(layerRow("Structural",     r.layerStructural(),    "×0.25"))
-              .append(layerRow("Geometry",       r.layerGeometry(),      "×0.60"))
+              .append(layerRow("Geometry",       r.layerGeometry(),      "×0.70"))
               .append("</div>")
               .append("</div></div></div>");
         }

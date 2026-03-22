@@ -30,9 +30,9 @@ import java.util.List;
 public final class RegionScorer {
 
     // ── Layer weights — must sum to 1.0 ──────────────────────────────────────
-    static final double W_COUNT = 0.15;   // Layer 1: boundary count match
+    static final double W_COUNT = 0.05;   // Layer 1: boundary count match (minimal — over-segmentation from noisy backgrounds)
     static final double W_MATCH = 0.25;   // Layer 2: structural coherence
-    static final double W_GEOM  = 0.60;   // Layer 3: primary geometry
+    static final double W_GEOM  = 0.70;   // Layer 3: primary geometry (dominant discriminator)
 
     // ── Layer 1 constants ─────────────────────────────────────────────────────
     /** Exponential decay rate for extra boundaries (scene has more than ref). */
