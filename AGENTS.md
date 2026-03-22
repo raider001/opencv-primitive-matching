@@ -4,14 +4,16 @@
 - Build and maintain a pattern-matching utility that identifies shape/structure patterns in arbitrary scenes while remaining colour agnostic (colour may assist cluster discovery, but final matching/scoring should be geometry/structure driven).
 
 ## Scope (strict)
-- This guide is for `VectorMatcher` execution work driven by `src/test/java/org/example/vectormatcher/VectorMatchingTest.java`.
+- This guide is for `VectorMatcher` execution work driven by `src/test/java/org/example/vectormatcher/VectorMatchingTest.java` and `src/test/java/org/example/vectormatcher/CharacterMatchingTest.java`.
 - Include all files that participate in runtime execution (direct + transitive dependencies), not only direct imports.
-- Treat `test_output/vector_matching/` as the canonical output area for this suite (`report.html`, `diagnostics.json`, debug PNGs, `annotated/`).
+- Treat `test_output/vector_matching/` as the canonical output area for `VectorMatchingTest` (`report.html`, `diagnostics.json`, debug PNGs, `annotated/`).
+- Treat `test_output/character_matching/` as the canonical output area for `CharacterMatchingTest` (`report.html`, `diagnostics.json`, `sections/`).
 - In scope: matcher pipeline, scene/cluster extraction, signature/scoring, scene/reference/background factories, scene wrappers, analytics records, and reporting/diagnostic helpers used by this suite.
-- Out of scope: benchmark pipelines, unrelated matcher families, unrelated test classes, and non-`vector_matching` output folders.
+- Out of scope: benchmark pipelines, unrelated matcher families, `AnalyticalTestBase` subclass tests, and non-`vector_matching`/non-`character_matching` output folders.
 
 ## Execution-Relevant Files (read first)
 - `src/test/java/org/example/vectormatcher/VectorMatchingTest.java`
+- `src/test/java/org/example/vectormatcher/CharacterMatchingTest.java` (character-level VectorMatcher tests: a–z, A–Z, 0–9, punctuation)
 - `src/test/java/org/example/vectormatcher/CrossRejectDiagnosticTest.java` (focused cross-rejection diagnostics)
 - `src/main/java/org/example/matchers/vectormatcher/VectorMatcher.java`
 - `src/main/java/org/example/matchers/vectormatcher/README.md` (package architecture & design — **keep in sync**, see Maintenance Rules)
@@ -22,8 +24,10 @@
 - `src/main/java/org/example/matchers/vectormatcher/components/RefCluster.java`
 - `src/main/java/org/example/matchers/vectormatcher/components/GeometryUtils.java`
 - `src/main/java/org/example/matchers/SceneDescriptor.java`
+- `src/main/java/org/example/matchers/SceneContourEntry.java` (record: one scene contour + cluster metadata + cached `VectorSignature`)
 - `src/main/java/org/example/matchers/VectorSignature.java`
 - `src/main/java/org/example/matchers/SegmentDescriptor.java` and `src/main/java/org/example/matchers/ContourTopology.java`
+- `src/main/java/org/example/colour/SceneColourExtractor.java` (strategy interface — implemented by both `SceneColourClusters` and `ExperimentalSceneColourClusters`)
 - `src/main/java/org/example/colour/SceneColourClusters.java`, `src/main/java/org/example/colour/ExperimentalSceneColourClusters.java`, `src/main/java/org/example/colour/ColourCluster.java`
 - `src/main/java/org/example/factories/ReferenceImageFactory.java`, `src/main/java/org/example/factories/BackgroundFactory.java`, `src/main/java/org/example/factories/ReferenceId.java`, `src/main/java/org/example/factories/BackgroundId.java`
 - `src/main/java/org/example/scene/SceneEntry.java`, `src/main/java/org/example/scene/SceneCategory.java`, `src/main/java/org/example/scene/SceneShapePlacement.java`
@@ -53,6 +57,7 @@
 
 ## Dev Workflow (VectorMatcher suite)
 - Run only this class: `mvn -Dtest=org.example.vectormatcher.VectorMatchingTest test`
+- Run character matching: `mvn -Dtest=org.example.vectormatcher.CharacterMatchingTest test`
 - Re-enable excluded groups when needed: `mvn test -DexcludedGroups=""`
 - Keep Surefire native access args intact in `pom.xml` (`--enable-native-access=ALL-UNNAMED`).
 - Run the test suite after any source or test file change to verify the build: `mvn -Dtest=org.example.vectormatcher.VectorMatchingTest test 2>&1 | tee test_run_latest.log`. If no files have changed since the last run, check `test_run_latest.log` (tail ~50 lines) or `target/surefire-reports/` first to avoid redundant ~3-minute runs.
@@ -65,6 +70,9 @@
 - `test_output/vector_matching/debug_scene_*.png`: focused probe scene dumps.
 - `test_output/vector_matching/annotated/VECTOR_NORMAL/`: primary annotated outputs currently produced by matcher execution.
 - `test_output/vector_matching/annotated/VECTOR_STRICT/` and `test_output/vector_matching/annotated/VECTOR_LOOSE/` may exist from earlier runs.
+- `test_output/character_matching/report.html`: character-level visual consolidated report.
+- `test_output/character_matching/diagnostics.json`: character-level diagnostic payload.
+- `test_output/character_matching/sections/`: per-stage HTML fragments (e.g. `self_match_lowercase.html`, `cr_uppercase.html`, `alphabet_scene_digit.html`).
 
 ## Definition Of Done (Objective Gates)
 - Preserve core rule: colour may help cluster discovery, but final matching/scoring remains geometry/structure driven.
