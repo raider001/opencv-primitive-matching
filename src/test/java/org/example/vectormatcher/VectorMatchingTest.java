@@ -1510,6 +1510,110 @@ class VectorMatchingTest {
     }
 
     // =========================================================================
+    // Extended self-match — outline, star, concave, polyline, arc, compound
+    // =========================================================================
+
+    @Test @Order(95) @DisplayName("TRIANGLE_OUTLINE — equilateral triangle outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Equilateral triangle outline: 3 vertices, hollow interior (solidity < 1). " +
+                              "Clearly distinct from TRIANGLE_FILLED by low solidity; outline contour " +
+                              "provides a strong cyclic-alignment signal.")
+    void triangleOutlineSelf() {
+        assertSelfMatch(ReferenceId.TRIANGLE_OUTLINE, multiColourScene(ReferenceId.TRIANGLE_OUTLINE));
+    }
+
+    @Test @Order(96) @DisplayName("PENTAGON_OUTLINE — regular pentagon outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "5-vertex convex polygon outline. Distinctive vertex count; outline " +
+                              "structure provides clean cyclic alignment on an ideal black scene.")
+    void pentagonOutlineSelf() {
+        assertSelfMatch(ReferenceId.PENTAGON_OUTLINE, multiColourScene(ReferenceId.PENTAGON_OUTLINE));
+    }
+
+    @Test @Order(97) @DisplayName("OCTAGON_OUTLINE — regular octagon outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "8-vertex convex polygon outline. Similar circularity to OCTAGON_FILLED " +
+                              "but hollow interior; clean cyclic alignment expected.")
+    void octagonOutlineSelf() {
+        assertSelfMatch(ReferenceId.OCTAGON_OUTLINE, multiColourScene(ReferenceId.OCTAGON_OUTLINE));
+    }
+
+    @Test @Order(98) @DisplayName("STAR_4_OUTLINE — 4-pointed star outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "8-vertex concave star (4 outer tips, 4 inner notches). Distinctive " +
+                              "concavity pattern with fewer tips than STAR_5 — strong geometry cues.")
+    void star4OutlineSelf() {
+        assertSelfMatch(ReferenceId.STAR_4_OUTLINE, multiColourScene(ReferenceId.STAR_4_OUTLINE));
+    }
+
+    @Test @Order(99) @DisplayName("STAR_6_OUTLINE — 6-pointed star (Star of David) outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "12-vertex concave star (6 outer tips, 6 inner notches). More vertices " +
+                              "than STAR_5; hexagonal symmetry provides strong rotational alignment.")
+    void star6OutlineSelf() {
+        assertSelfMatch(ReferenceId.STAR_6_OUTLINE, multiColourScene(ReferenceId.STAR_6_OUTLINE));
+    }
+
+    @Test @Order(100) @DisplayName("CONCAVE_PAC_MAN — Pac-Man shape on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Filled circle with wedge removed: CLOSED_CONCAVE_POLY, distinctive " +
+                              "mouth concavity. High circularity near a full circle but low solidity " +
+                              "from the missing wedge; strong geometry descriptor.")
+    void concavePacManSelf() {
+        assertSelfMatch(ReferenceId.CONCAVE_PAC_MAN, multiColourScene(ReferenceId.CONCAVE_PAC_MAN));
+    }
+
+    @Test @Order(101) @DisplayName("IRREGULAR_PENTA — irregular asymmetric pentagon on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Irregular 5-vertex polygon with no two equal edges. Asymmetric vertex " +
+                              "angles create a unique descriptor; reference-derived scene for exact match.")
+    void irregularPentaSelf() {
+        assertSelfMatch(ReferenceId.IRREGULAR_PENTA, multiColourScene(ReferenceId.IRREGULAR_PENTA));
+    }
+
+    @Test @Order(102) @DisplayName("POLYLINE_L_SHAPE — L-shaped path on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Closed L-shaped polygon: right-angle concavity, asymmetric profile. " +
+                              "CLOSED_CONCAVE_POLY type with distinctive notch; clean self-match expected.")
+    void polylineLShapeSelf() {
+        assertSelfMatch(ReferenceId.POLYLINE_L_SHAPE, multiColourScene(ReferenceId.POLYLINE_L_SHAPE));
+    }
+
+    @Test @Order(103) @DisplayName("POLYLINE_PARALLELOGRAM — parallelogram on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Closed parallelogram: 4 vertices, opposite sides parallel but no right " +
+                              "angles. Skewed rectangle profile; CLOSED_CONVEX_POLY with distinctive " +
+                              "angle histogram.")
+    void polylineParallelogramSelf() {
+        assertSelfMatch(ReferenceId.POLYLINE_PARALLELOGRAM, multiColourScene(ReferenceId.POLYLINE_PARALLELOGRAM));
+    }
+
+    @Test @Order(104) @DisplayName("ARC_THREE_QUARTER — 270° arc on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Three-quarter-circle arc: open curve covering 270°, higher circularity " +
+                              "than ARC_HALF but still open topology. Distinctive gap provides geometry cues.")
+    void arcThreeQuarterSelf() {
+        assertSelfMatch(ReferenceId.ARC_THREE_QUARTER, multiColourScene(ReferenceId.ARC_THREE_QUARTER));
+    }
+
+    @Test @Order(105) @DisplayName("RECT_ROTATED_30 — 30°-rotated rectangle on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "4-vertex closed polyline rotated 30°. Non-axis-aligned edges with " +
+                              "consistent edge length ratio; all descriptor layers should agree.")
+    void rectRotated30Self() {
+        assertSelfMatch(ReferenceId.RECT_ROTATED_30, multiColourScene(ReferenceId.RECT_ROTATED_30));
+    }
+
+    @Test @Order(106) @DisplayName("COMPOUND_CONCENTRIC_RECTS — three nested rects on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Three concentric rectangles: multi-component compound shape with " +
+                              "regular spacing. Nested rectangular contour structure is distinctive " +
+                              "and should self-match cleanly.")
+    void compoundConcentricRectsSelf() {
+        assertSelfMatch(ReferenceId.COMPOUND_CONCENTRIC_RECTS, multiColourScene(ReferenceId.COMPOUND_CONCENTRIC_RECTS));
+    }
+
+    // =========================================================================
     // Expected Failures — known-miss shapes on adversarial backgrounds
     // =========================================================================
     //
@@ -1843,6 +1947,216 @@ class VectorMatchingTest {
                               "fires immediately — score is capped below any pass threshold.")
     void concaveArrowHeadShouldNotMatchRectScene() {
         assertCrossReject(ReferenceId.CONCAVE_ARROW_HEAD, ReferenceId.RECT_FILLED);
+    }
+
+
+    // --- Extended structural discriminations on black background ---
+
+    @Test @Order(261) @Tag("cross-reject")
+    @DisplayName("STAR_5_FILLED in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "5-point star (10 vertices, deep concavity, solidity ≈ 0.5) vs smooth " +
+                              "filled circle (CIRCLE type, circularity ≈ 1.0, zero vertices). " +
+                              "ShapeType gate + vertex count + circularity all diverge.")
+    void starShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.STAR_5_FILLED, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(262) @Tag("cross-reject")
+    @DisplayName("OCTAGON_FILLED in TRIANGLE_FILLED scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Octagon (8 vertices) vs triangle (3 vertices). Vertex ratio 3/8 = 0.375, " +
+                              "well below the 0.80 threshold — vtxMultiplier ≈ (3/8)^2.5 ≈ 0.086 " +
+                              "crushes the geometry score.")
+    void octagonShouldNotMatchTriangleScene() {
+        assertCrossReject(ReferenceId.OCTAGON_FILLED, ReferenceId.TRIANGLE_FILLED);
+    }
+
+    @Test @Order(263) @Tag("cross-reject")
+    @DisplayName("ELLIPSE_V in RECT_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Smooth vertical ellipse (CIRCLE-adjacent, high circularity, zero vertices) " +
+                              "vs filled rectangle (4 right-angle vertices, CLOSED_CONVEX_POLY). " +
+                              "ShapeType gate and circularity difference guarantee rejection.")
+    void ellipseVShouldNotMatchRectScene() {
+        assertCrossReject(ReferenceId.ELLIPSE_V, ReferenceId.RECT_FILLED);
+    }
+
+    @Test @Order(264) @Tag("cross-reject")
+    @DisplayName("LINE_V in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Single vertical line (LINE_SEGMENT type, extreme AR, open topology) " +
+                              "vs filled circle (CIRCLE type, smooth boundary). Completely different " +
+                              "topology and shape type; clean rejection expected.")
+    void lineVShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.LINE_V, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(265) @Tag("cross-reject")
+    @DisplayName("STAR_5_OUTLINE in HEXAGON_OUTLINE scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Concave 10-vertex star outline vs convex 6-vertex hexagon outline. " +
+                              "Vertex ratio 6/10 = 0.60 ≤ 0.80, and CONCAVE vs CONVEX type " +
+                              "mismatch provides a double rejection gate.")
+    void starOutlineShouldNotMatchHexagonScene() {
+        assertCrossReject(ReferenceId.STAR_5_OUTLINE, ReferenceId.HEXAGON_OUTLINE);
+    }
+
+    @Test @Order(266) @Tag("cross-reject")
+    @DisplayName("POLYLINE_ARROW_RIGHT in ELLIPSE_H scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Concave arrow (CLOSED_CONCAVE_POLY, notch defect, low solidity) vs " +
+                              "smooth horizontal ellipse (CIRCLE-adjacent, high circularity). " +
+                              "Type gate (CONCAVE vs CIRCLE) fires cleanly.")
+    void arrowRightShouldNotMatchEllipseScene() {
+        assertCrossReject(ReferenceId.POLYLINE_ARROW_RIGHT, ReferenceId.ELLIPSE_H);
+    }
+
+    @Test @Order(267) @Tag("cross-reject")
+    @DisplayName("COMPOUND_BULLSEYE in TRIANGLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Concentric-ring bullseye (multi-component, high circularity) vs " +
+                              "filled triangle (single component, 3 vertices). Component count " +
+                              "and vertex count diverge sharply.")
+    void bullseyeShouldNotMatchTriangleScene() {
+        assertCrossReject(ReferenceId.COMPOUND_BULLSEYE, ReferenceId.TRIANGLE_FILLED);
+    }
+
+    @Test @Order(268) @Tag("cross-reject")
+    @DisplayName("HEPTAGON_OUTLINE in TRIANGLE_FILLED scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Heptagon (7 vertices) vs triangle (3 vertices). Vertex ratio 3/7 ≈ 0.429, " +
+                              "well below 0.80 threshold — vtxMultiplier ≈ (3/7)^2.5 ≈ 0.119 " +
+                              "suppresses geometry score decisively.")
+    void heptagonShouldNotMatchTriangleScene() {
+        assertCrossReject(ReferenceId.HEPTAGON_OUTLINE, ReferenceId.TRIANGLE_FILLED);
+    }
+
+    @Test @Order(269) @Tag("cross-reject")
+    @DisplayName("CONCAVE_PAC_MAN in RECT_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Pac-Man (CLOSED_CONCAVE_POLY, filled circle with wedge removed, " +
+                              "low solidity ≈ 0.87) vs filled rectangle (CLOSED_CONVEX_POLY, " +
+                              "4 vertices, solidity ≈ 1.0). CONCAVE vs CONVEX type gate fires.")
+    void pacManShouldNotMatchRectScene() {
+        assertCrossReject(ReferenceId.CONCAVE_PAC_MAN, ReferenceId.RECT_FILLED);
+    }
+
+    @Test @Order(270) @Tag("cross-reject")
+    @DisplayName("RECT_SQUARE in CIRCLE_OUTLINE scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Perfect square (4 right-angle vertices, CLOSED_CONVEX_POLY) vs " +
+                              "circle outline (CIRCLE type, circularity ≈ 1.0, smooth boundary). " +
+                              "ShapeType gate fires cleanly; circularity diverges.")
+    void squareShouldNotMatchCircleOutlineScene() {
+        assertCrossReject(ReferenceId.RECT_SQUARE, ReferenceId.CIRCLE_OUTLINE);
+    }
+
+
+    // --- Extended discriminations on black background (continued) ---
+
+    @Test @Order(271) @Tag("cross-reject")
+    @DisplayName("LINE_H in STAR_5_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Single horizontal line (LINE_SEGMENT, extreme AR, open topology) vs " +
+                              "5-point star (CLOSED_CONCAVE_POLY, 10 vertices, deep concavity). " +
+                              "Topology and type mismatch guarantee clean rejection.")
+    void lineHShouldNotMatchStarScene() {
+        assertCrossReject(ReferenceId.LINE_H, ReferenceId.STAR_5_FILLED);
+    }
+
+    @Test @Order(272) @Tag("cross-reject")
+    @DisplayName("POLYLINE_DIAMOND in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Diamond (4-vertex convex polyline, all-equal edges, AR ≈ 1.0) vs " +
+                              "filled circle (CIRCLE type, smooth boundary). ShapeType gate " +
+                              "(CLOSED_CONVEX_POLY vs CIRCLE) and vertex count diverge.")
+    void diamondShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.POLYLINE_DIAMOND, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(273) @Tag("cross-reject")
+    @DisplayName("IRREGULAR_QUAD in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Irregular quadrilateral (4 vertices, no symmetry, moderate circularity) " +
+                              "vs filled circle (CIRCLE type, circularity ≈ 1.0). ShapeType mismatch " +
+                              "and circularity gap guarantee rejection.")
+    void irregularQuadShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.IRREGULAR_QUAD, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(274) @Tag("cross-reject")
+    @DisplayName("CONCAVE_MOON in RECT_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Crescent moon (CLOSED_CONCAVE_POLY, concave cutout, solidity ≈ 0.55) " +
+                              "vs filled rectangle (CLOSED_CONVEX_POLY, solidity ≈ 1.0). CONCAVE vs " +
+                              "CONVEX type gate and solidity gap guarantee rejection.")
+    void concaveMoonShouldNotMatchRectScene() {
+        assertCrossReject(ReferenceId.CONCAVE_MOON, ReferenceId.RECT_FILLED);
+    }
+
+
+    // --- Extended discriminations on noisy backgrounds ---
+
+    @Test @Order(281) @Tag("cross-reject")
+    @DisplayName("STAR_5_FILLED in CIRCLE_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Star (concave, 10 vertices) vs circle (smooth, CIRCLE type) on " +
+                              "BG_RANDOM_LINES. ShapeType gate and concavity difference survive " +
+                              "background noise — line fragments do not form star-like concavities.")
+    void starShouldNotMatchCircleOnLines() {
+        assertCrossRejectOnBg(ReferenceId.STAR_5_FILLED, ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_LINES);
+    }
+
+    @Test @Order(282) @Tag("cross-reject")
+    @DisplayName("CONCAVE_ARROW_HEAD in CIRCLE_FILLED — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Concave arrowhead (CLOSED_CONCAVE_POLY, notch defect, low solidity) " +
+                              "vs filled circle (CIRCLE type) on BG_RANDOM_CIRCLES. CONCAVE vs " +
+                              "CIRCLE type gate holds despite circular background noise.")
+    void concaveArrowShouldNotMatchCircleOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.CONCAVE_ARROW_HEAD, ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+    }
+
+    @Test @Order(283) @Tag("cross-reject")
+    @DisplayName("ELLIPSE_H in TRIANGLE_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Smooth horizontal ellipse (CIRCLE-adjacent, high circularity) vs " +
+                              "triangle (3 vertices, CLOSED_CONVEX_POLY) on BG_RANDOM_LINES. " +
+                              "ShapeType gate holds despite background line noise.")
+    void ellipseHShouldNotMatchTriangleOnLines() {
+        assertCrossRejectOnBg(ReferenceId.ELLIPSE_H, ReferenceId.TRIANGLE_FILLED, BackgroundId.BG_RANDOM_LINES);
+    }
+
+    @Test @Order(284) @Tag("cross-reject")
+    @DisplayName("LINE_V in RECT_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Vertical line (LINE_SEGMENT, extreme AR) vs rectangle (4 vertices, " +
+                              "CLOSED_CONVEX_POLY) on BG_RANDOM_LINES. Type mismatch (LINE_SEGMENT " +
+                              "vs CLOSED_CONVEX_POLY) survives background line noise.")
+    void lineVShouldNotMatchRectOnLines() {
+        assertCrossRejectOnBg(ReferenceId.LINE_V, ReferenceId.RECT_FILLED, BackgroundId.BG_RANDOM_LINES);
+    }
+
+    @Test @Order(285) @Tag("cross-reject")
+    @DisplayName("LINE_H in STAR_5_FILLED — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Horizontal line (LINE_SEGMENT, extreme AR) vs 5-point star " +
+                              "(CLOSED_CONCAVE_POLY, 10 vertices) on BG_RANDOM_CIRCLES. " +
+                              "Type mismatch (LINE_SEGMENT vs CLOSED_CONCAVE_POLY) survives " +
+                              "circular background noise.")
+    void lineHShouldNotMatchStarOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.LINE_H, ReferenceId.STAR_5_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+    }
+
+    @Test @Order(286) @Tag("cross-reject")
+    @DisplayName("LINE_CROSS in ELLIPSE_H — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Cross (COMPOUND, 2 thin perpendicular lines) vs horizontal ellipse " +
+                              "(CIRCLE-adjacent, smooth boundary) on BG_RANDOM_CIRCLES. " +
+                              "COMPOUND vs CIRCLE type gate holds cleanly despite circular noise.")
+    void crossShouldNotMatchEllipseOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.LINE_CROSS, ReferenceId.ELLIPSE_H, BackgroundId.BG_RANDOM_CIRCLES);
     }
 
 
