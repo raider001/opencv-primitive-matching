@@ -235,30 +235,10 @@ public final class VectorMatcher {
                 // Collapse bright/dark achromatic pairs that trace the same physical edge
                 matched = deduplicateAchromaticPairs(matched);
 
-                // ── OPT-G: Early exit — skip scoring when type hard-gate ──
-                // When we already have a strong match and this anchor's shape type
-                // is incompatible with the primary ref, the max possible geometry
-                // score is 0.15 → combined max ≈ 0.49, well below bestScore.
+                // ── OPT-G: Early exit — skip scoring when type is incompatible ──
                 double score = 0.0;
-                boolean skipped = false;
-                if (bestScore >= 0.70) {
-                    VectorSignature.ShapeType anchorType = anchor.sig().type;
-                    VectorSignature.ShapeType refType    = primaryRefSig.type;
-                    boolean typeCompat = (anchorType == refType)
-                            || (anchorType == VectorSignature.ShapeType.CLOSED_CONVEX_POLY
-                                && refType == VectorSignature.ShapeType.CLOSED_CONCAVE_POLY)
-                            || (anchorType == VectorSignature.ShapeType.CLOSED_CONCAVE_POLY
-                                && refType == VectorSignature.ShapeType.CLOSED_CONVEX_POLY)
-                            || (anchorType == VectorSignature.ShapeType.CIRCLE
-                                && refType == VectorSignature.ShapeType.CLOSED_CONVEX_POLY)
-                            || (anchorType == VectorSignature.ShapeType.CLOSED_CONVEX_POLY
-                                && refType == VectorSignature.ShapeType.CIRCLE)
-                            || anchorType == VectorSignature.ShapeType.COMPOUND
-                            || refType    == VectorSignature.ShapeType.COMPOUND;
-                    if (!typeCompat) {
-                        skipped = true;
-                    }
-                }
+                boolean skipped = bestScore >= 0.70
+                        && !isShapeTypeCompatible(anchor.sig().type, primaryRefSig.type);
 
                 if (!skipped) {
                     // ── Score this candidate ──────────────────────────────────
@@ -270,12 +250,6 @@ public final class VectorMatcher {
                         bestBbox        = regionBbox;
                         bestAnchor      = anchor;
                         bestLayerScores = new double[]{scoreArr[1], scoreArr[2], scoreArr[3]};
-                    }
-                } else {
-                    if (score > bestScore) {
-                        bestScore  = score;
-                        bestBbox   = regionBbox;
-                        bestAnchor = anchor;
                     }
                 }
 
@@ -290,76 +264,13 @@ public final class VectorMatcher {
                 anchorMatchedSets.add(matched);
             }
 
-            // ── Anchor re-selection for bbox ────────────────────────────────
-            // When a small background element (random circle, line junction) is
-            // geometrically similar to the reference it can outscore the real
-            // target — the placed shape at scene scale — by a significant margin,
-            // causing the bbox to land on the background element.
-            //
-            // Two paths, gated by "prominence" of the best anchor:
-            //
-            //   (A) Non-prominent (bbox area < 50 % of largest candidate bbox):
-            //       best anchor is a small element — re-select to the largest-bbox
-            //       candidate scoring ≥ 70 % of best.
-            //
-            //   (B) Prominent (bbox area ≥ 50 % of largest):
-            //       best anchor is already one of the largest shapes, so the bbox
-            //       is likely correct.  Only allow a TIGHT same-size swap: the
-            //       candidate must have bbox area ≥ 90 % of the best anchor's AND
-            //       score ≥ 90 % of best, with larger contour area.  This handles
-            //       inner↔outer contour swaps for outline shapes (e.g. circle
-            //       outline produces two near-identical contours) without allowing
-            //       jumps to smaller background elements.
-            //
-            // Uses bounding-box area for the prominence check (outline/thin shapes
-            // have small contour area but large spatial extent).
-            // Guard: shape-type compatibility (existing gate preserved).
-            // This is purely geometry-driven — no colour terms involved.
+            // ── Anchor re-selection — correct bbox when best score landed on
+            //    a small background element instead of the placed shape ──────
             if (bestScore >= 0.60 && bestAnchor != null) {
-                double bestAnchorBboxArea = (double) bestAnchor.bbox().width * bestAnchor.bbox().height;
-                double maxBboxArea = bestAnchorBboxArea;
-                for (SceneContourEntry ce : anchorEntries) {
-                    double bb = (double) ce.bbox().width * ce.bbox().height;
-                    if (bb > maxBboxArea) maxBboxArea = bb;
-                }
-
-                VectorSignature.ShapeType bestAnchorType = bestAnchor.sig() != null
-                        ? bestAnchor.sig().type : null;
-
-                if (bestAnchorBboxArea < maxBboxArea * 0.50) {
-                    // ── Path A: non-prominent — re-select to largest bbox ──────
-                    double reselScoreThreshold = bestScore * 0.70;
-                    double reselBestBboxArea   = bestAnchorBboxArea;
-                    for (int ri = 0; ri < anchorScores.size(); ri++) {
-                        double rScore = anchorScores.get(ri)[0];
-                        SceneContourEntry reselCandidate = anchorEntries.get(ri);
-                        double rBboxArea = (double) reselCandidate.bbox().width * reselCandidate.bbox().height;
-                        if (rScore >= reselScoreThreshold && rBboxArea > reselBestBboxArea) {
-                            if (!isTypeCompatible(bestAnchorType, reselCandidate)) continue;
-                            reselBestBboxArea = rBboxArea;
-                            bestBbox    = anchorBboxes.get(ri);
-                            bestAnchor  = reselCandidate;
-                        }
-                    }
-                } else {
-                    // ── Path B: prominent — tight same-size contour swap ────────
-                    double reselScoreThreshold = bestScore * 0.90;
-                    double minBboxArea         = bestAnchorBboxArea * 0.90;
-                    double reselBestArea       = bestAnchor.area();
-                    for (int ri = 0; ri < anchorScores.size(); ri++) {
-                        double rScore = anchorScores.get(ri)[0];
-                        double rArea  = anchorScores.get(ri)[1];
-                        SceneContourEntry reselCandidate = anchorEntries.get(ri);
-                        double rBboxArea = (double) reselCandidate.bbox().width * reselCandidate.bbox().height;
-                        if (rScore >= reselScoreThreshold && rArea > reselBestArea
-                                && rBboxArea >= minBboxArea) {
-                            if (!isTypeCompatible(bestAnchorType, reselCandidate)) continue;
-                            reselBestArea = rArea;
-                            bestBbox    = anchorBboxes.get(ri);
-                            bestAnchor  = reselCandidate;
-                        }
-                    }
-                }
+                var resel = reSelectAnchor(bestScore, bestAnchor, bestBbox,
+                        anchorScores, anchorBboxes, anchorEntries);
+                bestBbox   = resel.bbox;
+                bestAnchor = resel.anchor;
             }
 
             // ── Post-score bbox expansion ─────────────────────────────────
@@ -406,17 +317,7 @@ public final class VectorMatcher {
     /**
      * Three-layer score for a candidate matched set.
      *
-     * @param refClusters  all reference clusters
-     * @param refCount     number of ref clusters (pre-dedup ref count)
-     * @param primaryRef   ref cluster with largest contour area
-     * @param matched      deduplicated scene entries selected for this candidate
-     * @param descriptor   scene descriptor (for Fix B contamination)
-     * @param regionBbox   candidate bounding box
-     * @param allAchromatic true when every ref cluster is achromatic (pre-computed)
-     * @param sceneDiag     scene diagonal length (pre-computed, OPT-I)
-     */
-    /**
-     * Returns {@code double[]{combined, countScore, matchScore, geomScore}} — all in [0,1].
+     * <p>Returns {@code double[]{combined, countScore, matchScore, geomScore}} — all in [0,1].
      * Index 0 is the weighted combined score; indices 1-3 are the raw per-layer scores
      * (before weighting) for Layer 1 (Boundary Count), Layer 2 (Structural), Layer 3 (Geometry).
      */
@@ -571,7 +472,6 @@ public final class VectorMatcher {
         // purely structural — it finds the best structural alignment regardless of
         // cluster origin or solidity ranking.
         double geomScore = 0.0;
-        SceneContourEntry primaryScene = null;
         double bestGeom = -1.0;
         for (RefCluster rc : refClusters) {
             for (MatOfPoint refContour : rc.contours) {
@@ -581,7 +481,6 @@ public final class VectorMatcher {
                     double sim = rcSig.similarity(e.sig());
                     if (sim > bestGeom) {
                         bestGeom = sim;
-                        primaryScene = e;
                     }
                 }
             }
@@ -599,16 +498,6 @@ public final class VectorMatcher {
         double combined = countScore * W_COUNT
                         + matchScore  * W_MATCH
                         + geomScore   * W_GEOM;
-
-        // DEBUG — remove after diagnosis
-        if (combined > 0.4 && VM_DEBUG) {
-            VectorSignature rs = primaryRef != null ? primaryRef.bestSig(EPSILON) : null;
-            SceneContourEntry ps = primaryScene != null ? primaryScene : null;
-            System.out.printf("[VM-DEBUG] count=%.3f match=%.3f geom=%.3f combined=%.3f | refType=%s refCirc=%.3f refV=%d | sceneType=%s sceneCirc=%.3f sceneV=%d%n",
-                countScore, matchScore, geomScore, combined,
-                rs != null ? rs.type : "?", rs != null ? rs.circularity : 0, rs != null ? rs.vertexCount : 0,
-                ps != null ? ps.sig().type : "?", ps != null ? ps.sig().circularity : 0, ps != null ? ps.sig().vertexCount : 0);
-        }
 
         return new double[]{
                 Math.max(0.0, Math.min(1.0, combined)),
@@ -963,6 +852,20 @@ public final class VectorMatcher {
     }
 
     /**
+     * Shape-type compatibility check for the OPT-G early exit.
+     * Returns {@code true} when the anchor and ref types are structurally compatible.
+     */
+    private static boolean isShapeTypeCompatible(VectorSignature.ShapeType anchor,
+                                                 VectorSignature.ShapeType ref) {
+        if (anchor == ref) return true;
+        if (anchor == VectorSignature.ShapeType.COMPOUND
+                || ref == VectorSignature.ShapeType.COMPOUND) return true;
+        return (isClosedPoly(anchor) && isClosedPoly(ref))
+            || (anchor == VectorSignature.ShapeType.CIRCLE && isClosedPoly(ref))
+            || (isClosedPoly(anchor) && ref == VectorSignature.ShapeType.CIRCLE);
+    }
+
+    /**
      * Shape-type compatibility gate for anchor re-selection.
      * Returns {@code false} (skip candidate) when the candidate's shape type is
      * incompatible with the original best anchor's type.
@@ -980,6 +883,76 @@ public final class VectorMatcher {
              || (bestAnchorType == VectorSignature.ShapeType.CIRCLE && isClosedPoly(candType))
              || (isClosedPoly(bestAnchorType) && candType == VectorSignature.ShapeType.CIRCLE);
         return sameFamily;
+    }
+
+    /** Lightweight carrier for anchor re-selection results. */
+    private record AnchorSelection(SceneContourEntry anchor, Rect bbox) {}
+
+    /**
+     * Post-loop anchor re-selection — corrects the bounding box when a small
+     * background element outscored the real shape.
+     *
+     * <p><b>Path A (non-prominent):</b> best anchor bbox &lt; 50 % of the largest
+     * candidate → re-select to the largest-bbox candidate scoring ≥ 70 % of best.
+     *
+     * <p><b>Path B (prominent):</b> best anchor is large → only allow a tight
+     * same-size swap (bbox area ≥ 90 %, score ≥ 90 %, larger contour area).
+     *
+     * <p>Purely geometry-driven — no colour terms.
+     */
+    private static AnchorSelection reSelectAnchor(
+            double bestScore,
+            SceneContourEntry bestAnchor,
+            Rect bestBbox,
+            List<double[]> anchorScores,
+            List<Rect> anchorBboxes,
+            List<SceneContourEntry> anchorEntries) {
+
+        double bestAnchorBboxArea = (double) bestAnchor.bbox().width * bestAnchor.bbox().height;
+        double maxBboxArea = bestAnchorBboxArea;
+        for (SceneContourEntry ce : anchorEntries) {
+            double bb = (double) ce.bbox().width * ce.bbox().height;
+            if (bb > maxBboxArea) maxBboxArea = bb;
+        }
+
+        VectorSignature.ShapeType bestAnchorType = bestAnchor.sig() != null
+                ? bestAnchor.sig().type : null;
+
+        if (bestAnchorBboxArea < maxBboxArea * 0.50) {
+            // Path A: non-prominent — re-select to largest bbox
+            double reselScoreThreshold = bestScore * 0.70;
+            double reselBestBboxArea   = bestAnchorBboxArea;
+            for (int ri = 0; ri < anchorScores.size(); ri++) {
+                double rScore = anchorScores.get(ri)[0];
+                SceneContourEntry reselCandidate = anchorEntries.get(ri);
+                double rBboxArea = (double) reselCandidate.bbox().width * reselCandidate.bbox().height;
+                if (rScore >= reselScoreThreshold && rBboxArea > reselBestBboxArea) {
+                    if (!isTypeCompatible(bestAnchorType, reselCandidate)) continue;
+                    reselBestBboxArea = rBboxArea;
+                    bestBbox   = anchorBboxes.get(ri);
+                    bestAnchor = reselCandidate;
+                }
+            }
+        } else {
+            // Path B: prominent — tight same-size contour swap
+            double reselScoreThreshold = bestScore * 0.90;
+            double minBboxArea         = bestAnchorBboxArea * 0.90;
+            double reselBestArea       = bestAnchor.area();
+            for (int ri = 0; ri < anchorScores.size(); ri++) {
+                double rScore = anchorScores.get(ri)[0];
+                double rArea  = anchorScores.get(ri)[1];
+                SceneContourEntry reselCandidate = anchorEntries.get(ri);
+                double rBboxArea = (double) reselCandidate.bbox().width * reselCandidate.bbox().height;
+                if (rScore >= reselScoreThreshold && rArea > reselBestArea
+                        && rBboxArea >= minBboxArea) {
+                    if (!isTypeCompatible(bestAnchorType, reselCandidate)) continue;
+                    reselBestArea = rArea;
+                    bestBbox   = anchorBboxes.get(ri);
+                    bestAnchor = reselCandidate;
+                }
+            }
+        }
+        return new AnchorSelection(bestAnchor, bestBbox);
     }
 
 
