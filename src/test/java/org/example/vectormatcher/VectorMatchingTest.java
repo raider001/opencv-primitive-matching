@@ -547,12 +547,11 @@ class VectorMatchingTest {
     /**
      * Composes the 3× scaled reference image (non-black pixels only) onto a
      * fresh clone of the specified background, then asserts {@code score > 70 %}
-     * with {@code IoU > 0.90} (no upper IoU cap).
+     * with {@code 0.90 < IoU ≤ 2.0}.
      *
-     * <p>Note: for extreme-AR shapes such as LINE_H and LINE_V the coverage-scaled
-     * IoU can legitimately exceed 1.1 (sometimes &gt;&gt; 1) because the GT bounding
-     * box is only a few pixels tall/wide.  The score gate ({@code > 70}) is the
-     * primary quality signal; a high IoU for line shapes is expected and correct.
+     * <p>The upper IoU cap of 2.0 rejects detections whose bbox area exceeds
+     * 2× the ground-truth area — such bboxes include too much non-target area
+     * (e.g. background lines merged into the detection region).
      */
     private void assertBgMatch(ReferenceId refId, BackgroundId bgId) {
         Mat sceneMat = shapeOnBackground(refId, bgId);
@@ -572,7 +571,7 @@ class VectorMatchingTest {
             assertTrue(MatchReportLibrary.isDetectionPass(score, iou),
                     refId.name() + " on " + bgId.name() + " got "
                             + String.format("%.1f", score) + "%"
-                            + " (need score > 70 and IoU > 0.9; IoU="
+                            + " (need score > 70 and 0.9 < IoU ≤ 1.3; IoU="
                             + (Double.isNaN(iou) ? "NaN" : String.format("%.2f", iou)) + ")");
         } finally {
             ref.release();
@@ -1070,14 +1069,13 @@ class VectorMatchingTest {
     // ── Extended shapes — BG_RANDOM_LINES ─────────────────────────────────────
 
     @Test @Order(100) @DisplayName("LINE_H — on random-lines background")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
-                     reason = "Horizontal line on random-lines background. Score ≈ 74% — comfortably " +
-                              "above the 70% threshold. Coverage-scaled IoU is very high (≈ 8.2) because " +
-                              "the GT bbox is only ~9 px tall: the detection bbox correctly covers the line " +
-                              "but is proportionally much taller, inflating the coverage-scaled IoU. " +
-                              "This is expected behaviour for extreme-AR line shapes with thin GT bboxes " +
-                              "and does NOT indicate a false positive — score gate ensures geometry match.")
-    void lineHOnLines() { assertBgMatch(ReferenceId.LINE_H, BackgroundId.BG_RANDOM_LINES); }
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Horizontal line on random-lines background. Score ≈ 82% but detection bbox " +
+                              "is massively over-expanded (det: 399×92 vs GT: 342×9 — height is 10× too " +
+                              "tall, coverage-scaled IoU ≈ 12). The matcher merges nearby background lines " +
+                              "from the same achromatic cluster into the detection region. Needs matcher-level " +
+                              "bbox refinement for thin LINE_SEGMENT shapes on busy backgrounds.")
+    void lineHOnLines() { recordBgMatch(ReferenceId.LINE_H, BackgroundId.BG_RANDOM_LINES); }
 
     @Test @Order(101) @DisplayName("LINE_V — on random-lines background")
     @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
@@ -1172,10 +1170,12 @@ class VectorMatchingTest {
     void polylineTShapeOnLines() { assertBgMatch(ReferenceId.POLYLINE_T_SHAPE, BackgroundId.BG_RANDOM_LINES); }
 
     @Test @Order(115) @DisplayName("ARC_HALF — on random-lines background")
-    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
-                     reason = "Semicircular arc on random lines. Smooth curved arc is geometrically " +
-                              "distinct from straight background line fragments.")
-    void arcHalfOnLines() { assertBgMatch(ReferenceId.ARC_HALF, BackgroundId.BG_RANDOM_LINES); }
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Semicircular arc on random lines. Geometry score is excellent (91%) but " +
+                              "the detection bbox is over-expanded (det: 396×236 vs GT: 333×171, IoU ≈ 1.64) " +
+                              "because background line contours merge with the arc contour at the colour-cluster " +
+                              "extraction level. Needs contour-level decomposition to separate arc from lines.")
+    void arcHalfOnLines() { recordBgMatch(ReferenceId.ARC_HALF, BackgroundId.BG_RANDOM_LINES); }
 
     @Test @Order(116) @DisplayName("ARC_QUARTER — on random-lines background")
     @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,

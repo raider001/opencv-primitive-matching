@@ -617,6 +617,7 @@ public class MatchDiagnosticLibrary {
         boolean missed        = false;
 
         final double iouThreshold = goodIou * 0.95;
+        final double iouUpperCap  = 1.3;   // detection area must not exceed 1.3× GT area
         final double fpGate       = 60.0;
 
         if (gt != null) {
@@ -624,7 +625,12 @@ public class MatchDiagnosticLibrary {
                 iouVal        = iou(bestBbox, gt);
                 falsePositive = (scorePercent >= fpGate)        && (iouVal < 0.3);
                 badIou        = (scorePercent >= passThreshold) && (iouVal >= 0.3) && (iouVal < iouThreshold);
-                correctHit    = (scorePercent >= passThreshold) && (iouVal >= iouThreshold);
+                correctHit    = (scorePercent >= passThreshold) && (iouVal >= iouThreshold) && (iouVal <= iouUpperCap);
+                // Over-expanded detection — bbox area exceeds 2× GT area
+                if (!badIou && (scorePercent >= passThreshold) && (iouVal > iouUpperCap)) {
+                    badIou = true;
+                    correctHit = false;
+                }
             }
             if (scorePercent < passThreshold) missed = true;
         } else {

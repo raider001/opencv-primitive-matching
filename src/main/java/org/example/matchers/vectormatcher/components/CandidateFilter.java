@@ -37,6 +37,7 @@ public final class CandidateFilter {
      */
     private static final double MIN_GLOBAL_AREA_RATIO = 0.08;
 
+
     /**
      * Connected-component filter — per-cluster noise reduction.
      *
@@ -221,6 +222,7 @@ public final class CandidateFilter {
 
         return result;
     }
+
 
     private CandidateFilter() {}  // static utility class
 }

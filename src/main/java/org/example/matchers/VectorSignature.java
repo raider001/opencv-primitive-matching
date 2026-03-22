@@ -1363,6 +1363,78 @@ public final class VectorSignature {
             segScore = Math.max(segScore, 0.72);
         }
 
+
+        // ── Outline shape coherence boost ────────────────────────────────────
+        // For outline shapes (solidity < 0.40) on busy backgrounds (random lines/circles),
+        // background contours physically merge with the shape edges at the raster level.
+        // The contaminated contour causes seg/topo to fail even when global geometric
+        // metrics (type, circularity, solidity, vertex count, AR) agree well.
+        //
+        // Examples: RECT_OUTLINE on BG_RANDOM_LINES where background line segments
+        // attach to the rectangle edges, breaking segment continuity and topology.
+        //
+        // Safety gates (prevent false positives):
+        //   • typeScore = 1.0 (exact type match: both CLOSED_CONVEX_POLY or both CLOSED_CONCAVE_POLY)
+        //   • Both shapes are outlines (solidity < 0.40)
+        //   • circScore ≥ 0.85 — shape roundness agrees (rect vs rect, quad vs quad)
+        //   • solidityScore ≥ 0.85 — fill ratio agrees (both are thin outlines)
+        //   • vertexScore ≥ 0.75 — vertex count approximately matches (±1 vertex allowed)
+        //   • aspectScore ≥ 0.70 — shape proportions agree
+        //   • angleScore ≥ 0.50 — angle distribution has some overlap (reject completely mismatched shapes)
+        //   • BOTH seg < 0.30 AND topo < 0.30 — both descriptors degraded by contamination
+        //
+        // Floor levels tiered by agreement strength:
+        //   • Strong (circ/solid/vtx ≥ 0.90, AR ≥ 0.80, angle ≥ 0.70): floor seg=0.65, topo=0.65
+        //   • Moderate (circ/solid/vtx ≥ 0.85, AR ≥ 0.70, angle ≥ 0.60): floor seg=0.55, topo=0.55
+        //   • Weak (circ/solid/vtx ≥ 0.80, AR ≥ 0.65, angle ≥ 0.50): floor seg=0.45, topo=0.45
+        boolean bothOutlineShapes = this.solidity < 0.40 && ref.solidity < 0.40;
+        if (bothOutlineShapes && typeScore >= 1.0
+                && circScore     >= 0.85
+                && solidityScore >= 0.85
+                && vertexScore   >= 0.75
+                && aspectScore   >= 0.70
+                && angleScore    >= 0.50
+                && segScore      <  0.30
+                && topoScore     <  0.30) {
+            
+            // Tier 1: Strong agreement
+            if (circScore >= 0.90 && solidityScore >= 0.90 && vertexScore >= 0.90
+                    && aspectScore >= 0.80 && angleScore >= 0.70) {
+                segScore  = Math.max(segScore,  0.65);
+                topoScore = Math.max(topoScore, 0.65);
+                if (VM_DEBUG) {
+                    System.out.printf("[OUTLINE-BOOST-T1] type=%s/%s vtx=%d/%d circ=%.3f/%.3f solid=%.3f/%.3f seg=%.3f->%.3f topo=%.3f->%.3f%n",
+                        this.type, ref.type, this.vertexCount, ref.vertexCount,
+                        this.circularity, ref.circularity, this.solidity, ref.solidity,
+                        segScore, 0.65, topoScore, 0.65);
+                }
+            }
+            // Tier 2: Moderate agreement
+            else if (circScore >= 0.85 && solidityScore >= 0.85 && vertexScore >= 0.80
+                    && aspectScore >= 0.70 && angleScore >= 0.60) {
+                segScore  = Math.max(segScore,  0.55);
+                topoScore = Math.max(topoScore, 0.55);
+                if (VM_DEBUG) {
+                    System.out.printf("[OUTLINE-BOOST-T2] type=%s/%s vtx=%d/%d circ=%.3f/%.3f solid=%.3f/%.3f seg=%.3f->%.3f topo=%.3f->%.3f%n",
+                        this.type, ref.type, this.vertexCount, ref.vertexCount,
+                        this.circularity, ref.circularity, this.solidity, ref.solidity,
+                        segScore, 0.55, topoScore, 0.55);
+                }
+            }
+            // Tier 3: Weak agreement
+            else if (circScore >= 0.80 && solidityScore >= 0.80
+                    && aspectScore >= 0.65 && angleScore >= 0.50) {
+                segScore  = Math.max(segScore,  0.45);
+                topoScore = Math.max(topoScore, 0.45);
+                if (VM_DEBUG) {
+                    System.out.printf("[OUTLINE-BOOST-T3] type=%s/%s vtx=%d/%d circ=%.3f/%.3f solid=%.3f/%.3f seg=%.3f->%.3f topo=%.3f->%.3f%n",
+                        this.type, ref.type, this.vertexCount, ref.vertexCount,
+                        this.circularity, ref.circularity, this.solidity, ref.solidity,
+                        segScore, 0.45, topoScore, 0.45);
+                }
+            }
+        }
+
         double score = (typeScore     * 0.15
                      + segScore      * 0.23
                      + topoScore     * 0.15

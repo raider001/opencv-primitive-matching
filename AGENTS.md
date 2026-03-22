@@ -51,7 +51,7 @@
 - `ExpectedOutcome` annotations are documentation surfaced in reports; JUnit assertions still define pass/fail.
 - IoU in this suite is coverage-scaled (`MatchDiagnosticLibrary.iou`), and several checks combine IoU with score thresholds.
 - `VectorVariant` declares strict/normal/loose, but core matcher execution path currently runs `VECTOR_NORMAL`.
-- Detection pass: `MatchReportLibrary.isDetectionPass(score, iou)` — score > 70 % AND IoU > 0.90. Rejection pass: `MatchReportLibrary.isRejectionPass(score)` — score < 60 %.
+- Detection pass: `MatchReportLibrary.isDetectionPass(score, iou)` — score > 70 % AND 0.90 < IoU ≤ 1.30. Rejection pass: `MatchReportLibrary.isRejectionPass(score)` — score < 60 %.
 - Cross-reject tests use `@Tag("cross-reject")`; Surefire currently includes them. To re-exclude: add `<excludedGroups>cross-reject</excludedGroups>` to the Surefire config.
 - `baseline/` at project root holds a frozen `report.html` and `sections/` snapshot for visual regression comparison.
 

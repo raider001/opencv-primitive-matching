@@ -3,7 +3,8 @@ package org.example.matchers.vectormatcher.components;
 import org.example.matchers.SceneContourEntry;
 import org.opencv.core.Rect;
 
-import java.util.List;
+import java.util.*;
+
 
 /**
  * Post-score bounding box expansion and refinement.
@@ -24,7 +25,7 @@ import java.util.List;
  */
 public final class BboxExpander {
 
-    private static final boolean VM_BBOX_DEBUG = System.getProperty("vm.bbox().debug") != null;
+    private static final boolean VM_BBOX_DEBUG = System.getProperty("vm.bbox.debug") != null;
 
     /**
      * Expands the best-match bounding box using reference geometry and matched contours.
@@ -66,13 +67,33 @@ public final class BboxExpander {
         // ── Step B: Compute area caps derived from reference geometry ─────────
         AreaCaps caps = computeAreaCaps(refFullBbox, estimatedScale);
 
+        // ── Compute reference aspect ratio (used in Steps C & D) ────────────
+        double refMaxDim = Math.max(refFullBbox.width, refFullBbox.height);
+        double refMinDim = Math.min(refFullBbox.width, refFullBbox.height);
+        double refAR = (refMinDim > 0) ? refMaxDim / refMinDim : 1.0;
+
         // ── Step C: Union co-located matched contours ─────────────────────────
         Rect expandedBbox = trimAndUnionMatched(anchorBbox, matched, bestAnchor,
-                refClusters, caps, referenceId, anchorDiag);
+                refClusters, caps, referenceId, anchorDiag, refAR);
 
         // ── Step D: Sibling expansion ─────────────────────────────────────────
-        expandedBbox = unionConcentricAndOverlappingSiblings(
-                expandedBbox, matched, candidates, caps.siblingExpArea);
+        // Skip for very elongated references (AR > 3.0) — extremely thin shapes
+        // like LINE_H/LINE_V already have their complete extent captured by the
+        // matched contours. Unscored siblings on busy backgrounds (random lines)
+        // are almost always background noise, not part of the target shape.
+        
+        if (VM_BBOX_DEBUG) {
+            System.out.printf("[STEP-D-AR] %s: refFullBbox=%dx%d AR=%.2f%n",
+                    referenceId, refFullBbox.width, refFullBbox.height, refAR);
+        }
+        
+        if (refAR <= 3.0) {
+            expandedBbox = unionConcentricAndOverlappingSiblings(
+                    expandedBbox, matched, candidates, caps.siblingExpArea);
+        } else if (VM_BBOX_DEBUG) {
+            System.out.printf("[STEP-D-SKIP] %s: refAR=%.2f (>3.0) — skip sibling expansion%n",
+                    referenceId, refAR);
+        }
 
         // Sanity check: reject if frame-spanning (> 80 % scene area)
         double expandedArea = (double) expandedBbox.width * expandedBbox.height;
@@ -127,8 +148,11 @@ public final class BboxExpander {
         // Three area limits:
         //  anchorTrimArea  (5%)  — cap for trimming inflated anchor bbox
         //  matchedUnionArea (15%) — generous cap for already-scored matched contours
-        //  siblingExpArea   (5%)  — tight cap for unverified sibling expansion
+        //  siblingExpArea   (varies) — tight cap for unverified sibling expansion
         double refMaxDim = Math.max(refFullBbox.width, refFullBbox.height);
+        double refMinDim = Math.min(refFullBbox.width, refFullBbox.height);
+        double refAR = (refMinDim > 0) ? refMaxDim / refMinDim : 1.0;
+        
         double anchorTrimSide = refMaxDim * estimatedScale * 1.05;
         double anchorTrimArea = anchorTrimSide * anchorTrimSide;
 
@@ -137,7 +161,19 @@ public final class BboxExpander {
         double matchedUnionArea = Math.max(matchedUnionW * matchedUnionH,
                 anchorTrimArea * 1.15);
 
-        double siblingExpArea = anchorTrimArea;
+        // Sibling expansion cap: tighter for thin/elongated shapes (arcs, lines)
+        // to prevent background contours from merging via the concentric/overlapping
+        // criteria in Step D.
+        double siblingExpArea;
+        if (refAR > 1.8) {
+            // Thin/elongated shape (ARC_HALF, LINE_H, etc.) — zero margin
+            // Use the actual ref bbox area at estimated scale, no extra allowance.
+            siblingExpArea = refFullBbox.width * refFullBbox.height 
+                           * estimatedScale * estimatedScale;
+        } else {
+            // Near-square shape — keep original 5% margin
+            siblingExpArea = anchorTrimArea;
+        }
 
         return new AreaCaps(anchorTrimArea, matchedUnionArea, siblingExpArea);
     }
@@ -148,7 +184,8 @@ public final class BboxExpander {
                                             List<RefCluster> refClusters,
                                             AreaCaps caps,
                                             String referenceId,
-                                            double anchorDiag) {
+                                            double anchorDiag,
+                                            double refAR) {
         // Start from anchor bbox, but trim if already exceeds anchorTrimArea
         Rect expandedBbox;
         double anchorBoxArea = (double) anchorBbox.width * anchorBbox.height;
@@ -173,23 +210,32 @@ public final class BboxExpander {
         if (VM_BBOX_DEBUG) {
             List<RefCluster> chromatics = refClusters.stream()
                     .filter(rc -> !rc.achromatic).toList();
-            System.out.printf("[STEP-C] %s chromaticClusters=%d hues=%s distinctHues=%b stepCCap=%.0f%n",
+            System.out.printf("[STEP-C] %s chromaticClusters=%d hues=%s distinctHues=%b stepCCap=%.0f refAR=%.2f%n",
                     referenceId, chromatics.size(),
                     chromatics.stream().map(rc -> String.format("%.1f", rc.hue)).toList(),
-                    hasDistinctChromaticHues, stepCCap);
+                    hasDistinctChromaticHues, stepCCap, refAR);
         }
 
         // Union with co-located matched contours
-        for (SceneContourEntry m : matched) {
-            if (m == bestAnchor) continue;
-            Rect mBb = m.bbox();
-            double dist = GeometryUtils.centreDist(anchorBbox, mBb);
-            if (dist <= anchorDiag * 0.50) {
-                Rect candidate = GeometryUtils.unionRect(expandedBbox, mBb);
-                if ((double) candidate.width * candidate.height <= stepCCap) {
-                    expandedBbox = candidate;
+        // Skip union for extremely elongated shapes (AR > 3.0) — on busy backgrounds,
+        // matched entries may include nearby LINE_SEGMENT-like background contours from
+        // the same cluster (e.g. LINE_H on BG_RANDOM_LINES), and unionizing them causes
+        // the bbox to grow perpendicular to the primary axis (e.g. 342×9 → 342×74).
+        if (refAR <= 3.0) {
+            for (SceneContourEntry m : matched) {
+                if (m == bestAnchor) continue;
+                Rect mBb = m.bbox();
+                double dist = GeometryUtils.centreDist(anchorBbox, mBb);
+                if (dist <= anchorDiag * 0.50) {
+                    Rect candidate = GeometryUtils.unionRect(expandedBbox, mBb);
+                    if ((double) candidate.width * candidate.height <= stepCCap) {
+                        expandedBbox = candidate;
+                    }
                 }
             }
+        } else if (VM_BBOX_DEBUG) {
+            System.out.printf("[STEP-C-SKIP] %s: refAR=%.2f (>3.0) — skip matched-contour union%n",
+                    referenceId, refAR);
         }
 
         return expandedBbox;
@@ -230,17 +276,33 @@ public final class BboxExpander {
      * A tightly-concentric override (centre distance ≤ 5% of anchor diagonal,
      * area ≤ 3× current) allows compound-shape outer rings (e.g. COMPOUND_BULLSEYE)
      * to expand past the normal cap.
+     *
+     * <p><b>Scope:</b> Only considers siblings from clusters that have at least one
+     * matched entry — avoids polluting the result with unrelated clusters.
      */
     private static Rect unionConcentricAndOverlappingSiblings(Rect expandedBbox,
                                                                List<SceneContourEntry> matched,
                                                                List<SceneContourEntry> candidates,
                                                                double maxAllowedArea) {
+        // Pre-filter candidates to only those in clusters represented by matched entries
+        Set<Integer> matchedClusterIndices = new HashSet<>();
+        for (SceneContourEntry m : matched) {
+            matchedClusterIndices.add(m.clusterIdx());
+        }
+        
+        List<SceneContourEntry> relevantSiblings = new ArrayList<>();
+        for (SceneContourEntry ce : candidates) {
+            if (matchedClusterIndices.contains(ce.clusterIdx()) 
+                    && matched.stream().noneMatch(m -> m == ce)) {
+                relevantSiblings.add(ce);
+            }
+        }
 
         for (int pass = 0; pass < 4; pass++) {
             Rect before = expandedBbox;
             for (SceneContourEntry m : matched) {
-                for (SceneContourEntry ce : candidates) {
-                    if (ce.clusterIdx() != m.clusterIdx() || ce == m) continue;
+                for (SceneContourEntry ce : relevantSiblings) {
+                    if (ce.clusterIdx() != m.clusterIdx()) continue;
 
                     Rect   ceBb         = ce.bbox();
                     double ceArea       = ce.area();

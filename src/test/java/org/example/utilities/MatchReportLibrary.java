@@ -310,12 +310,21 @@ public class MatchReportLibrary {
     /**
      * Shared detection gate used by both HTML report rows and JUnit assertions.
      *
-     * <p>Passes when {@code iou > 0.90} (GT is adequately covered) and
-     * {@code score > 70}.  No upper IoU cap — see {@link #determinePassed} for rationale.
+     * <p>Passes when {@code iou > 0.90} (GT is adequately covered),
+     * {@code iou <= 1.30} (detection bbox is at most 1.3× the GT area), and
+     * {@code score > 70}.
+     *
+     * <p>The upper IoU cap prevents accepting detections whose bounding box
+     * dwarfs the actual shape — e.g. a thin horizontal line (GT: 342×9) whose
+     * detection bbox includes nearby background lines (det: 399×92) producing
+     * a coverage-scaled IoU of ~12.  Such detections are geometrically correct
+     * (the line IS in the bbox) but positionally wrong (the bbox covers far
+     * more than the target shape).
      */
     public static boolean isDetectionPass(double score, double iou) {
         return !Double.isNaN(iou)
                 && iou > 0.90
+                && iou <= 1.30
                 && score > 70.0;
     }
 
