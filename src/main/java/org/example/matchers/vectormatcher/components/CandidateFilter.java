@@ -37,6 +37,25 @@ public final class CandidateFilter {
      */
     private static final double MIN_GLOBAL_AREA_RATIO = 0.08;
 
+    /**
+     * Minimum bbox longest-dimension as a fraction of the GLOBAL longest bbox
+     * dimension.  Provides a secondary retention criterion for thin/elongated
+     * contours (lines) whose contour area is small relative to the largest
+     * contour but whose spatial extent is significant.
+     *
+     * <p>Only applies to contours with bbox aspect ratio ≥ {@value #THIN_SHAPE_AR_MIN}
+     * (LINE_SEGMENT-like shapes).  This prevents retaining small circles or compact
+     * noise blobs that happen to have a large bbox due to irregular shape.
+     */
+    private static final double MIN_GLOBAL_DIM_RATIO = 0.40;
+
+    /**
+     * Minimum bounding-box aspect ratio for the "thin shape" secondary retention
+     * criterion.  Contours with {@code max(w,h)/min(w,h) >= this value} are
+     * considered elongated/line-like and eligible for dimension-based retention.
+     */
+    private static final double THIN_SHAPE_AR_MIN = 3.0;
+
 
     /**
      * Connected-component filter — per-cluster noise reduction.
@@ -107,15 +126,33 @@ public final class CandidateFilter {
     public static List<SceneContourEntry> applyGlobalSizeFilter(List<SceneContourEntry> candidates) {
         if (candidates.size() <= 1) return candidates;
         double maxArea = 0.0;
+        double maxLongestDim = 0.0;
         for (SceneContourEntry ce : candidates) {
             double a = ce.area();
             if (a > maxArea) maxArea = a;
+            double longestDim = Math.max(ce.bbox().width, ce.bbox().height);
+            if (longestDim > maxLongestDim) maxLongestDim = longestDim;
         }
         if (maxArea <= 0.0) return candidates;
         final double minArea = maxArea * MIN_GLOBAL_AREA_RATIO;
+        final double minDim  = maxLongestDim * MIN_GLOBAL_DIM_RATIO;
         List<SceneContourEntry> out = new ArrayList<>();
         for (SceneContourEntry ce : candidates) {
-            if (ce.area() >= minArea) out.add(ce);
+            if (ce.area() >= minArea) { out.add(ce); continue; }
+
+            // Secondary: retain thin/elongated shapes (lines) whose contour area is
+            // small but whose spatial extent is significant.  A thin horizontal or
+            // vertical line has area ≈ length × thickness (tiny compared to circles)
+            // but its bbox longest dimension is as long as or longer than any other
+            // element.  Without this check, placed LINE_H/V contours are dropped on
+            // BG_RANDOM_CIRCLES because circle contour areas dwarf the thin line.
+            org.opencv.core.Rect bb = ce.bbox();
+            double longestDim  = Math.max(bb.width, bb.height);
+            double shortestDim = Math.max(1.0, Math.min(bb.width, bb.height));
+            double ar = longestDim / shortestDim;
+            if (ar >= THIN_SHAPE_AR_MIN && longestDim >= minDim) {
+                out.add(ce);
+            }
         }
         return out.isEmpty() ? candidates : out;  // never leave caller empty-handed
     }

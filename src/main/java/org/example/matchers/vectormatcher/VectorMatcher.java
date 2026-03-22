@@ -502,7 +502,29 @@ public final class VectorMatcher {
             double ratio = (areaB > 0 && areaD > 0)
                     ? Math.min(areaB, areaD) / Math.max(areaB, areaD) : 0.0;
 
-            if (iou >= DEDUP_IOU_MIN && ratio >= DEDUP_AREA_RATIO_MIN) {
+            // ── Thin/line-like check ──────────────────────────────────────
+            // For LINE_SEGMENT-like refs (e.g. LINE_H, LINE_V), the bright/dark
+            // achromatic clusters trace the same thin edge from opposite sides.
+            // The standard dedup conditions (IoU >= 0.90, area ratio >= 0.75)
+            // fail because:
+            //   • The dark border extends slightly beyond the bright line → area ratio < 0.75
+            //   • The thin bboxes overlap less precisely → IoU < 0.90
+            // Relaxed conditions: if BOTH clusters have thin primary bboxes
+            // (AR >= 4:1) and their bboxes are spatially nearby (IoU >= 0.20 or
+            // centres within 20% of the larger bbox diagonal), they are the same
+            // physical edge.
+            double brightAR = Math.max(bb.width, bb.height) / Math.max(1.0, Math.min(bb.width, bb.height));
+            double darkAR   = Math.max(db.width, db.height) / Math.max(1.0, Math.min(db.width, db.height));
+            boolean bothThinLines = brightAR >= 4.0 && darkAR >= 4.0;
+            boolean thinDedup = false;
+            if (bothThinLines) {
+                double cdist = GeometryUtils.centreDist(bb, db);
+                double diag  = Math.sqrt((double) Math.max(bb.width, db.width) * Math.max(bb.width, db.width)
+                             + (double) Math.max(bb.height, db.height) * Math.max(bb.height, db.height));
+                thinDedup = iou >= 0.20 || cdist <= diag * 0.20;
+            }
+
+            if ((iou >= DEDUP_IOU_MIN && ratio >= DEDUP_AREA_RATIO_MIN) || thinDedup) {
                 RefCluster discard = (areaB >= areaD) ? darkRef : brightRef;
                 result.remove(discard);
                 discard.release();
