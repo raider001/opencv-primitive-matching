@@ -153,7 +153,8 @@ public final class PhaseCorrelationMatcher {
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     Math.max(0, bestScore), bestBbox,
                     System.currentTimeMillis() - cf1Start, cfMs,
-                    scenePx(scene), savedPath, false, null));
+                    scenePx(scene), savedPath, false, null,
+                    AnalysisResult.ScoringLayers.ZERO));
         }
 
         hanningCf1.release();
@@ -255,7 +256,7 @@ public final class PhaseCorrelationMatcher {
             return new AnalysisResult(variantName, referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     score, refinedBbox, elapsed, preFilterMs,
-                    scenePx(scene), savedPath, false, null);
+                    scenePx(scene), savedPath, false, null, AnalysisResult.ScoringLayers.ZERO);
 
         } catch (Exception e) {
             return AnalysisResult.error(variantName, referenceId,
@@ -408,3 +409,5 @@ public final class PhaseCorrelationMatcher {
                 .replace("_CF_TIGHT", "·CF·T");
     }
 }
+
+

@@ -49,7 +49,13 @@ public class MatchReportLibrary {
             String sceneOrig,
             String allPoints, String sceneAnnot,
             double iou,
-            long elapsedMs, long descriptorMs) {}
+            long elapsedMs, long descriptorMs,
+            /** Layer 1 — Boundary Count raw score (0–100 %). */
+            double layerBoundaryCount,
+            /** Layer 2 — Structural Coherence raw score (0–100 %). */
+            double layerStructural,
+            /** Layer 3 — Geometry raw score (0–100 %). */
+            double layerGeometry) {}
 
     /** Simple carrier for a list of results + descriptor build time. */
     public record MatchRun(List<AnalysisResult> results, long descriptorMs) {
@@ -255,11 +261,19 @@ public class MatchReportLibrary {
 
         boolean passed = determinePassed(label, score, iou);
 
+        AnalysisResult.ScoringLayers layers = (normalResult != null)
+                ? normalResult.scoringLayers()
+                : AnalysisResult.ScoringLayers.ZERO;
+        if (layers == null) layers = AnalysisResult.ScoringLayers.ZERO;
+
         rows.add(new ReportRow(stage, label, shapeName, sceneDesc,
                 score, passed,
                 refOrigPng, refPointsPng,
                 sceneOrigPng, allPointsPng, sceneAnnotPng,
-                iou, elapsedMs, descriptorMs));
+                iou, elapsedMs, descriptorMs,
+                layers.boundaryCount(),
+                layers.structural(),
+                layers.geometry()));
 
         sceneWithRef.release();
         return score;
@@ -673,6 +687,11 @@ public class MatchReportLibrary {
               .append("<span class='score-val ").append(r.score()>=70?"s-good":r.score()>=40?"s-warn":"s-bad").append("'>")
               .append(String.format("%.1f%%",r.score())).append("</span>")
               .append(bar(r.score()))
+              .append("<div class='layers-breakdown'>")
+              .append(layerRow("Boundary Count", r.layerBoundaryCount(), "×0.15"))
+              .append(layerRow("Structural",     r.layerStructural(),    "×0.25"))
+              .append(layerRow("Geometry",       r.layerGeometry(),      "×0.60"))
+              .append("</div>")
               .append("</div></div></div>");
         }
 
@@ -773,6 +792,19 @@ public class MatchReportLibrary {
         return "<div class='bar-bg'><div class='bar-fill' style='width:"+w+"%;background:"+col+"'></div></div>";
     }
 
+    /** Renders one row of the per-layer scoring breakdown (name | mini-bar | pct weight). */
+    private static String layerRow(String name, double scorePercent, String weight) {
+        String col = scorePercent>=70?"#56d364":scorePercent>=40?"#d29922":"#f85149";
+        int w = (int)Math.max(1,Math.min(100,scorePercent));
+        return "<div class='layer-row'>"
+             + "<span class='layer-name'>" + esc(name) + "</span>"
+             + "<div class='layer-bar-bg'><div class='layer-bar-fill' style='width:"
+             + w + "%;background:" + col + "'></div></div>"
+             + "<span class='layer-pct'>" + String.format("%.0f%%", scorePercent)
+             + " <span class='layer-wt'>" + weight + "</span></span>"
+             + "</div>";
+    }
+
     private static String esc(String s) {
         return s==null?"":s.replace("&","&amp;").replace("<","&lt;").replace(">","&gt;");
     }
@@ -862,11 +894,18 @@ public class MatchReportLibrary {
         .step-img{width:160px;height:auto;display:block;border:1px solid #30363d;border-radius:4px}
         .step-empty{width:160px;height:120px;background:#21262d;border:1px solid #30363d;border-radius:4px;display:block}
         .step-label{font-size:.68rem;color:#8b949e;text-align:center;max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .pipeline-score{display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 0 0;min-width:80px}
+        .pipeline-score{display:flex;flex-direction:column;align-items:center;gap:6px;padding:8px 0 0;min-width:100px}
         .score-val{font-size:1.3rem;font-weight:700}
         .s-good{color:#56d364}.s-warn{color:#d29922}.s-bad{color:#f85149}
         .bar-bg{width:80px;height:8px;background:#21262d;border-radius:4px;overflow:hidden}
         .bar-fill{height:100%;border-radius:4px}
+        .layers-breakdown{width:100%;display:flex;flex-direction:column;gap:3px;margin-top:2px}
+        .layer-row{display:flex;align-items:center;gap:4px}
+        .layer-name{font-size:.60rem;color:#8b949e;width:82px;flex-shrink:0;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .layer-bar-bg{flex:1;height:4px;background:#21262d;border-radius:2px;overflow:hidden;min-width:30px}
+        .layer-bar-fill{height:100%;border-radius:2px}
+        .layer-pct{font-size:.60rem;color:#c9d1d9;min-width:52px;text-align:right;white-space:nowrap}
+        .layer-wt{color:#484f58}
         """;
 }
 

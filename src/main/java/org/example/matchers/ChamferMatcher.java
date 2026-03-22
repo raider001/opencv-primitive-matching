@@ -162,7 +162,8 @@ public final class ChamferMatcher {
                         scene.variantLabel(), scene.category(), scene.backgroundId(),
                         0.0, new Rect(0, 0, TILE, TILE),
                         System.currentTimeMillis() - t0, preFilterMs,
-                        scenePx(scene), null, false, null);
+                        scenePx(scene), null, false, null,
+                        AnalysisResult.ScoringLayers.ZERO);
             }
 
             // Build the full-scene distance transform map (computed once per variant)
@@ -215,7 +216,8 @@ public final class ChamferMatcher {
             return new AnalysisResult(variantName, referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     finalScore, tightBbox, elapsed, preFilterMs,
-                    scenePx(scene), savedPath, false, null);
+                    scenePx(scene), savedPath, false, null,
+                    AnalysisResult.ScoringLayers.ZERO);
 
         } catch (Exception e) {
             return AnalysisResult.error(variantName, referenceId,

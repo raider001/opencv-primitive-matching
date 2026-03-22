@@ -199,7 +199,8 @@ public final class SsimMatcher {
             return new AnalysisResult(variantName, referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     finalScore, tightBbox, elapsed, preFilterMs,
-                    scenePx(scene), savedPath, false, null);
+                    scenePx(scene), savedPath, false, null,
+                    AnalysisResult.ScoringLayers.ZERO);
 
         } catch (Exception e) {
             return AnalysisResult.error(variantName, referenceId,

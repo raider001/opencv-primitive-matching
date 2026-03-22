@@ -106,8 +106,9 @@ public class MatchDiagnosticLibrary {
               .append("\",\"detType\":\"").append(r.detType())
               .append(",\"vRef\":").append(r.refVertices())
               .append(",\"vDet\":").append(r.detVertices())
-              .append(",\"circ\":").append(fmt(r.circScore()))
-              .append(",\"solid\":").append(fmt(r.solidScore()))
+              .append(",\"layer1_boundary\":").append(fmt(r.circScore()))
+              .append(",\"layer2_structural\":").append(fmt(r.solidScore()))
+              .append(",\"layer3_geometry\":").append(fmt(r.totalSim()))
               .append(",\"gt\":{\"x\":").append(r.gtX()).append(",\"y\":").append(r.gtY())
               .append(",\"w\":").append(r.gtW()).append(",\"h\":").append(r.gtH()).append("}")
               .append(",\"det\":{\"x\":").append(r.detX()).append(",\"y\":").append(r.detY())
@@ -148,22 +149,22 @@ public class MatchDiagnosticLibrary {
     private void appendSection(StringBuilder sb, String title, List<DiagRow> list, String tag) {
         sb.append("\n// ---- ").append(title).append(" ----\n");
         list.forEach(r -> sb.append(String.format(
-            "// %s %-18s %-25s score=%5.1f%% iou=%.2f  det@(%d,%d,%d,%d)  gt@(%d,%d,%d,%d)  refType=%-20s detType=%-20s vRef=%d vDet=%d  circ=%.2f solid=%.2f%n",
+            "// %s %-18s %-25s score=%5.1f%% iou=%.2f  det@(%d,%d,%d,%d)  gt@(%d,%d,%d,%d)  refType=%-20s detType=%-20s vRef=%d vDet=%d  L1=%.1f L2=%.1f L3=%.1f%n",
             tag, r.bg(), r.shape(), r.score(), Double.isNaN(r.iou()) ? 0 : r.iou(),
             r.detX(), r.detY(), r.detW(), r.detH(),
             r.gtX(),  r.gtY(),  r.gtW(),  r.gtH(),
             r.refType(), r.detType(), r.refVertices(), r.detVertices(),
-            r.circScore(), r.solidScore())));
+            r.circScore(), r.solidScore(), r.totalSim())));
     }
 
     private void printSection(String title, List<DiagRow> list) {
         System.out.println("\n=== " + title + " ===");
         list.forEach(r -> System.out.printf(
-            "  %-4s %-18s %-25s score=%5.1f%% iou=%.2f  refType=%-20s detType=%-20s vRef=%d vDet=%d  circ=%.2f solid=%.2f%n",
+            "  %-4s %-18s %-25s score=%5.1f%% iou=%.2f  refType=%-20s detType=%-20s vRef=%d vDet=%d  L1=%.1f L2=%.1f L3=%.1f%n",
             r.falsePositive() ? "FP" : r.badIou() ? "BIOU" : r.missed() ? "MISS" : "LOW ",
             r.bg(), r.shape(), r.score(), Double.isNaN(r.iou()) ? 0 : r.iou(),
             r.refType(), r.detType(), r.refVertices(), r.detVertices(),
-            r.circScore(), r.solidScore()));
+            r.circScore(), r.solidScore(), r.totalSim()));
     }
 
     private static String fmt(double v) { return String.format("%.4f", v); }
@@ -631,6 +632,14 @@ public class MatchDiagnosticLibrary {
         }
         boolean lowScore = correctHit && (scorePercent < targetScore);
 
+        // Extract scoring layers from AnalysisResult
+        double layer1 = result != null && result.scoringLayers() != null 
+                        ? result.scoringLayers().boundaryCount() : 0.0;
+        double layer2 = result != null && result.scoringLayers() != null 
+                        ? result.scoringLayers().structural() : 0.0;
+        double layer3 = result != null && result.scoringLayers() != null 
+                        ? result.scoringLayers().geometry() : 0.0;
+
         DiagRow row = new DiagRow(
             bgLabel, refId != null ? refId.name() : "?",
             scorePercent, iouVal,
@@ -640,7 +649,7 @@ public class MatchDiagnosticLibrary {
             bestBbox != null ? bestBbox.x      : -1, bestBbox != null ? bestBbox.y       : -1,
             bestBbox != null ? bestBbox.width  : -1, bestBbox != null ? bestBbox.height  : -1,
             "n/a", "n/a",   // refSig / detSig — not recomputed in fast path
-            0.0, 0.0, 0.0,  // circScore / solidScore / totalSim
+            layer1, layer2, layer3,  // Layer 1: boundaryCount, Layer 2: structural, Layer 3: geometry
             -1, -1,         // refVertices / detVertices
             "n/a", "n/a",   // refType / detType
             List.of()       // otherHits

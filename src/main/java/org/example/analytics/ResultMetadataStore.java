@@ -238,7 +238,8 @@ public final class ResultMetadataStore {
             AnalysisResult result = new AnalysisResult(
                     methodName, refId, variantLabel, cat, bgId,
                     score, bbox, elapsedMs, preFilterMs, scenePx,
-                    annotatedPath, isError, "null".equals(errorMsg) ? null : errorMsg);
+                    annotatedPath, isError, "null".equals(errorMsg) ? null : errorMsg,
+                    AnalysisResult.ScoringLayers.ZERO);
 
             // Reconstruct stub using sceneRefId (the shape in the scene), NOT refId (the query).
             // For cross-ref runs these differ: e.g. querying CIRCLE against a GRID scene.

@@ -249,6 +249,7 @@ public final class VectorMatcher {
             double sceneDiag = Math.sqrt(sceneW * sceneW + sceneH * sceneH);
 
             double bestScore  = 0.0;
+            double[] bestLayerScores = new double[]{0, 0, 0}; // [count, match, geom] for best anchor
             Rect   bestBbox   = null;
             SceneContourEntry bestAnchor = null;
 
@@ -345,8 +346,21 @@ public final class VectorMatcher {
 
                 if (!skipped) {
                     // ── Score this candidate ──────────────────────────────────
-                    score = scoreRegion(refClusters, refCount, primaryRef,
+                    double[] scoreArr = scoreRegion(refClusters, refCount, primaryRef,
                             matched, descriptor, regionBbox, allAchromatic, sceneDiag);
+                    score = scoreArr[0];
+                    if (score > bestScore) {
+                        bestScore       = score;
+                        bestBbox        = regionBbox;
+                        bestAnchor      = anchor;
+                        bestLayerScores = new double[]{scoreArr[1], scoreArr[2], scoreArr[3]};
+                    }
+                } else {
+                    if (score > bestScore) {
+                        bestScore  = score;
+                        bestBbox   = regionBbox;
+                        bestAnchor = anchor;
+                    }
                 }
 
                 if (VM_DEBUG) {
@@ -358,12 +372,6 @@ public final class VectorMatcher {
                 anchorBboxes.add(regionBbox);
                 anchorEntries.add(anchor);
                 anchorMatchedSets.add(matched);
-
-                if (score > bestScore) {
-                    bestScore  = score;
-                    bestBbox   = regionBbox;
-                    bestAnchor = anchor;
-                }
             }
 
             // ── Anchor re-selection for bbox ────────────────────────────────
@@ -625,7 +633,11 @@ public final class VectorMatcher {
             return new AnalysisResult(variant.variantName(), referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     scorePercent, bestBbox, elapsed, 0L,
-                    (int) descriptor.sceneArea, savedPath, false, null);
+                    (int) descriptor.sceneArea, savedPath, false, null,
+                    new AnalysisResult.ScoringLayers(
+                            bestLayerScores[0] * 100.0,
+                            bestLayerScores[1] * 100.0,
+                            bestLayerScores[2] * 100.0));
 
         } catch (Exception e) {
             return AnalysisResult.error(variant.variantName(), referenceId,
@@ -652,14 +664,19 @@ public final class VectorMatcher {
      * @param allAchromatic true when every ref cluster is achromatic (pre-computed)
      * @param sceneDiag     scene diagonal length (pre-computed, OPT-I)
      */
-    private static double scoreRegion(List<RefCluster> refClusters,
-                                      int refCount,
-                                      RefCluster primaryRef,
-                                      List<SceneContourEntry> matched,
-                                      SceneDescriptor descriptor,
-                                      Rect regionBbox,
-                                      boolean allAchromatic,
-                                      double sceneDiag) {
+    /**
+     * Returns {@code double[]{combined, countScore, matchScore, geomScore}} — all in [0,1].
+     * Index 0 is the weighted combined score; indices 1-3 are the raw per-layer scores
+     * (before weighting) for Layer 1 (Boundary Count), Layer 2 (Structural), Layer 3 (Geometry).
+     */
+    private static double[] scoreRegion(List<RefCluster> refClusters,
+                                        int refCount,
+                                        RefCluster primaryRef,
+                                        List<SceneContourEntry> matched,
+                                        SceneDescriptor descriptor,
+                                        Rect regionBbox,
+                                        boolean allAchromatic,
+                                        double sceneDiag) {
 
         // ── Layer 1: boundary count ───────────────────────────────────────
         int matchedCount = matched.size();
@@ -842,7 +859,12 @@ public final class VectorMatcher {
                 ps != null ? ps.sig.type : "?", ps != null ? ps.sig.circularity : 0, ps != null ? ps.sig.vertexCount : 0);
         }
 
-        return Math.max(0.0, Math.min(1.0, combined));
+        return new double[]{
+                Math.max(0.0, Math.min(1.0, combined)),
+                countScore,
+                matchScore,
+                geomScore
+        };
     }
 
     // =========================================================================
@@ -1339,7 +1361,8 @@ public final class VectorMatcher {
         return new AnalysisResult(variant.variantName(), referenceId,
                 scene.variantLabel(), scene.category(), scene.backgroundId(),
                 0.0, null, System.currentTimeMillis() - t0, 0L,
-                (int) descriptor.sceneArea, null, false, null);
+                (int) descriptor.sceneArea, null, false, null,
+                AnalysisResult.ScoringLayers.ZERO);
     }
 
     // =========================================================================

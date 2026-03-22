@@ -164,7 +164,8 @@ public final class PixelDiffMatcher {
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     Math.max(0, bestScore), bestBbox,
                     System.currentTimeMillis() - cf1Start, cfMs,
-                    scenePx(scene), savedPath, false, null));
+                    scenePx(scene), savedPath, false, null,
+                    AnalysisResult.ScoringLayers.ZERO));
         }
 
         return out;
@@ -231,7 +232,7 @@ public final class PixelDiffMatcher {
             return new AnalysisResult(variantName, referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     finalScore, tightBbox, elapsed, preFilterMs,
-                    scenePx(scene), savedPath, false, null);
+                    scenePx(scene), savedPath, false, null, AnalysisResult.ScoringLayers.ZERO);
 
         } catch (Exception e) {
             return AnalysisResult.error(variantName, referenceId,
@@ -363,4 +364,6 @@ public final class PixelDiffMatcher {
                 .replace("PIXEL_DIFF",          "PD");
     }
 }
+
+
 

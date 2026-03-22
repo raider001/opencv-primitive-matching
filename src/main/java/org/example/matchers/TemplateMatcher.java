@@ -147,7 +147,8 @@ public final class TemplateMatcher {
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     Math.max(0, bestScore), bestBbox,
                     System.currentTimeMillis() - t0, cfMs,
-                    scenePx(scene), savedPath, false, null));
+                    scenePx(scene), savedPath, false, null,
+                    AnalysisResult.ScoringLayers.ZERO));
         }
 
         refMask.release();
@@ -252,7 +253,8 @@ public final class TemplateMatcher {
             return new AnalysisResult(variantName, referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     score, bbox, elapsed, preFilterMs,
-                    scenePx(scene), savedPath, false, null);
+                    scenePx(scene), savedPath, false, null,
+                    AnalysisResult.ScoringLayers.ZERO);
 
         } catch (Exception e) {
             return AnalysisResult.error(variantName, referenceId,

@@ -732,8 +732,31 @@ public final class VectorSignature {
             // No circle can legitimately match a star or arrowhead.
             typeScore = 0.0;
             hardGate  = true;
+        } else if ((this.type == ShapeType.LINE_SEGMENT && ref.type == ShapeType.CLOSED_CONVEX_POLY)
+                || (this.type == ShapeType.CLOSED_CONVEX_POLY && ref.type == ShapeType.LINE_SEGMENT)) {
+            // LINE_SEGMENT vs CLOSED_CONVEX_POLY: this can occur when the same thin/arc
+            // shape (e.g. ARC_HALF) is classified as LINE_SEGMENT at 0° rotation (AR ≥ 4.0)
+            // but as CLOSED_CONVEX_POLY when rotated 15°–90° (AR drops below 4.0 as the
+            // bounding box becomes more square-ish).
+            //
+            // Tolerance: when BOTH shapes have low circularity (< 0.35 — thin/arc shapes)
+            // AND both have low solidity (< 0.50 — open/thin strokes), this is most likely
+            // the same arc at different rotation angles, not a fundamentally different shape.
+            // Apply a partial penalty (0.70) instead of a hard gate.
+            //
+            // Safety: filled LINE_SEGMENTs (solidity > 0.80, e.g. thin rectangles) still
+            // hard-gate against CLOSED_CONVEX_POLY to preserve proper discrimination.
+            if (this.circularity < 0.35 && ref.circularity < 0.35
+                    && this.solidity < 0.50 && ref.solidity < 0.50) {
+                typeScore = 0.70;
+                // No hard gate — allow other metrics to determine final score
+            } else {
+                // Filled/thick LINE_SEGMENT vs POLY — structurally different, hard gate
+                typeScore = 0.0;
+                hardGate  = true;
+            }
         } else {
-            // Fundamentally incompatible (LINE vs anything, CONCAVE vs CIRCLE, etc.)
+            // Fundamentally incompatible (LINE vs CONCAVE, etc.)
             typeScore = 0.0;
             hardGate  = true;
         }
@@ -1044,22 +1067,55 @@ public final class VectorSignature {
         // geometric match.
         //
         // Safety gates (prevent false positives):
-        //   • solidityScore ≥ 0.90 — arc shapes have low solidity (0.1–0.3) while
+        //   • solidityScore ≥ 0.85 — arc shapes have low solidity (0.1–0.3) while
         //     straight-line shapes have solidity ≈ 1.0; this gate blocks arcs from
         //     matching straight background lines (which share similar AR/circularity).
-        //   • aspectScore ≥ 0.85 — ensures similar arc spans; blocks ARC_QUARTER
-        //     (AR≈42) from matching ARC_HALF (AR≈85) where ratio = 0.49.
         //   • BOTH seg < 0.10 AND topo < 0.10 — both descriptors must completely
         //     fail, confirming a scale artifact not a partial structural mismatch.
+        //
+        // Extended: also fires when one side is LINE_SEGMENT and the other is
+        // CLOSED_CONVEX_POLY (due to rotation changing the bounding box AR), as long
+        // as both are thin/open shapes (circ < 0.35, solidity < 0.50).
+        //
+        // Tiered by aspect ratio agreement:
+        //   • Tier 1 (AR ≥ 0.70): strong agreement — full boost
+        //   • Tier 2 (AR ≥ 0.45): moderate agreement — partial boost (for 180°/15° rotations)
+        //   • Tier 3 (AR ≥ 0.25): weak agreement — minimal boost (heavily rotated arcs)
         boolean bothLineSeg = this.type == ShapeType.LINE_SEGMENT && ref.type == ShapeType.LINE_SEGMENT;
-        if (bothLineSeg && typeScore >= 1.0
-                && circScore     >= 0.95
-                && solidityScore >= 0.90
-                && aspectScore   >= 0.85
+        boolean lineSegPolyMix = ((this.type == ShapeType.LINE_SEGMENT && ref.type == ShapeType.CLOSED_CONVEX_POLY)
+                || (this.type == ShapeType.CLOSED_CONVEX_POLY && ref.type == ShapeType.LINE_SEGMENT))
+                && this.circularity < 0.35 && ref.circularity < 0.35
+                && this.solidity < 0.50 && ref.solidity < 0.50;
+        if ((bothLineSeg || lineSegPolyMix) && typeScore >= 0.70
+                && circScore     >= 0.90
+                && solidityScore >= 0.85
                 && segScore      <  0.10
                 && topoScore     <  0.10) {
-            segScore  = Math.max(segScore,  0.70);
-            topoScore = Math.max(topoScore, 0.70);
+            if (aspectScore >= 0.70) {
+                // Tier 1: strong AR agreement
+                segScore  = Math.max(segScore,  0.80);
+                topoScore = Math.max(topoScore, 0.80);
+                if (lineSegPolyMix) {
+                    vertexScore = Math.max(vertexScore, 0.85);
+                    angleScore  = Math.max(angleScore,  0.75);
+                }
+            } else if (aspectScore >= 0.45) {
+                // Tier 2: moderate AR agreement (180°/15° rotations)
+                segScore  = Math.max(segScore,  0.70);
+                topoScore = Math.max(topoScore, 0.70);
+                if (lineSegPolyMix) {
+                    vertexScore = Math.max(vertexScore, 0.75);
+                    angleScore  = Math.max(angleScore,  0.60);
+                }
+            } else if (aspectScore >= 0.25) {
+                // Tier 3: weak AR agreement (heavily rotated arcs)
+                segScore  = Math.max(segScore,  0.55);
+                topoScore = Math.max(topoScore, 0.55);
+                if (lineSegPolyMix) {
+                    vertexScore = Math.max(vertexScore, 0.65);
+                    angleScore  = Math.max(angleScore,  0.45);
+                }
+            }
         }
 
         // ── Thin/open shape coherence boost ──────────────────────────────
@@ -1083,24 +1139,101 @@ public final class VectorSignature {
         // Tier 1: strong agreement (aspectScore ≥ 0.80) — aggressive floor
         // Tier 2: weaker AR agreement (aspectScore ≥ 0.60) — moderate floor
         //   Covers rotated arcs where the bounding box proportions change.
+        //
+        // Extended: also fires for LINE_SEGMENT vs CLOSED_CONVEX_POLY mismatches
+        // when both shapes are thin/open (handled by lineSegPolyMix above).
         boolean bothThinOpenPoly = (this.type == ShapeType.CLOSED_CONVEX_POLY || this.type == ShapeType.CLOSED_CONCAVE_POLY)
                 && (ref.type == ShapeType.CLOSED_CONVEX_POLY || ref.type == ShapeType.CLOSED_CONCAVE_POLY)
                 && this.circularity < 0.20 && ref.circularity < 0.20;
-        if (bothThinOpenPoly && typeScore >= 1.0
+        // Also include LINE_SEGMENT when it's thin/open
+        boolean thinLineSegMix = ((this.type == ShapeType.LINE_SEGMENT || ref.type == ShapeType.LINE_SEGMENT)
+                && this.circularity < 0.20 && ref.circularity < 0.20
+                && this.solidity < 0.40 && ref.solidity < 0.40);
+        if ((bothThinOpenPoly || thinLineSegMix) && typeScore >= 0.70
                 && circScore     >= 0.90
                 && solidityScore >= 0.85
                 && topoScore     <  0.10) {
             if (aspectScore >= 0.80) {
                 // Tier 1: strong AR agreement — shape proportions match well
+                if (segScore < 0.10) segScore = Math.max(segScore, 0.75);
                 topoScore   = Math.max(topoScore,   0.75);
-                angleScore  = Math.max(angleScore,   0.60);
+                angleScore  = Math.max(angleScore,   0.65);
                 vertexScore = Math.max(vertexScore,  0.85);
             } else if (aspectScore >= 0.60) {
                 // Tier 2: moderate AR agreement — rotated arc, proportions shifted
-                topoScore   = Math.max(topoScore,   0.55);
-                angleScore  = Math.max(angleScore,   0.40);
-                vertexScore = Math.max(vertexScore,  0.75);
+                if (segScore < 0.10) segScore = Math.max(segScore, 0.60);
+                topoScore   = Math.max(topoScore,   0.60);
+                angleScore  = Math.max(angleScore,   0.50);
+                vertexScore = Math.max(vertexScore,  0.80);
+            } else if (aspectScore >= 0.40) {
+                // Tier 3: weak AR agreement — heavily rotated arc (15°/180°)
+                // where bounding box proportions differ significantly
+                if (segScore < 0.10) segScore = Math.max(segScore, 0.45);
+                topoScore   = Math.max(topoScore,   0.45);
+                angleScore  = Math.max(angleScore,   0.35);
+                vertexScore = Math.max(vertexScore,  0.70);
             }
+        }
+
+        // ── Thin/open shape: topology-validated seg rescue ────────────────
+        // For thin/open shapes (circ < 0.20) where topology PARTIALLY works
+        // (≥ 0.50) but seg has COMPLETELY failed (< 0.10).  This case arises
+        // when the reference (small scale, e.g. 128×128) produces many densified
+        // segments from the SegmentDescriptor traversal (e.g. 15 STRAIGHT runs
+        // on a pixelated semicircle arc), but the scene (large scale, e.g. 640×480)
+        // produces only 1 collapsed segment because CHAIN_APPROX_SIMPLE yields
+        // a smoother polygon.  The segment-count ratio (1/15 < 0.5) triggers a
+        // hard reject in SegmentDescriptor.similarity(), giving segScore=0.
+        //
+        // When topology confirms the shapes structurally agree (≥ 0.50) AND all
+        // scale-invariant global metrics also agree, the seg failure is a
+        // scale-dependent artifact, not a true structural difference.
+        //
+        // Safety gates:
+        //   • Both shapes thin/open (circ < 0.20)
+        //   • typeScore ≥ 0.70 — compatible types
+        //   • circScore ≥ 0.90 — circularity agrees
+        //   • solidityScore ≥ 0.85 — fill ratio agrees
+        //   • aspectScore ≥ 0.80 — proportions agree
+        //   • topoScore ≥ 0.50 — topology provides partial validation
+        //   • segScore < 0.10 — seg has genuinely failed
+        if ((bothThinOpenPoly || thinLineSegMix) && typeScore >= 0.70
+                && circScore     >= 0.90
+                && solidityScore >= 0.85
+                && aspectScore   >= 0.80
+                && topoScore     >= 0.50
+                && segScore      <  0.10) {
+            // Use topology agreement as a proxy: floor seg proportional to topo
+            segScore = Math.max(segScore, topoScore * 0.90);
+        }
+
+        // ── Very thin open shape rescue ─────────────────────────────────
+        // For EXTREMELY thin/open shapes (circularity < 0.12, solidity < 0.35),
+        // the geometric metrics (circ, solidity) themselves become unreliable
+        // across rotation because:
+        //   • The contour perimeter can vary significantly with rotation due to
+        //     anti-aliasing and pixel alignment effects.
+        //   • The convex hull changes shape at extreme angles.
+        //
+        // When both shapes are very thin (< 0.12 circ) AND very open (< 0.35 solid),
+        // and both have the same general type category (LINE_SEGMENT or thin POLY),
+        // apply a minimum floor to structural metrics to prevent complete scoring collapse.
+        //
+        // Safety gates:
+        //   • Both must be very thin (circ < 0.12) AND very open (solid < 0.35)
+        //   • typeScore must be reasonable (>= 0.70)
+        //   • circScore must be at least weak (>= 0.55) — shapes must still
+        //     have similar relative thinness, but allow for significant rotation variance.
+        //   • All structural metrics must have completely failed (< 0.10)
+        boolean bothVeryThinOpen = this.circularity < 0.12 && ref.circularity < 0.12
+                && this.solidity < 0.35 && ref.solidity < 0.35;
+        if (bothVeryThinOpen && typeScore >= 0.70 && circScore >= 0.55
+                && segScore < 0.10 && topoScore < 0.10) {
+            // Minimum floor for all structural metrics
+            segScore    = Math.max(segScore,    0.55);
+            topoScore   = Math.max(topoScore,   0.55);
+            angleScore  = Math.max(angleScore,  0.50);
+            vertexScore = Math.max(vertexScore, 0.70);
         }
 
         // ── Near-circular coherence ─────────────────────────────────────

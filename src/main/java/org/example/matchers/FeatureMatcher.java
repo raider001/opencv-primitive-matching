@@ -160,7 +160,8 @@ public final class FeatureMatcher {
                         scene.variantLabel(), scene.category(), scene.backgroundId(),
                         Math.max(0, bestScore), bestBbox,
                         System.currentTimeMillis() - t0, cfMs,
-                        scenePx(scene), savedPath, false, null));
+                        scenePx(scene), savedPath, false, null,
+                        AnalysisResult.ScoringLayers.ZERO));
             }
         }
 
@@ -211,7 +212,8 @@ public final class FeatureMatcher {
                         referenceId, scene, outputDir);
                 return new AnalysisResult(variantName, referenceId,
                         scene.variantLabel(), scene.category(), scene.backgroundId(),
-                        0.0, null, elapsed, preFilterMs, scenePx(scene), saved, false, null);
+                        0.0, null, elapsed, preFilterMs, scenePx(scene), saved, false, null,
+                        AnalysisResult.ScoringLayers.ZERO);
             }
 
             // BFMatcher — Hamming for binary, L2 for float
@@ -284,7 +286,8 @@ public final class FeatureMatcher {
 
             return new AnalysisResult(variantName, referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
-                    score, bbox, elapsed, preFilterMs, scenePx(scene), savedPath, false, null);
+                    score, bbox, elapsed, preFilterMs, scenePx(scene), savedPath, false, null,
+                    AnalysisResult.ScoringLayers.ZERO);
 
         } catch (Exception e) {
             return AnalysisResult.error(variantName, referenceId,

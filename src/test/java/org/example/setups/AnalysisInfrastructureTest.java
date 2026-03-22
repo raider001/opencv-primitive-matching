@@ -95,7 +95,7 @@ class AnalysisInfrastructureTest {
                             variant, ref, scene.variantLabel(), scene.category(),
                             scene.backgroundId(), score, bbox,
                             elapsed, preFilter, scene.sceneMat().cols() * scene.sceneMat().rows(),
-                            null, false, null));
+                            null, false, null, new AnalysisResult.ScoringLayers(0,0,0)));
                 }
             }
             refMat.release();
@@ -220,4 +220,6 @@ class AnalysisInfrastructureTest {
         return selected.subList(0, Math.min(n, selected.size()));
     }
 }
+
+
 

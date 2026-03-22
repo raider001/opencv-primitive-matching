@@ -178,7 +178,8 @@ public final class HistogramMatcher {
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     Math.max(0, bestScore), bestBbox,
                     System.currentTimeMillis() - cf1Start, cfMs,
-                    scenePx(scene), savedPath, false, null));
+                    scenePx(scene), savedPath, false, null,
+                    AnalysisResult.ScoringLayers.ZERO));
         }
 
         return out;
@@ -257,7 +258,7 @@ public final class HistogramMatcher {
             return new AnalysisResult(variantName, referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     finalScore, tightBbox, elapsed, preFilterMs,
-                    scenePx(scene), savedPath, false, null);
+                    scenePx(scene), savedPath, false, null, AnalysisResult.ScoringLayers.ZERO);
 
         } catch (Exception e) {
             return AnalysisResult.error(variantName, referenceId,
@@ -452,6 +453,8 @@ public final class HistogramMatcher {
                 .replace("_CF_", "·CF·");
     }
 }
+
+
 
 
 

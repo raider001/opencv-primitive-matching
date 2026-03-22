@@ -192,7 +192,8 @@ public final class GeneralizedHoughDetector {
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     Math.max(0, bestScore), bestBbox,
                     System.currentTimeMillis() - cf1Start, cfMs,
-                    scenePx(scene), savedPath, false, null));
+                    scenePx(scene), savedPath, false, null,
+                    AnalysisResult.ScoringLayers.ZERO));
         }
 
         return out;
@@ -245,7 +246,7 @@ public final class GeneralizedHoughDetector {
             return new AnalysisResult(variantName, referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     det.score, det.bbox, elapsed, preFilterMs,
-                    scenePx(scene), savedPath, false, null);
+                    scenePx(scene), savedPath, false, null, AnalysisResult.ScoringLayers.ZERO);
 
         } catch (Exception e) {
             return AnalysisResult.error(variantName, referenceId,
@@ -386,6 +387,8 @@ public final class GeneralizedHoughDetector {
                 .replace("_CF_", "·CF·");
     }
 }
+
+
 
 
 

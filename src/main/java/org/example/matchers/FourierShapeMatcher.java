@@ -112,7 +112,7 @@ public final class FourierShapeMatcher {
                         scene.variantLabel(), scene.category(), scene.backgroundId(),
                         0.0, new Rect(0, 0, 1, 1),
                         System.currentTimeMillis() - t0, preFilterMs,
-                        scenePx(scene), null, false, null);
+                        scenePx(scene), null, false, null, AnalysisResult.ScoringLayers.ZERO);
             }
 
             double bestScore = -1;
@@ -142,7 +142,7 @@ public final class FourierShapeMatcher {
             return new AnalysisResult(variantName, referenceId,
                     scene.variantLabel(), scene.category(), scene.backgroundId(),
                     finalScore, bestBbox, elapsed, preFilterMs,
-                    scenePx(scene), savedPath, false, null);
+                    scenePx(scene), savedPath, false, null, AnalysisResult.ScoringLayers.ZERO);
 
         } catch (Exception e) {
             return AnalysisResult.error(variantName, referenceId,
@@ -306,4 +306,6 @@ public final class FourierShapeMatcher {
                 .replace("FOURIER_SHAPE","FS");
     }
 }
+
+
 
