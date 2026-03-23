@@ -407,6 +407,82 @@ public final class ReferenceImageFactory {
             case TRICOLOUR_TRIANGLE      -> drawTricolourTriangle(m);
             case BICOLOUR_CROSSHAIR_RING -> drawBicolourCrosshairRing(m);
             case BICOLOUR_CHEVRON_FILLED -> drawBicolourChevronFilled(m);
+
+            // Individual characters — lowercase a-z (size-12 mono format, FONT_HERSHEY_PLAIN)
+            case CHAR_a -> drawMonoChar(m, "a", fg);
+            case CHAR_b -> drawMonoChar(m, "b", fg);
+            case CHAR_c -> drawMonoChar(m, "c", fg);
+            case CHAR_d -> drawMonoChar(m, "d", fg);
+            case CHAR_e -> drawMonoChar(m, "e", fg);
+            case CHAR_f -> drawMonoChar(m, "f", fg);
+            case CHAR_g -> drawMonoChar(m, "g", fg);
+            case CHAR_h -> drawMonoChar(m, "h", fg);
+            case CHAR_i -> drawMonoChar(m, "i", fg);
+            case CHAR_j -> drawMonoChar(m, "j", fg);
+            case CHAR_k -> drawMonoChar(m, "k", fg);
+            case CHAR_l -> drawMonoChar(m, "l", fg);
+            case CHAR_m -> drawMonoChar(m, "m", fg);
+            case CHAR_n -> drawMonoChar(m, "n", fg);
+            case CHAR_o -> drawMonoChar(m, "o", fg);
+            case CHAR_p -> drawMonoChar(m, "p", fg);
+            case CHAR_q -> drawMonoChar(m, "q", fg);
+            case CHAR_r -> drawMonoChar(m, "r", fg);
+            case CHAR_s -> drawMonoChar(m, "s", fg);
+            case CHAR_t -> drawMonoChar(m, "t", fg);
+            case CHAR_u -> drawMonoChar(m, "u", fg);
+            case CHAR_v -> drawMonoChar(m, "v", fg);
+            case CHAR_w -> drawMonoChar(m, "w", fg);
+            case CHAR_x -> drawMonoChar(m, "x", fg);
+            case CHAR_y -> drawMonoChar(m, "y", fg);
+            case CHAR_z -> drawMonoChar(m, "z", fg);
+
+            // Individual characters — uppercase A-Z
+            case CHAR_A -> drawMonoChar(m, "A", fg);
+            case CHAR_B -> drawMonoChar(m, "B", fg);
+            case CHAR_C -> drawMonoChar(m, "C", fg);
+            case CHAR_D -> drawMonoChar(m, "D", fg);
+            case CHAR_E -> drawMonoChar(m, "E", fg);
+            case CHAR_F -> drawMonoChar(m, "F", fg);
+            case CHAR_G -> drawMonoChar(m, "G", fg);
+            case CHAR_H -> drawMonoChar(m, "H", fg);
+            case CHAR_I -> drawMonoChar(m, "I", fg);
+            case CHAR_J -> drawMonoChar(m, "J", fg);
+            case CHAR_K -> drawMonoChar(m, "K", fg);
+            case CHAR_L -> drawMonoChar(m, "L", fg);
+            case CHAR_M -> drawMonoChar(m, "M", fg);
+            case CHAR_N -> drawMonoChar(m, "N", fg);
+            case CHAR_O -> drawMonoChar(m, "O", fg);
+            case CHAR_P -> drawMonoChar(m, "P", fg);
+            case CHAR_Q -> drawMonoChar(m, "Q", fg);
+            case CHAR_R -> drawMonoChar(m, "R", fg);
+            case CHAR_S -> drawMonoChar(m, "S", fg);
+            case CHAR_T -> drawMonoChar(m, "T", fg);
+            case CHAR_U -> drawMonoChar(m, "U", fg);
+            case CHAR_V -> drawMonoChar(m, "V", fg);
+            case CHAR_W -> drawMonoChar(m, "W", fg);
+            case CHAR_X -> drawMonoChar(m, "X", fg);
+            case CHAR_Y -> drawMonoChar(m, "Y", fg);
+            case CHAR_Z -> drawMonoChar(m, "Z", fg);
+
+            // Individual characters — digits 0-9
+            case CHAR_0 -> drawMonoChar(m, "0", fg);
+            case CHAR_1 -> drawMonoChar(m, "1", fg);
+            case CHAR_2 -> drawMonoChar(m, "2", fg);
+            case CHAR_3 -> drawMonoChar(m, "3", fg);
+            case CHAR_4 -> drawMonoChar(m, "4", fg);
+            case CHAR_5 -> drawMonoChar(m, "5", fg);
+            case CHAR_6 -> drawMonoChar(m, "6", fg);
+            case CHAR_7 -> drawMonoChar(m, "7", fg);
+            case CHAR_8 -> drawMonoChar(m, "8", fg);
+            case CHAR_9 -> drawMonoChar(m, "9", fg);
+
+            // Individual characters — punctuation
+            case CHAR_PERIOD -> drawMonoChar(m, ".",  fg);
+            case CHAR_COMMA  -> drawMonoChar(m, ",",  fg);
+            case CHAR_DQUOTE -> drawMonoChar(m, "\"", fg);
+            case CHAR_SQUOTE -> drawMonoChar(m, "'",  fg);
+            case CHAR_HYPHEN -> drawMonoChar(m, "-",  fg);
+            case CHAR_EQUALS -> drawMonoChar(m, "=",  fg);
         }
     }
 
@@ -585,7 +661,14 @@ public final class ReferenceImageFactory {
 
     private static void drawCentredText(Mat m, String text, Scalar fg,
                                         double fontScale, int thickness) {
-        int font = Imgproc.FONT_HERSHEY_SIMPLEX;
+        drawCentredTextWithFont(m, text, fg, Imgproc.FONT_HERSHEY_SIMPLEX, fontScale, thickness);
+    }
+
+    /**
+     * Core centred-text renderer used by both {@link #drawCentredText} and {@link #drawMonoChar}.
+     */
+    private static void drawCentredTextWithFont(Mat m, String text, Scalar fg,
+                                                int font, double fontScale, int thickness) {
         int[] baseline = {0};
         Size ts = Imgproc.getTextSize(text, font, fontScale, thickness, baseline);
         Point org = new Point(
@@ -596,32 +679,18 @@ public final class ReferenceImageFactory {
     }
 
     /**
-     * Draws a single character centred on the canvas using {@code FONT_HERSHEY_PLAIN}
-     * (the most mono-style stroke font available in OpenCV).
+     * Renders a single monospace-style character centred on the 128×128 canvas.
      *
-     * <p>The font scale is chosen automatically: starting from {@code 8.0} it is reduced
-     * by {@code 0.5} steps until the glyph fits within the canvas bounds minus a
-     * 16-pixel border on each side.  Thickness is fixed at 3 to ensure the strokes
-     * produce contours large enough for the VectorMatcher's ≥ 64 px² area gate.
+     * <p>Uses {@code FONT_HERSHEY_PLAIN} (the most monospace-like Hershey variant)
+     * at a large scale so the glyph fills most of the canvas and produces a
+     * contour with enough detail for VectorMatcher scoring.
+     *
+     * <p>The effective glyph height is approximately 100 px (≈78% of canvas height),
+     * which is equivalent to a "size 12 mono" character scaled up for reliable
+     * contour extraction.
      */
-    private static void drawCharRef(Mat m, String ch, Scalar fg) {
-        int   font      = Imgproc.FONT_HERSHEY_PLAIN;
-        int   thickness = 3;
-        int[] baseline  = {0};
-        int   margin    = SIZE - 16;      // max glyph dimension
-
-        double fontScale = 8.0;
-        Size ts = Imgproc.getTextSize(ch, font, fontScale, thickness, baseline);
-        while (fontScale > 0.5 && (ts.width > margin || ts.height > margin)) {
-            fontScale -= 0.5;
-            ts = Imgproc.getTextSize(ch, font, fontScale, thickness, baseline);
-        }
-
-        Point org = new Point(
-            (SIZE - ts.width)  / 2.0,
-            (SIZE + ts.height) / 2.0
-        );
-        Imgproc.putText(m, ch, org, font, fontScale, fg, thickness, Imgproc.LINE_AA, false);
+    private static void drawMonoChar(Mat m, String ch, Scalar fg) {
+        drawCentredTextWithFont(m, ch, fg, Imgproc.FONT_HERSHEY_PLAIN, 8.0, 3);
     }
 
     // -------------------------------------------------------------------------

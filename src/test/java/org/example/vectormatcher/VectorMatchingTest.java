@@ -2559,4 +2559,542 @@ class VectorMatchingTest {
         rotM.release();
         return dst;
     }
+
+    // =========================================================================
+    // Individual Character Matching Tests
+    // =========================================================================
+
+    /**
+     * The benchmark alphabet scene string — every character appears exactly once,
+     * in the order specified by the issue: interleaved a-z / A-Z, then digits,
+     * then punctuation.
+     */
+    private static final String ALPHA_SCENE_STR =
+            "aAbBcCdDeEfFgGhHiIjJkKlLmMnNoOpPqQrRsStTuUvVwWxXyYzZ1234567890,.\"'-=";
+
+    /** OpenCV font used for character reference images and the alphabet scene (monospace-style). */
+    private static final int    CHAR_FONT        = Imgproc.FONT_HERSHEY_PLAIN;
+
+    /**
+     * Font scale used to render characters in the alphabet scene — matches the
+     * scale used by {@code ReferenceImageFactory.drawMonoChar()} so that each
+     * character in the scene is the same physical pixel size as its reference image.
+     * The string is wrapped across multiple lines to fit in the canvas.
+     */
+    private static final double CHAR_SCENE_SCALE = 8.0;
+    private static final int    CHAR_SCENE_THICK = 3;
+
+    // ── Reference-ID arrays per character group ───────────────────────────────
+
+    private static final ReferenceId[] CHAR_REFS_LOWER = {
+        ReferenceId.CHAR_a, ReferenceId.CHAR_b, ReferenceId.CHAR_c, ReferenceId.CHAR_d,
+        ReferenceId.CHAR_e, ReferenceId.CHAR_f, ReferenceId.CHAR_g, ReferenceId.CHAR_h,
+        ReferenceId.CHAR_i, ReferenceId.CHAR_j, ReferenceId.CHAR_k, ReferenceId.CHAR_l,
+        ReferenceId.CHAR_m, ReferenceId.CHAR_n, ReferenceId.CHAR_o, ReferenceId.CHAR_p,
+        ReferenceId.CHAR_q, ReferenceId.CHAR_r, ReferenceId.CHAR_s, ReferenceId.CHAR_t,
+        ReferenceId.CHAR_u, ReferenceId.CHAR_v, ReferenceId.CHAR_w, ReferenceId.CHAR_x,
+        ReferenceId.CHAR_y, ReferenceId.CHAR_z
+    };
+
+    private static final ReferenceId[] CHAR_REFS_UPPER = {
+        ReferenceId.CHAR_A, ReferenceId.CHAR_B, ReferenceId.CHAR_C, ReferenceId.CHAR_D,
+        ReferenceId.CHAR_E, ReferenceId.CHAR_F, ReferenceId.CHAR_G, ReferenceId.CHAR_H,
+        ReferenceId.CHAR_I, ReferenceId.CHAR_J, ReferenceId.CHAR_K, ReferenceId.CHAR_L,
+        ReferenceId.CHAR_M, ReferenceId.CHAR_N, ReferenceId.CHAR_O, ReferenceId.CHAR_P,
+        ReferenceId.CHAR_Q, ReferenceId.CHAR_R, ReferenceId.CHAR_S, ReferenceId.CHAR_T,
+        ReferenceId.CHAR_U, ReferenceId.CHAR_V, ReferenceId.CHAR_W, ReferenceId.CHAR_X,
+        ReferenceId.CHAR_Y, ReferenceId.CHAR_Z
+    };
+
+    private static final ReferenceId[] CHAR_REFS_DIGITS = {
+        ReferenceId.CHAR_0, ReferenceId.CHAR_1, ReferenceId.CHAR_2, ReferenceId.CHAR_3,
+        ReferenceId.CHAR_4, ReferenceId.CHAR_5, ReferenceId.CHAR_6, ReferenceId.CHAR_7,
+        ReferenceId.CHAR_8, ReferenceId.CHAR_9
+    };
+
+    private static final ReferenceId[] CHAR_REFS_PUNCT = {
+        ReferenceId.CHAR_PERIOD, ReferenceId.CHAR_COMMA,  ReferenceId.CHAR_DQUOTE,
+        ReferenceId.CHAR_SQUOTE, ReferenceId.CHAR_HYPHEN, ReferenceId.CHAR_EQUALS
+    };
+
+    /** Maps each printable character in {@link #ALPHA_SCENE_STR} to its {@link ReferenceId}. */
+    private static final Map<Character, ReferenceId> CHAR_TO_REF;
+    static {
+        Map<Character, ReferenceId> m = new LinkedHashMap<>();
+        for (int i = 0; i < 26; i++) {
+            m.put((char) ('a' + i), CHAR_REFS_LOWER[i]);
+            m.put((char) ('A' + i), CHAR_REFS_UPPER[i]);
+        }
+        for (int i = 0; i < 10; i++) m.put((char) ('0' + i), CHAR_REFS_DIGITS[i]);
+        m.put('.',  ReferenceId.CHAR_PERIOD);
+        m.put(',',  ReferenceId.CHAR_COMMA);
+        m.put('"',  ReferenceId.CHAR_DQUOTE);
+        m.put('\'', ReferenceId.CHAR_SQUOTE);
+        m.put('-',  ReferenceId.CHAR_HYPHEN);
+        m.put('=',  ReferenceId.CHAR_EQUALS);
+        CHAR_TO_REF = Collections.unmodifiableMap(m);
+    }
+
+    // =========================================================================
+    // Self-match tests — individual characters on black
+    // =========================================================================
+
+    @Test @Order(400)
+    @DisplayName("Char self-match — lowercase a-z at reference size (≥ 75 % pass rate)")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PASS,
+        reason = "Reference: FONT_HERSHEY_PLAIN scale 8, 128×128 px. " +
+                 "Scene: the same reference image centred in a 192×192 black canvas — " +
+                 "same pixel size as the reference, no rescaling. " +
+                 "Pass gate: score > 60 % (above the rejection threshold). " +
+                 "At least 75 % of the 26 lowercase letters should self-match above 60 %. " +
+                 "Characters with multi-stroke or unusual geometry (d, k, r, z) may fall below.")
+    void charLowercaseSelfMatch() {
+        runCharSelfMatchGroup("Char self-match (lower)", CHAR_REFS_LOWER, 0.75, 60.0);
+    }
+
+    @Test @Order(401)
+    @DisplayName("Char self-match — uppercase A-Z at reference size (≥ 65 % pass rate)")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PASS,
+        reason = "Reference: FONT_HERSHEY_PLAIN scale 8, 128×128 px. " +
+                 "Scene at the same character size as the reference (1:1, no rescaling). " +
+                 "Pass gate: score > 60 %. At least 65 % of the 26 uppercase letters should " +
+                 "reach 60 %; multi-component glyphs (B, F, L, N, T, W, Y) may fall below.")
+    void charUppercaseSelfMatch() {
+        runCharSelfMatchGroup("Char self-match (upper)", CHAR_REFS_UPPER, 0.65, 60.0);
+    }
+
+    @Test @Order(402)
+    @DisplayName("Char self-match — digits 0-9 at reference size (≥ 65 % pass rate)")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PASS,
+        reason = "Reference: FONT_HERSHEY_PLAIN scale 8, 128×128 px. " +
+                 "Scene at the same character size as the reference (1:1, no rescaling). " +
+                 "Pass gate: score > 60 %. Digits 2–9 self-match well; '0' and '1' render " +
+                 "as very simple shapes that score near the 55–56 % range.")
+    void charDigitSelfMatch() {
+        runCharSelfMatchGroup("Char self-match (digit)", CHAR_REFS_DIGITS, 0.65, 60.0);
+    }
+
+    @Test @Order(403)
+    @DisplayName("Char self-match — punctuation .,\"'-= at reference size (≥ 40 % pass rate)")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PARTIAL,
+        reason = "Reference: FONT_HERSHEY_PLAIN scale 8, 128×128 px. " +
+                 "Scene at the same character size as the reference (1:1, no rescaling). " +
+                 "Pass gate: score > 60 %. Punctuation glyphs are geometrically simple — " +
+                 "comma, single-quote, hyphen, equals typically score above 60 %; " +
+                 "period and dquote may be borderline. Threshold relaxed to 40 %.")
+    void charPunctuationSelfMatch() {
+        runCharSelfMatchGroup("Char self-match (punct)", CHAR_REFS_PUNCT, 0.40, 60.0);
+    }
+
+    // =========================================================================
+    // Rejection tests — wrong character must NOT match
+    // =========================================================================
+
+    @Test @Order(500)
+    @DisplayName("Char rejection: 'A' must not match in 'O' scene (polygon vs circle)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Uppercase 'A' (triangular polygon with crossbar, ~3 vertices) vs " +
+                              "'O' (smooth closed circle, 0 polygon vertices) have completely " +
+                              "different contour topology and shape type.")
+    void charUpperARejectInUpperO() {
+        assertCharCrossReject(ReferenceId.CHAR_A, ReferenceId.CHAR_O);
+    }
+
+    @Test @Order(501) @DisplayName("Char rejection: 'A' must not match in 'a' scene (case)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Uppercase 'A' (triangle with crossbar) vs lowercase 'a' (rounded glyph) " +
+                              "have very different vertex count and contour topology.")
+    void charUpperARejectInLowerA() {
+        assertCharCrossReject(ReferenceId.CHAR_A, ReferenceId.CHAR_a);
+    }
+
+    @Test @Order(502)
+    @DisplayName("Char rejection: 'X' must not match in 'O' scene (crossing lines vs circle)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "'X' is a COMPOUND shape (two crossing diagonal lines) while 'O' is a " +
+                              "smooth circular ring. Different ShapeType and very different contour " +
+                              "geometry — score expected well below 60 %.")
+    void charXRejectInO() {
+        assertCharCrossReject(ReferenceId.CHAR_X, ReferenceId.CHAR_O);
+    }
+
+    @Test @Order(503) @DisplayName("Char rejection: '1' must not match in 'l' scene")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "'1' has a diagonal lead stroke and a base bar; 'l' is a plain " +
+                              "vertical stroke. SegmentDescriptor should detect the extra strokes.")
+    void charOneRejectInL() {
+        assertCharCrossReject(ReferenceId.CHAR_1, ReferenceId.CHAR_l);
+    }
+
+    @Test @Order(504)
+    @DisplayName("Char rejection: 'b' must not match in 'O' scene (stem+loop vs plain oval)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "'b' has a vertical stem attached to a circular bowl; its outer " +
+                              "contour is tall and asymmetric. 'O' is a plain symmetric closed oval " +
+                              "without any stem. The extra stem changes the aspect ratio enough " +
+                              "to keep the score below 60 %.")
+    void charBRejectInO() {
+        assertCharCrossReject(ReferenceId.CHAR_b, ReferenceId.CHAR_O);
+    }
+
+    @Test @Order(505)
+    @DisplayName("Char rejection: 'V' must not match in '0' scene (open angle vs closed oval)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "'V' is an open V-angle shape while '0' is a fully closed oval. " +
+                              "Open-end direction and absence of closure give clearly different " +
+                              "contour profiles — score expected below 60 %.")
+    void charVRejectIn0() {
+        assertCharCrossReject(ReferenceId.CHAR_V, ReferenceId.CHAR_0);
+    }
+
+    @Test @Order(506)
+    @DisplayName("Char rejection: 'T' must not match in '0' scene (cross bars vs oval)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "'T' has a horizontal bar meeting a vertical stroke at right angles; " +
+                              "'0' is a smooth closed oval. Completely different contour topology.")
+    void charTRejectIn0() {
+        assertCharCrossReject(ReferenceId.CHAR_T, ReferenceId.CHAR_0);
+    }
+
+    @Test @Order(507) @DisplayName("Char rejection: 'I' must not match in '1' scene")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Capital 'I' has prominent top and bottom serifs in FONT_HERSHEY_PLAIN; " +
+                              "'1' has a diagonal lead stroke and base bar — these features differ.")
+    void charCapIRejectInOne() {
+        assertCharCrossReject(ReferenceId.CHAR_I, ReferenceId.CHAR_1);
+    }
+
+    @Test @Order(508)
+    @DisplayName("Char rejection: '4' must not match in '0' scene (angular lines vs oval)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "'4' has two straight perpendicular strokes with a diagonal, while " +
+                              "'0' is a smooth closed oval with no straight edges. " +
+                              "Shape types and vertex counts are very different.")
+    void char4RejectIn0() {
+        assertCharCrossReject(ReferenceId.CHAR_4, ReferenceId.CHAR_0);
+    }
+
+    @Test @Order(509)
+    @DisplayName("Char rejection: 'H' must not match in '0' scene (bars vs circle)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "'H' has two vertical strokes joined by a horizontal crossbar; " +
+                              "'0' is a smooth closed oval. Completely different shape topology.")
+    void charHRejectIn0() {
+        assertCharCrossReject(ReferenceId.CHAR_H, ReferenceId.CHAR_0);
+    }
+
+    @Test @Order(510)
+    @DisplayName("Char rejection: 'W' must not match in '0' scene (multi-peak vs oval)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "'W' has multiple peaks and valleys giving it many vertices; " +
+                              "'0' is a smooth oval. Very different contour profile.")
+    void charWRejectIn0() {
+        assertCharCrossReject(ReferenceId.CHAR_W, ReferenceId.CHAR_0);
+    }
+
+    // =========================================================================
+    // Alphabet scene tests — all characters in the full benchmark scene
+    // =========================================================================
+
+    /**
+     * Holds the rendered alphabet scene {@link Mat} and the per-character
+     * ground-truth bounding rectangles indexed by {@link ReferenceId}.
+     */
+    private record AlphaScene(Mat mat, Map<ReferenceId, Rect> charRects) {
+        void release() { mat.release(); }
+    }
+
+    @Test @Order(600)
+    @DisplayName("Alphabet scene: detect each character in " +
+                 "aAbBcC…zZ0-9,.\"'-= scene at reference size (≥ 60 % pass rate)")
+    @ExpectedOutcome(
+        value  = ExpectedOutcome.Result.PASS,
+        reason = "Scene: full 68-character string rendered at FONT_HERSHEY_PLAIN scale 8 " +
+                 "(same scale as the reference images) on a solid-black multi-line canvas. " +
+                 "Each character reference (128×128 px) is matched against the dense scene; " +
+                 "matching at the same pixel size removes scale-variation as a failure mode. " +
+                 "In a dense 68-char scene many characters compete as contour candidates, " +
+                 "so pass gate is relaxed to score > 60 % with ≥ 60 % group pass rate; " +
+                 "mirror-pair glyphs and simple punctuation may still score below the gate.")
+    void alphabetSceneCharacterTests() {
+        AlphaScene alpha = buildAlphaScene();
+        try {
+            int passCount = 0;
+            int total     = ALPHA_SCENE_STR.length();
+            System.out.printf("%n=== ALPHABET SCENE — %d characters ===%n", total);
+            for (int idx = 0; idx < total; idx++) {
+                char         c     = ALPHA_SCENE_STR.charAt(idx);
+                ReferenceId  refId = CHAR_TO_REF.get(c);
+                if (refId == null) continue;
+
+                Rect gt  = alpha.charRects().get(refId);
+                Mat  ref = ReferenceImageFactory.build(refId);
+                try {
+                    SceneEntry scene = new SceneEntry(refId, SceneCategory.A_CLEAN,
+                            "alpha_scene", BackgroundId.BG_SOLID_BLACK,
+                            Collections.emptyList(), alpha.mat());
+                    List<AnalysisResult> results;
+                    long descriptorMs;
+                    try {
+                        results      = VectorMatcher.match(refId, ref, scene,
+                                Collections.emptySet(), OUTPUT);
+                        descriptorMs = scene.descriptorBuildMs();
+                    } finally {
+                        scene.descriptor().release();
+                    }
+
+                    double score = report.record("Alphabet scene", refId.name(), refId.name(),
+                            "alpha_scene", alpha.mat(), gt,
+                            new MatchReportLibrary.MatchRun(results, descriptorMs));
+
+                    AnalysisResult best = results.stream()
+                            .filter(r -> r.methodName().equals(
+                                    VectorVariant.VECTOR_NORMAL.variantName()))
+                            .findFirst()
+                            .orElse(results.isEmpty() ? null : results.get(0));
+                    Rect   det  = best != null ? best.boundingRect() : null;
+                    double iouV = (det != null && gt != null)
+                            ? MatchDiagnosticLibrary.iou(det, gt) : Double.NaN;
+
+                    boolean pass = score >= 60.0;
+                    if (pass) passCount++;
+                    System.out.printf("  %-20s score=%5.1f%% iou=%5.2f %s%n",
+                            refId.name(), score,
+                            Double.isNaN(iouV) ? 0.0 : iouV,
+                            pass ? "✓" : "✗");
+                } finally {
+                    ref.release();
+                }
+            }
+            System.out.printf("%nAlphabet scene pass: %d / %d  (%.0f%%)%n%n",
+                    passCount, total, 100.0 * passCount / total);
+            int minPass = (int) (total * 0.60);
+            assertTrue(passCount >= minPass,
+                    "Alphabet scene: " + passCount + "/" + total
+                            + " scored >= 60% (need >= " + minPass + ")");
+        } finally {
+            alpha.release();
+        }
+    }
+
+    // =========================================================================
+    // Character test helpers
+    // =========================================================================
+
+    /**
+     * Builds a scene containing the given character reference at exactly the same
+     * pixel size as the reference image (no resizing).
+     *
+     * <p>The 128×128 reference Mat is placed centred on a 192×192 black canvas
+     * (32 px padding on each side).  Testing at the reference's own scale ensures
+     * the self-match tests exercise the core VectorMatcher pipeline without the
+     * additional complication of scale variation.
+     */
+    private static Mat buildCharScene(ReferenceId charRef) {
+        Mat ref    = ReferenceImageFactory.build(charRef);
+        int pad    = 32;
+        Mat canvas = Mat.zeros(ref.rows() + 2 * pad, ref.cols() + 2 * pad, CvType.CV_8UC3);
+        ref.copyTo(canvas.submat(new Rect(pad, pad, ref.cols(), ref.rows())));
+        ref.release();
+        return canvas;
+    }
+
+    /**
+     * Builds the full alphabet scene from {@link #ALPHA_SCENE_STR} and computes the
+     * ground-truth bounding rectangle of each rendered character for use in
+     * {@link #alphabetSceneCharacterTests()}.
+     *
+     * <p>Characters are rendered with {@code FONT_HERSHEY_PLAIN} at
+     * {@link #CHAR_SCENE_SCALE} (8.0) — the same scale as the reference images — and
+     * thickness 3 on a solid-black canvas sized to accommodate all required lines.
+     * The string is wrapped across as many lines as needed so that each line fits
+     * within the 640 px canvas width.
+     *
+     * <p>Per-character bounding rects are computed from the actual non-zero pixels
+     * of each glyph rendered onto a temporary mask, so they faithfully represent the
+     * ink extent rather than the theoretical text-size box.
+     */
+    private static AlphaScene buildAlphaScene() {
+        int    font     = CHAR_FONT;
+        double scale    = CHAR_SCENE_SCALE;
+        int    thick    = CHAR_SCENE_THICK;
+        int[]  baseline = {0};
+
+        int canvasW = 640;
+        int margin  = 20;
+        int spacing = 3;
+
+        // ── Measure each character width ──────────────────────────────────────
+        int[] charWidths = new int[ALPHA_SCENE_STR.length()];
+        for (int i = 0; i < ALPHA_SCENE_STR.length(); i++) {
+            String ch    = String.valueOf(ALPHA_SCENE_STR.charAt(i));
+            Size   ts    = Imgproc.getTextSize(ch, font, scale, thick, baseline);
+            charWidths[i] = (int) Math.ceil(ts.width) + spacing;
+        }
+
+        // Representative glyph height (capital 'A')
+        Size refSize    = Imgproc.getTextSize("A", font, scale, thick, baseline);
+        int  glyphHeight = (int) Math.ceil(refSize.height) + baseline[0];
+        int  lineGap    = margin;     // vertical gap between lines
+
+        // ── Compute line breaks so each line fits within maxLineW ─────────────
+        int maxLineW = canvasW - 2 * margin;
+        List<int[]> lines = new ArrayList<>();   // each entry: {startIdx, endIdx}
+        int lineStart = 0;
+        int lineW     = 0;
+        for (int i = 0; i < ALPHA_SCENE_STR.length(); i++) {
+            if (lineW + charWidths[i] > maxLineW && i > lineStart) {
+                lines.add(new int[]{lineStart, i});
+                lineStart = i;
+                lineW     = charWidths[i];
+            } else {
+                lineW += charWidths[i];
+            }
+        }
+        lines.add(new int[]{lineStart, ALPHA_SCENE_STR.length()});
+
+        // ── Compute required canvas height ────────────────────────────────────
+        int nLines  = lines.size();
+        int canvasH = Math.max(480, margin + nLines * (glyphHeight + lineGap) + margin);
+
+        // ── Render characters and record per-character bounding rects ─────────
+        Mat                    canvas    = Mat.zeros(canvasH, canvasW, CvType.CV_8UC3);
+        Map<ReferenceId, Rect> charRects = new LinkedHashMap<>();
+        List<MatOfPoint>       ctrs      = new ArrayList<>();
+
+        for (int lineIdx = 0; lineIdx < nLines; lineIdx++) {
+            int[] range = lines.get(lineIdx);
+            int   lineY = margin + (lineIdx + 1) * (glyphHeight + lineGap) - lineGap;
+            int   x     = margin;
+
+            for (int i = range[0]; i < range[1]; i++) {
+                char        c     = ALPHA_SCENE_STR.charAt(i);
+                String      ch    = String.valueOf(c);
+                ReferenceId refId = CHAR_TO_REF.get(c);
+
+                // Render on temporary mask to compute exact pixel extent
+                Mat tmpMask = Mat.zeros(canvasH, canvasW, CvType.CV_8UC3);
+                Imgproc.putText(tmpMask, ch, new Point(x, lineY),
+                        font, scale, new Scalar(255, 255, 255), thick, Imgproc.LINE_AA, false);
+
+                if (refId != null) {
+                    Mat grey = new Mat();
+                    Mat bin  = new Mat();
+                    Imgproc.cvtColor(tmpMask, grey, Imgproc.COLOR_BGR2GRAY);
+                    Imgproc.threshold(grey, bin, 10, 255, Imgproc.THRESH_BINARY);
+                    ctrs.clear();
+                    Imgproc.findContours(bin, ctrs, new Mat(),
+                            Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+                    if (!ctrs.isEmpty()) {
+                        Rect bbox = ctrs.stream()
+                                .map(Imgproc::boundingRect)
+                                .reduce((a, b) -> {
+                                    int x2 = Math.max(a.x + a.width,  b.x + b.width);
+                                    int y2 = Math.max(a.y + a.height, b.y + b.height);
+                                    int x1 = Math.min(a.x, b.x);
+                                    int y1 = Math.min(a.y, b.y);
+                                    return new Rect(x1, y1, x2 - x1, y2 - y1);
+                                })
+                                .orElse(new Rect(x, lineY - glyphHeight, charWidths[i], glyphHeight));
+                        charRects.put(refId, bbox);
+                    }
+                    grey.release();
+                    bin.release();
+                }
+
+                // Paint character onto the main canvas
+                Imgproc.putText(canvas, ch, new Point(x, lineY),
+                        font, scale, new Scalar(255, 255, 255), thick, Imgproc.LINE_AA, false);
+                tmpMask.release();
+
+                x += charWidths[i];
+            }
+        }
+
+        return new AlphaScene(canvas, Collections.unmodifiableMap(charRects));
+    }
+
+    /**
+     * Loops through all references in {@code refs}, builds a single-character scene
+     * for each (via {@link #buildCharScene}), runs the matcher, records in the report,
+     * and asserts that at least {@code minPassFraction} of the characters achieve a score
+     * above {@code minScore}.
+     *
+     * <p>Character bounding boxes produced by VectorMatcher may not perfectly align with
+     * the tight GT rect (especially for glyphs with dots, descenders, or multiple strokes),
+     * so only the raw match score is used for pass/fail — not IoU.  IoU is still reported
+     * for diagnostic purposes.
+     *
+     * @param minScore        minimum match score (0–100) for a single character to count as pass
+     * @param minPassFraction fraction of the group that must reach {@code minScore} (0–1)
+     */
+    private void runCharSelfMatchGroup(String stage, ReferenceId[] refs,
+                                       double minPassFraction, double minScore) {
+        int passCount = 0;
+        System.out.printf("%n=== %s (%d chars, gate=%.0f%%) ===%n", stage, refs.length, minScore);
+        for (ReferenceId refId : refs) {
+            Mat  sceneMat = buildCharScene(refId);
+            Rect gt       = MatchDiagnosticLibrary.groundTruthRect(sceneMat);
+            Mat  ref      = ReferenceImageFactory.build(refId);
+            try {
+                MatchRun run   = runMatcher(refId, ref, sceneMat);
+                double   score = record(stage, refId.name(), refId.name(),
+                        refId.name() + " (own)", sceneMat, run, gt);
+                double   iouV  = normalIou(run, gt);
+                boolean  pass  = score >= minScore;
+                if (pass) passCount++;
+                System.out.printf("  %-20s score=%5.1f%%  iou=%5.2f  %s%n",
+                        refId.name(), score,
+                        Double.isNaN(iouV) ? 0.0 : iouV,
+                        pass ? "✓" : "✗");
+            } finally {
+                ref.release();
+                sceneMat.release();
+            }
+        }
+        int total   = refs.length;
+        int minPass = (int) (total * minPassFraction);
+        System.out.printf("Pass: %d / %d  (%.0f%%)%n%n",
+                passCount, total, 100.0 * passCount / total);
+        assertTrue(passCount >= minPass,
+                stage + ": " + passCount + "/" + total
+                        + " scored >= " + (int) minScore + "% (need >= " + minPass
+                        + " = " + (int) (minPassFraction * 100) + "%)");
+    }
+
+    /**
+     * Builds a single-character scene for {@code sceneRef} and asserts that searching
+     * for {@code queryRef} in that scene returns a score below 60 %
+     * (the rejection gate from {@link MatchReportLibrary#isRejectionPass}).
+     */
+    private void assertCharCrossReject(ReferenceId queryRef, ReferenceId sceneRef) {
+        Mat sceneMat = buildCharScene(sceneRef);
+        Mat queryMat = ReferenceImageFactory.build(queryRef);
+        try {
+            SceneEntry scene = new SceneEntry(sceneRef, SceneCategory.A_CLEAN,
+                    "char_cross_ref", BackgroundId.BG_SOLID_BLACK,
+                    Collections.emptyList(), sceneMat);
+            List<AnalysisResult> results = VectorMatcher.match(
+                    queryRef, queryMat, scene, Collections.emptySet(), OUTPUT);
+            long descriptorMs = scene.descriptorBuildMs();
+
+            double score = report.record("Char rejection",
+                    queryRef.name() + "→" + sceneRef.name(),
+                    queryRef.name(),
+                    "scene contains: " + sceneRef.name(),
+                    sceneMat,
+                    new MatchReportLibrary.MatchRun(results, descriptorMs));
+
+            assertTrue(MatchReportLibrary.isRejectionPass(score),
+                    String.format("%s searched in %s scene: expected rejection (< 60%%) but got %.1f%%",
+                            queryRef.name(), sceneRef.name(), score));
+        } finally {
+            queryMat.release();
+            sceneMat.release();
+        }
+    }
 }

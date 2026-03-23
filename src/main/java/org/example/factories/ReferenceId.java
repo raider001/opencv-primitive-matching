@@ -158,38 +158,37 @@ public enum ReferenceId {
     BICOLOUR_CHEVRON_FILLED, // Chevron outline in colour A, interior flood-filled with colour B
 
     // -------------------------------------------------------------------------
-    // Individual Characters — size 12 Mono style (66)
-    // Each entry renders a single character centred on a 128×128 canvas using
-    // FONT_HERSHEY_PLAIN at the largest scale that keeps the glyph within the
-    // canvas bounds.  Used by CharacterMatchingTest for per-character and
-    // alphabet-scene VectorMatcher validation.
+    // Individual Characters — Lowercase a-z  (26)
+    // Rendered with FONT_HERSHEY_PLAIN at large scale to fill the 128×128 canvas.
+    // Intended for size-12 monospace character matching tests.
     // -------------------------------------------------------------------------
+    CHAR_a, CHAR_b, CHAR_c, CHAR_d, CHAR_e, CHAR_f, CHAR_g, CHAR_h, CHAR_i,
+    CHAR_j, CHAR_k, CHAR_l, CHAR_m, CHAR_n, CHAR_o, CHAR_p, CHAR_q, CHAR_r,
+    CHAR_s, CHAR_t, CHAR_u, CHAR_v, CHAR_w, CHAR_x, CHAR_y, CHAR_z,
 
-    // Lowercase a–z  (26)
-    CHAR_LOWER_A, CHAR_LOWER_B, CHAR_LOWER_C, CHAR_LOWER_D, CHAR_LOWER_E,
-    CHAR_LOWER_F, CHAR_LOWER_G, CHAR_LOWER_H, CHAR_LOWER_I, CHAR_LOWER_J,
-    CHAR_LOWER_K, CHAR_LOWER_L, CHAR_LOWER_M, CHAR_LOWER_N, CHAR_LOWER_O,
-    CHAR_LOWER_P, CHAR_LOWER_Q, CHAR_LOWER_R, CHAR_LOWER_S, CHAR_LOWER_T,
-    CHAR_LOWER_U, CHAR_LOWER_V, CHAR_LOWER_W, CHAR_LOWER_X, CHAR_LOWER_Y,
-    CHAR_LOWER_Z,
+    // -------------------------------------------------------------------------
+    // Individual Characters — Uppercase A-Z  (26)
+    // -------------------------------------------------------------------------
+    CHAR_A, CHAR_B, CHAR_C, CHAR_D, CHAR_E, CHAR_F, CHAR_G, CHAR_H, CHAR_I,
+    CHAR_J, CHAR_K, CHAR_L, CHAR_M, CHAR_N, CHAR_O, CHAR_P, CHAR_Q, CHAR_R,
+    CHAR_S, CHAR_T, CHAR_U, CHAR_V, CHAR_W, CHAR_X, CHAR_Y, CHAR_Z,
 
-    // Uppercase A–Z  (26)
-    CHAR_UPPER_A, CHAR_UPPER_B, CHAR_UPPER_C, CHAR_UPPER_D, CHAR_UPPER_E,
-    CHAR_UPPER_F, CHAR_UPPER_G, CHAR_UPPER_H, CHAR_UPPER_I, CHAR_UPPER_J,
-    CHAR_UPPER_K, CHAR_UPPER_L, CHAR_UPPER_M, CHAR_UPPER_N, CHAR_UPPER_O,
-    CHAR_UPPER_P, CHAR_UPPER_Q, CHAR_UPPER_R, CHAR_UPPER_S, CHAR_UPPER_T,
-    CHAR_UPPER_U, CHAR_UPPER_V, CHAR_UPPER_W, CHAR_UPPER_X, CHAR_UPPER_Y,
-    CHAR_UPPER_Z,
-
-    // Digits 0–9  (10)
+    // -------------------------------------------------------------------------
+    // Individual Characters — Digits 0-9  (10)
+    // -------------------------------------------------------------------------
     CHAR_0, CHAR_1, CHAR_2, CHAR_3, CHAR_4,
     CHAR_5, CHAR_6, CHAR_7, CHAR_8, CHAR_9,
 
-    // Punctuation  (4)
-    CHAR_PERIOD,  // Full stop "."
-    CHAR_COMMA,   // Comma ","
-    CHAR_SQUOTE,  // Single quotation mark "'"
-    CHAR_DQUOTE   // Double quotation mark "\""
+    // -------------------------------------------------------------------------
+    // Individual Characters — Punctuation  (6)
+    // Characters from the benchmark scene string: aAbB...zZ0-9,."'-=
+    // -------------------------------------------------------------------------
+    CHAR_PERIOD,   // full stop '.'
+    CHAR_COMMA,    // comma ','
+    CHAR_DQUOTE,   // double quote '"'
+    CHAR_SQUOTE,   // single quote / apostrophe '\''
+    CHAR_HYPHEN,   // hyphen-minus '-'
+    CHAR_EQUALS    // equals sign '='
 }
 
 
