@@ -70,7 +70,16 @@ class VectorMatchingTest {
             ReferenceId.ARC_HALF, ReferenceId.ARC_QUARTER,
             ReferenceId.CONCAVE_MOON, ReferenceId.IRREGULAR_QUAD,
             ReferenceId.COMPOUND_RECT_IN_CIRCLE, ReferenceId.COMPOUND_TRIANGLE_IN_CIRCLE,
-            ReferenceId.CROSSHAIR
+            ReferenceId.CROSSHAIR,
+            // 13 additional rotation-testable shapes (grids, extreme-AR rects, asymmetric
+            // H-shape, and compounds excluded — compounds have nested components with
+            // complex cluster-anchoring behavior under rotation)
+            ReferenceId.TRIANGLE_RIGHT, ReferenceId.TRAPEZOID, ReferenceId.KITE,
+            ReferenceId.STAR_8_OUTLINE, ReferenceId.NONAGON_OUTLINE, ReferenceId.DECAGON_OUTLINE,
+            ReferenceId.POLYLINE_U_SHAPE, ReferenceId.POLYLINE_Z_SHAPE,
+            ReferenceId.POLYLINE_CARET, ReferenceId.ARC_NEAR_FULL,
+            ReferenceId.CONCAVE_LIGHTNING, ReferenceId.CIRCLE_DONUT,
+            ReferenceId.RECT_ROTATED_75
     };
 
 
@@ -913,6 +922,254 @@ class VectorMatchingTest {
     }
 
     // =========================================================================
+    // Scene builders — 20 new shapes (3× reference scale, white on black,
+    // centred on 640×480: x_offset=128, y_offset=48, scale=3)
+    // =========================================================================
+
+    /** Right-angled triangle: 90° at bottom-left, scaled 3×. */
+    private static Mat whiteRightTriangleOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(164, 396), new Point(164, 84), new Point(476, 396))),
+                true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    /** Isosceles trapezoid (wider at bottom), scaled 3×. */
+    private static Mat whiteTrapezoidOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(224, 108), new Point(413, 108),
+                new Point(470, 372), new Point(170, 372))),
+                true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    /** Kite (vertical symmetry axis, upper apex shorter than lower), scaled 3×. */
+    private static Mat whiteKiteOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(320, 78), new Point(470, 270),
+                new Point(320, 396), new Point(170, 270))),
+                true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    /** 8-pointed star outline (outerR=162, innerR=65), centred at (320,240). */
+    private static Mat whiteStar8OutlineOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        double outerR = 162, innerR = 65;
+        Point[] pts = new Point[16];
+        for (int i = 0; i < 16; i++) {
+            double a = Math.toRadians(-90 + (180.0 / 8) * i);
+            double r = (i % 2 == 0) ? outerR : innerR;
+            pts[i] = new Point(320 + r * Math.cos(a), 240 + r * Math.sin(a));
+        }
+        Imgproc.polylines(m, List.of(new MatOfPoint(pts)), true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    /** Regular 9-gon outline (r=162), centred at (320,240). */
+    private static Mat whiteNonagonOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Point[] pts = new Point[9];
+        for (int i = 0; i < 9; i++) {
+            double a = Math.toRadians(360.0 / 9 * i - 90);
+            pts[i] = new Point(320 + 162 * Math.cos(a), 240 + 162 * Math.sin(a));
+        }
+        Imgproc.polylines(m, List.of(new MatOfPoint(pts)), true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    /** Regular 10-gon outline (r=162), centred at (320,240). */
+    private static Mat whiteDecagonOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Point[] pts = new Point[10];
+        for (int i = 0; i < 10; i++) {
+            double a = Math.toRadians(36.0 * i - 90);
+            pts[i] = new Point(320 + 162 * Math.cos(a), 240 + 162 * Math.sin(a));
+        }
+        Imgproc.polylines(m, List.of(new MatOfPoint(pts)), true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    /** U-shaped closed path (8 vertices), scaled 3× + centred. */
+    private static Mat whiteUShapeOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(176, 96),  new Point(260, 96),  new Point(260, 288),
+                new Point(380, 288), new Point(380, 96),  new Point(464, 96),
+                new Point(464, 384), new Point(176, 384))),
+                true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    /** H-shaped closed path (12 vertices), scaled 3× + centred. */
+    private static Mat whiteHShapeOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(176, 96),  new Point(260, 96),  new Point(260, 198),
+                new Point(380, 198), new Point(380, 96),  new Point(464, 96),
+                new Point(464, 384), new Point(380, 384), new Point(380, 282),
+                new Point(260, 282), new Point(260, 384), new Point(176, 384))),
+                true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    /** Z-shaped closed path (10 vertices), scaled 3× + centred. */
+    private static Mat whiteZShapeOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(176, 96),  new Point(464, 96),  new Point(464, 180),
+                new Point(248, 300), new Point(464, 300), new Point(464, 384),
+                new Point(176, 384), new Point(176, 300), new Point(392, 180),
+                new Point(176, 180))),
+                true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    /** Upward caret (5 vertices: flat base + apex), scaled 3× + centred. */
+    private static Mat whiteCaretOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(176, 372), new Point(176, 294),
+                new Point(320, 96),
+                new Point(464, 294), new Point(464, 372))),
+                true, new Scalar(255, 255, 255), 3);
+        return m;
+    }
+
+    /** S-curve: two connected semicircular arcs, independently drawn at scene scale. */
+    private static Mat whiteSCurveOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        // Upper arc: centre ≈ (275, 162), radius 90, from 180° to 360°
+        // Lower arc: centre ≈ (365, 318), radius 90, from 0° to 180°
+        int r = 90, steps = 16;
+        double cx1 = 275, cy1 = 162, cx2 = 365, cy2 = 318;
+        List<Point> pts = new ArrayList<>();
+        for (int i = 0; i <= steps; i++) {
+            double a = Math.toRadians(180.0 + 180.0 * i / steps);
+            pts.add(new Point(cx1 + r * Math.cos(a), cy1 + r * Math.sin(a)));
+        }
+        for (int i = 0; i <= steps; i++) {
+            double a = Math.toRadians(180.0 * i / steps);
+            pts.add(new Point(cx2 + r * Math.cos(a), cy2 + r * Math.sin(a)));
+        }
+        MatOfPoint mop = new MatOfPoint();
+        mop.fromList(pts);
+        Imgproc.polylines(m, List.of(mop), false, new Scalar(255, 255, 255), 5);
+        return m;
+    }
+
+    /** Near-complete circle arc (~330°, gap 20°–350°), r=162, centred at (320,240). */
+    private static Mat whiteArcNearFullOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.ellipse(m, new Point(320, 240), new Size(162, 162),
+                0, 20, 350, new Scalar(255, 255, 255), 5);
+        return m;
+    }
+
+    /** Lightning bolt (filled 6-vertex concave polygon), scaled 3× + centred. */
+    private static Mat whiteLightningOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.fillPoly(m, List.of(new MatOfPoint(
+                new Point(356, 78),  new Point(236, 246),
+                new Point(314, 228), new Point(212, 402),
+                new Point(380, 234), new Point(302, 252))),
+                new Scalar(255, 255, 255));
+        return m;
+    }
+
+    /** Tall thin portrait rectangle (AR ≈ 1:4), scaled 3× + centred. */
+    private static Mat whiteRectThinTallOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        // Reference: (48,8)→(79,119) scaled 3×+centred: (272,72)→(365,405)
+        Imgproc.rectangle(m, new Point(272, 72), new Point(365, 405),
+                new Scalar(255, 255, 255), 5);
+        return m;
+    }
+
+    /** Thick annulus / donut (outer r=168, inner r=108), centred at (320,240). */
+    private static Mat whiteDonutOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.circle(m, new Point(320, 240), 168, new Scalar(255, 255, 255), -1);
+        Imgproc.circle(m, new Point(320, 240), 108, new Scalar(0, 0, 0),       -1);
+        return m;
+    }
+
+    /** 3×3 grid (4H + 4V lines), drawn at scene scale on 640×480. */
+    private static Mat whiteGrid3x3OnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Scalar w = new Scalar(255, 255, 255);
+        // Ref: drawGrid(3) → step=128/3=42, lines at {0,42,84,126}.
+        // Scene offset (128,48), scale 3× → {128,254,380,506} and {48,174,300,426}.
+        int[] xs = {128, 254, 380, 506};
+        int[] ys = { 48, 174, 300, 426};
+        for (int x : xs) Imgproc.line(m, new Point(x,  48), new Point(x, 426), w, 3);
+        for (int y : ys) Imgproc.line(m, new Point(128, y), new Point(506, y), w, 3);
+        return m;
+    }
+
+    /** Cross-hatch diagonal grid (45° + 135° lines), drawn at scene scale on 640×480. */
+    private static Mat whiteDiagonalGridOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Scalar w = new Scalar(255, 255, 255);
+        int SIZE_REF = 128;
+        int step = 22;
+        int scale = 3;
+        int offsetX = 128, offsetY = 48;
+        
+        // Transform reference coordinates to scene: scene = offset + scale * ref
+        // 45° lines: y = x + c
+        for (int c = -(SIZE_REF - 1); c < SIZE_REF; c += step) {
+            int x0, y0, x1, y1;
+            if (c >= 0) {
+                x0 = 0;               y0 = c;
+                x1 = SIZE_REF - 1 - c; y1 = SIZE_REF - 1;
+            } else {
+                x0 = -c;              y0 = 0;
+                x1 = SIZE_REF - 1;    y1 = SIZE_REF - 1 + c;
+            }
+            // Transform to scene coords
+            int sx0 = offsetX + x0 * scale, sy0 = offsetY + y0 * scale;
+            int sx1 = offsetX + x1 * scale, sy1 = offsetY + y1 * scale;
+            if (sx0 >= 0 && sx0 < 640 && sy0 >= 0 && sy0 < 480
+                    && sx1 >= 0 && sx1 < 640 && sy1 >= 0 && sy1 < 480) {
+                Imgproc.line(m, new Point(sx0, sy0), new Point(sx1, sy1), w, 3);
+            }
+        }
+        // 135° lines: y = -x + c
+        for (int c = 0; c < 2 * SIZE_REF; c += step) {
+            int x0, y0, x1, y1;
+            if (c <= SIZE_REF - 1) {
+                x0 = 0;    y0 = c;
+                x1 = c;    y1 = 0;
+            } else {
+                x0 = c - (SIZE_REF - 1); y0 = SIZE_REF - 1;
+                x1 = SIZE_REF - 1;       y1 = c - (SIZE_REF - 1);
+            }
+            // Transform to scene coords
+            int sx0 = offsetX + x0 * scale, sy0 = offsetY + y0 * scale;
+            int sx1 = offsetX + x1 * scale, sy1 = offsetY + y1 * scale;
+            if (sx0 >= 0 && sx0 < 640 && sy0 >= 0 && sy0 < 480
+                    && sx1 >= 0 && sx1 < 640 && sy1 >= 0 && sy1 < 480) {
+                Imgproc.line(m, new Point(sx0, sy0), new Point(sx1, sy1), w, 3);
+            }
+        }
+        return m;
+    }
+
+    /** Rectangle rotated 75°, hw=144, hh=84 (3× reference), centred at (320,240). */
+    private static Mat whiteRot75RectOnBlack() {
+        Mat m = Mat.zeros(480, 640, CvType.CV_8UC3);
+        Imgproc.polylines(m, List.of(new MatOfPoint(
+                new Point(176, 156), new Point(464, 156),
+                new Point(464, 324), new Point(176, 324))),
+                true, new Scalar(255, 255, 255), 3);
+        return rotate(m, 75);
+    }
+
+    // =========================================================================
     // BG_RANDOM_LINES background — self-match (≥ 60 %)
     // =========================================================================
 
@@ -1614,6 +1871,186 @@ class VectorMatchingTest {
     }
 
     // =========================================================================
+    // Self-match tests — 20 new shapes (orders 141–160)
+    // =========================================================================
+
+    @Test @Order(141) @DisplayName("TRIANGLE_RIGHT — right-angled triangle on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Right-angled triangle: 3-vertex convex polygon with one 90° interior " +
+                              "angle. Distinctive right-angle vertex distinguishes it from equilateral " +
+                              "triangle; reference-derived scene ensures exact geometry match.")
+    void triangleRightSelf() {
+        assertSelfMatch(ReferenceId.TRIANGLE_RIGHT, whiteRightTriangleOnBlack());
+    }
+
+    @Test @Order(142) @DisplayName("TRAPEZOID — isosceles trapezoid on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "4-vertex convex polygon with one pair of parallel sides. Distinctive " +
+                              "trapezoidal profile (top shorter than bottom) provides strong geometry cues " +
+                              "on a clean black scene.")
+    void trapezoidSelf() {
+        assertSelfMatch(ReferenceId.TRAPEZOID, whiteTrapezoidOnBlack());
+    }
+
+    @Test @Order(143) @DisplayName("KITE — kite shape on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "4-vertex convex polygon with vertical symmetry axis. Asymmetric half-heights " +
+                              "create a unique turn-angle profile; reference-derived scene for exact match.")
+    void kiteSelf() {
+        assertSelfMatch(ReferenceId.KITE, whiteKiteOnBlack());
+    }
+
+    @Test @Order(144) @DisplayName("STAR_8_OUTLINE — 8-pointed star outline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "16-vertex concave star outline. High vertex count and many equal-length " +
+                              "segments create complex cyclic-alignment challenges, similar to STAR_5 " +
+                              "(~87.6%). Score expected in 80–90% band.")
+    void star8OutlineSelf() {
+        assertSelfMatchAtLeast(ReferenceId.STAR_8_OUTLINE, whiteStar8OutlineOnBlack(), 80.0);
+    }
+
+    @Test @Order(145) @DisplayName("NONAGON_OUTLINE — 9-sided polygon on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Regular 9-gon outline: 9 vertices, high circularity, clean convex polygon. " +
+                              "Clean cyclic alignment expected; vertex count distinct from all existing polygons.")
+    void nonagonOutlineSelf() {
+        assertSelfMatch(ReferenceId.NONAGON_OUTLINE, whiteNonagonOnBlack());
+    }
+
+    @Test @Order(146) @DisplayName("DECAGON_OUTLINE — 10-sided polygon on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Regular 10-gon outline: 10 vertices, near-circular convex polygon. " +
+                              "Clean self-match expected on an ideal black scene; vertex count clearly " +
+                              "distinct from all other existing polygon references.")
+    void decagonOutlineSelf() {
+        assertSelfMatch(ReferenceId.DECAGON_OUTLINE, whiteDecagonOnBlack());
+    }
+
+    @Test @Order(147) @DisplayName("POLYLINE_U_SHAPE — U-shaped path on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "8-vertex closed U-shape with a distinctive concave opening at the top. " +
+                              "CLOSED_CONCAVE_POLY type and asymmetric vertex arrangement provide " +
+                              "strong geometry cues for a clean self-match.")
+    void polylineUShapeSelf() {
+        assertSelfMatch(ReferenceId.POLYLINE_U_SHAPE, whiteUShapeOnBlack());
+    }
+
+    @Test @Order(148) @DisplayName("POLYLINE_H_SHAPE — H-shaped path on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "12-vertex H-shape: two vertical stems with a horizontal crossbar, producing " +
+                              "complex symmetric concavities. Similar complexity to POLYLINE_T_SHAPE (~85-90%); " +
+                              "cyclic alignment challenged by the symmetric double-notch profile. Threshold 82%.")
+    void polylineHShapeSelf() {
+        assertSelfMatchAtLeast(ReferenceId.POLYLINE_H_SHAPE, whiteHShapeOnBlack(), 82.0);
+    }
+
+    @Test @Order(149) @DisplayName("POLYLINE_Z_SHAPE — Z-shaped path on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "10-vertex closed Z-shape: two rectangular caps connected by a diagonal band. " +
+                              "Distinctive asymmetric diagonal profile provides strong descriptor cues.")
+    void polylineZShapeSelf() {
+        assertSelfMatch(ReferenceId.POLYLINE_Z_SHAPE, whiteZShapeOnBlack());
+    }
+
+    @Test @Order(150) @DisplayName("POLYLINE_CARET — upward caret on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "5-vertex upward-pointing caret (V-shape with flat base). Distinctive apex " +
+                              "angle and flat bottom provide strong shape cues; clean cyclic alignment expected.")
+    void polylineCaretSelf() {
+        assertSelfMatch(ReferenceId.POLYLINE_CARET, whiteCaretOnBlack());
+    }
+
+    @Test @Order(151) @DisplayName("POLYLINE_S_CURVE — S-curve polyline on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Open S-curve polyline (two connected arcs, smooth path, open topology). " +
+                              "Open polylines generally score lower than closed shapes (~72-85% expected), " +
+                              "similar to ARC_HALF and ARC_QUARTER. Threshold set at 70%.")
+    void polylineSCurveSelf() {
+        assertSelfMatchAtLeast(ReferenceId.POLYLINE_S_CURVE, whiteSCurveOnBlack(), 70.0);
+    }
+
+    @Test @Order(152) @DisplayName("ARC_NEAR_FULL — near-complete arc (~330°) on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Open arc covering ~330°: open topology, small gap creates asymmetry in the " +
+                              "contour. Score band similar to ARC_HALF (~72-78%); threshold set at 70%.")
+    void arcNearFullSelf() {
+        assertSelfMatchAtLeast(ReferenceId.ARC_NEAR_FULL, whiteArcNearFullOnBlack(), 70.0);
+    }
+
+    @Test @Order(153) @DisplayName("CONCAVE_LIGHTNING — lightning bolt on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "6-vertex filled lightning bolt with two concave notches and elongated diagonal " +
+                              "form. Distinctive CLOSED_CONCAVE_POLY with low solidity and asymmetric " +
+                              "turn-angle profile provides strong descriptor cues on a clean scene.")
+    void concaveLightningSelf() {
+        assertSelfMatch(ReferenceId.CONCAVE_LIGHTNING, whiteLightningOnBlack());
+    }
+
+    @Test @Order(154) @DisplayName("RECT_THIN_TALL — tall thin rectangle on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Tall thin portrait rectangle (AR ≈ 1:4): 4 right-angle vertices, extreme " +
+                              "aspect ratio. Distinctive portrait profile ensures strong self-match descriptor " +
+                              "alignment; complement to the existing RECT_THIN (landscape).")
+    void rectThinTallSelf() {
+        assertSelfMatch(ReferenceId.RECT_THIN_TALL, whiteRectThinTallOnBlack());
+    }
+
+    @Test @Order(155) @DisplayName("CIRCLE_DONUT — thick annulus on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Thick annulus (filled ring with inner hole): outer boundary is circular with " +
+                              "a large inner void. Distinctive compound inner/outer contour structure provides " +
+                              "a reliable self-match signal.")
+    void circleDonutSelf() {
+        assertSelfMatch(ReferenceId.CIRCLE_DONUT, whiteDonutOnBlack());
+    }
+
+    @Test @Order(156) @DisplayName("COMPOUND_STAR_IN_CIRCLE — star inscribed in circle on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Two-component compound shape: outer circle outline + inner 5-pointed star. " +
+                              "Multi-component assignment variance may produce scores near 68-85%. " +
+                              "Threshold set at 68% to document this PARTIAL band.")
+    void compoundStarInCircleSelf() {
+        assertSelfMatchAtLeast(ReferenceId.COMPOUND_STAR_IN_CIRCLE,
+                multiColourScene(ReferenceId.COMPOUND_STAR_IN_CIRCLE), 68.0);
+    }
+
+    @Test @Order(157) @DisplayName("COMPOUND_DIAMOND_IN_RECT — diamond inscribed in rect on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Two-component compound: outer square rectangle + inner diamond. Both components " +
+                              "have clean geometry providing a strong multi-component self-match signal.")
+    void compoundDiamondInRectSelf() {
+        assertSelfMatch(ReferenceId.COMPOUND_DIAMOND_IN_RECT,
+                multiColourScene(ReferenceId.COMPOUND_DIAMOND_IN_RECT));
+    }
+
+    @Test @Order(158) @DisplayName("GRID_3X3 — 3×3 grid on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "3×3 grid (4H + 4V lines, 8+ segment components). Similar to GRID_4X4; " +
+                              "many equal-length segments create cyclic-alignment challenges. " +
+                              "Score expected 72–88%; threshold set at 72%.")
+    void grid3x3Self() {
+        assertSelfMatchAtLeast(ReferenceId.GRID_3X3, whiteGrid3x3OnBlack(), 72.0);
+    }
+
+    @Test @Order(159) @DisplayName("GRID_DIAGONAL — diagonal cross-hatch on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PARTIAL,
+                     reason = "Cross-hatch diagonal grid (45° + 135° line segments, many components). " +
+                              "Many short equal-length segments create a complex multi-component pattern. " +
+                              "Score expected 70–88%; threshold set at 70%.")
+    void gridDiagonalSelf() {
+        assertSelfMatchAtLeast(ReferenceId.GRID_DIAGONAL, whiteDiagonalGridOnBlack(), 70.0);
+    }
+
+    @Test @Order(160) @DisplayName("RECT_ROTATED_75 — 75°-rotated rectangle on black")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Rectangle rotated 75°: 4 vertices, consistent edge-length ratio, non-axis-aligned " +
+                              "edges. Similar to RECT_ROTATED_30 and RECT_ROTATED_45 which both PASS; " +
+                              "all descriptor layers should agree on the self-match.")
+    void rectRotated75Self() {
+        assertSelfMatch(ReferenceId.RECT_ROTATED_75, whiteRot75RectOnBlack());
+    }
+
+    // =========================================================================
     // Expected Failures — known-miss shapes on adversarial backgrounds
     // =========================================================================
     //
@@ -2159,6 +2596,631 @@ class VectorMatchingTest {
         assertCrossRejectOnBg(ReferenceId.LINE_CROSS, ReferenceId.ELLIPSE_H, BackgroundId.BG_RANDOM_CIRCLES);
     }
 
+    // =========================================================================
+    // Cross-reference rejection tests — new shapes (Batch 1)
+    // New shapes as query, existing shapes as scene, black background  (orders 401–420)
+    // =========================================================================
+
+    @Test @Order(401) @Tag("cross-reject")
+    @DisplayName("TRIANGLE_RIGHT in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Right-angled triangle (3 vertices, CLOSED_CONVEX_POLY) vs smooth " +
+                              "filled circle (CIRCLE type, circularity ≈ 1.0). ShapeType gate + " +
+                              "circularity + vertex count all diverge heavily — clean rejection expected.")
+    void triangleRightShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.TRIANGLE_RIGHT, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(402) @Tag("cross-reject")
+    @DisplayName("TRAPEZOID in TRIANGLE_FILLED scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Isosceles trapezoid (4 vertices) vs filled equilateral triangle (3 vertices). " +
+                              "Vertex ratio 3/4 = 0.75 ≤ 0.80 threshold — vtxMultiplier fires, " +
+                              "suppressing the geometry score decisively.")
+    void trapezoidShouldNotMatchTriangleScene() {
+        assertCrossReject(ReferenceId.TRAPEZOID, ReferenceId.TRIANGLE_FILLED);
+    }
+
+    @Test @Order(403) @Tag("cross-reject")
+    @DisplayName("KITE in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Kite shape (4-vertex polygon, CLOSED_CONVEX_POLY) vs smooth filled circle " +
+                              "(CIRCLE type). ShapeType gate fires cleanly; circularity diverges.")
+    void kiteShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.KITE, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(404) @Tag("cross-reject")
+    @DisplayName("STAR_8_OUTLINE in HEXAGON_OUTLINE scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "8-pointed star (16 vertices, CLOSED_CONCAVE_POLY) vs regular hexagon " +
+                              "(6 vertices, CLOSED_CONVEX_POLY). Vertex ratio 6/16 = 0.375 well below " +
+                              "0.80 threshold; type mismatch (CONCAVE vs CONVEX) provides extra gate.")
+    void star8ShouldNotMatchHexagonScene() {
+        assertCrossReject(ReferenceId.STAR_8_OUTLINE, ReferenceId.HEXAGON_OUTLINE);
+    }
+
+    @Test @Order(405) @Tag("cross-reject")
+    @DisplayName("NONAGON_OUTLINE in TRIANGLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Regular 9-gon outline (9 vertices) vs filled triangle (3 vertices). " +
+                              "Vertex ratio 3/9 = 0.333, well below the 0.80 threshold — " +
+                              "vtxMultiplier ≈ 0.064 crushes the geometry score.")
+    void nonagonShouldNotMatchTriangleScene() {
+        assertCrossReject(ReferenceId.NONAGON_OUTLINE, ReferenceId.TRIANGLE_FILLED);
+    }
+
+    @Test @Order(406) @Tag("cross-reject")
+    @DisplayName("DECAGON_OUTLINE in PENTAGON_FILLED scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Regular 10-gon outline (10 vertices) vs filled pentagon (5 vertices). " +
+                              "Vertex ratio 5/10 = 0.50, below 0.80 — vtxMultiplier ≈ (0.5)^2.5 ≈ 0.177 " +
+                              "brings the geometry score decisively below the rejection threshold.")
+    void decagonShouldNotMatchPentagonScene() {
+        assertCrossReject(ReferenceId.DECAGON_OUTLINE, ReferenceId.PENTAGON_FILLED);
+    }
+
+    @Test @Order(407) @Tag("cross-reject")
+    @DisplayName("POLYLINE_U_SHAPE in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "U-shaped closed path (8 vertices, CLOSED_CONCAVE_POLY, concave opening) " +
+                              "vs smooth filled circle (CIRCLE type). Type gate fires; vertex count " +
+                              "and concavity diverge cleanly.")
+    void uShapeShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.POLYLINE_U_SHAPE, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(408) @Tag("cross-reject")
+    @DisplayName("POLYLINE_H_SHAPE in TRIANGLE_FILLED scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "H-shaped path (12 vertices, CLOSED_CONCAVE_POLY, two deep notches) vs " +
+                              "filled triangle (3 vertices, CLOSED_CONVEX_POLY). Vertex count diverges " +
+                              "sharply (ratio 3/12 = 0.25); type mismatch adds extra rejection force.")
+    void hShapeShouldNotMatchTriangleScene() {
+        assertCrossReject(ReferenceId.POLYLINE_H_SHAPE, ReferenceId.TRIANGLE_FILLED);
+    }
+
+    @Test @Order(409) @Tag("cross-reject")
+    @DisplayName("POLYLINE_Z_SHAPE in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Z-shaped closed path (10 vertices, sharp diagonal band) vs smooth filled " +
+                              "circle (CIRCLE type). ShapeType gate fires; vertex count and rectilinear " +
+                              "profile diverge from the circular boundary strongly.")
+    void zShapeShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.POLYLINE_Z_SHAPE, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(410) @Tag("cross-reject")
+    @DisplayName("POLYLINE_CARET in RECT_FILLED scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "5-vertex caret (V-shape with flat base, CLOSED_CONVEX_POLY) vs filled " +
+                              "rectangle (4 right-angle vertices). Vertex count difference and distinctive " +
+                              "apex-angle profile diverge enough for reliable rejection.")
+    void caretShouldNotMatchRectScene() {
+        assertCrossReject(ReferenceId.POLYLINE_CARET, ReferenceId.RECT_FILLED);
+    }
+
+    @Test @Order(411) @Tag("cross-reject")
+    @DisplayName("POLYLINE_S_CURVE in TRIANGLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "S-curve open polyline (smooth two-arc path, open topology, low solidity) " +
+                              "vs filled triangle (CLOSED_CONVEX_POLY, high solidity). Open vs closed " +
+                              "topology and smooth-curve vs vertex-angle profile diverge strongly.")
+    void sCurveShouldNotMatchTriangleScene() {
+        assertCrossReject(ReferenceId.POLYLINE_S_CURVE, ReferenceId.TRIANGLE_FILLED);
+    }
+
+    @Test @Order(412) @Tag("cross-reject")
+    @DisplayName("ARC_NEAR_FULL in PENTAGON_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Near-complete circle arc (~330°, open topology, low solidity) vs " +
+                              "solid filled pentagon (5 vertices, high solidity ≈ 1.0). Type mismatch " +
+                              "(open arc vs CLOSED_CONVEX_POLY) and solidity diverge cleanly.")
+    void arcNearFullShouldNotMatchPentagonScene() {
+        assertCrossReject(ReferenceId.ARC_NEAR_FULL, ReferenceId.PENTAGON_FILLED);
+    }
+
+    @Test @Order(413) @Tag("cross-reject")
+    @DisplayName("CONCAVE_LIGHTNING in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Lightning bolt (6-vertex CLOSED_CONCAVE_POLY, two deep notches, elongated " +
+                              "diagonal form) vs smooth filled circle (CIRCLE type, circularity ≈ 1.0). " +
+                              "Type gate, circularity, and concavity ratio all diverge heavily.")
+    void lightningShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.CONCAVE_LIGHTNING, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(414) @Tag("cross-reject")
+    @DisplayName("RECT_THIN_TALL in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Tall thin portrait rectangle (AR ≈ 1:4, 4 right-angle vertices) vs " +
+                              "smooth filled circle (CIRCLE type, circularity ≈ 1.0). Extreme AR " +
+                              "divergence and ShapeType gate guarantee clean rejection.")
+    void rectThinTallShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.RECT_THIN_TALL, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(415) @Tag("cross-reject")
+    @DisplayName("CIRCLE_DONUT in TRIANGLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Thick annulus / donut (CIRCLE type, high circularity, inner hole) vs " +
+                              "solid filled triangle (CLOSED_CONVEX_POLY, 3 vertices). ShapeType gate + " +
+                              "circularity + vertex count all diverge sharply.")
+    void donutShouldNotMatchTriangleScene() {
+        assertCrossReject(ReferenceId.CIRCLE_DONUT, ReferenceId.TRIANGLE_FILLED);
+    }
+
+    @Test @Order(416) @Tag("cross-reject")
+    @DisplayName("COMPOUND_STAR_IN_CIRCLE in PENTAGON_FILLED scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Compound star-in-circle (multi-component: outer circle + inner star) vs " +
+                              "single-component filled pentagon. Component-count divergence and outer " +
+                              "CIRCLE type vs CLOSED_CONVEX_POLY mismatch ensure reliable rejection.")
+    void starInCircleShouldNotMatchPentagonScene() {
+        assertCrossReject(ReferenceId.COMPOUND_STAR_IN_CIRCLE, ReferenceId.PENTAGON_FILLED);
+    }
+
+    @Test @Order(417) @Tag("cross-reject")
+    @DisplayName("COMPOUND_DIAMOND_IN_RECT in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Compound diamond-in-rect (multi-component: outer rectangle + inner diamond) " +
+                              "vs smooth filled circle (CIRCLE type). Component count and ShapeType " +
+                              "(COMPOUND vs CIRCLE) diverge cleanly.")
+    void diamondInRectShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.COMPOUND_DIAMOND_IN_RECT, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(418) @Tag("cross-reject")
+    @DisplayName("GRID_3X3 in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "3×3 grid (many small line segments, COMPOUND multi-component) vs smooth " +
+                              "filled circle (CIRCLE type). ShapeType gate + component count diverge " +
+                              "sharply; grid rectilinear structure is incompatible with circle.")
+    void grid3x3ShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.GRID_3X3, ReferenceId.CIRCLE_FILLED);
+    }
+
+    @Test @Order(419) @Tag("cross-reject")
+    @DisplayName("GRID_DIAGONAL in TRIANGLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Cross-hatch diagonal grid (many short diagonal line segments, COMPOUND) " +
+                              "vs solid filled triangle (CLOSED_CONVEX_POLY, single component, 3 vertices). " +
+                              "Component count and type mismatch guarantee clean rejection.")
+    void gridDiagonalShouldNotMatchTriangleScene() {
+        assertCrossReject(ReferenceId.GRID_DIAGONAL, ReferenceId.TRIANGLE_FILLED);
+    }
+
+    @Test @Order(420) @Tag("cross-reject")
+    @DisplayName("RECT_ROTATED_75 in CIRCLE_FILLED scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "75°-rotated rectangle (4 vertices, CLOSED_CONVEX_POLY) vs smooth filled " +
+                              "circle (CIRCLE type). ShapeType gate fires cleanly; rotation does not " +
+                              "change the rectangular vertex-angle profile.")
+    void rectRotated75ShouldNotMatchCircleScene() {
+        assertCrossReject(ReferenceId.RECT_ROTATED_75, ReferenceId.CIRCLE_FILLED);
+    }
+
+    // =========================================================================
+    // Cross-reference rejection tests — new shapes (Batch 2)
+    // Existing shapes as query, new shapes as scene, black background (orders 421–435)
+    // =========================================================================
+
+    @Test @Order(421) @Tag("cross-reject")
+    @DisplayName("CIRCLE_FILLED in TRAPEZOID scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Smooth filled circle (CIRCLE type, circularity ≈ 1.0) vs isosceles " +
+                              "trapezoid (4 vertices, CLOSED_CONVEX_POLY). ShapeType gate + circularity " +
+                              "divergence guarantee clean rejection.")
+    void circleShouldNotMatchTrapezoidScene() {
+        assertCrossReject(ReferenceId.CIRCLE_FILLED, ReferenceId.TRAPEZOID);
+    }
+
+    @Test @Order(422) @Tag("cross-reject")
+    @DisplayName("TRIANGLE_FILLED in STAR_8_OUTLINE scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Filled triangle (3 vertices, CLOSED_CONVEX_POLY) vs 8-pointed star outline " +
+                              "(16 vertices, CLOSED_CONCAVE_POLY). Vertex ratio 3/16 = 0.1875, far below " +
+                              "0.80 threshold; CONVEX vs CONCAVE type mismatch adds an extra gate.")
+    void triangleShouldNotMatchStar8Scene() {
+        assertCrossReject(ReferenceId.TRIANGLE_FILLED, ReferenceId.STAR_8_OUTLINE);
+    }
+
+    @Test @Order(423) @Tag("cross-reject")
+    @DisplayName("PENTAGON_FILLED in NONAGON_OUTLINE scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Solid pentagon (5 vertices) vs 9-gon outline (9 vertices). Vertex ratio " +
+                              "5/9 ≈ 0.556, below 0.80 threshold — vtxMultiplier ≈ (0.556)^2.5 ≈ 0.230 " +
+                              "suppresses the geometry score reliably.")
+    void pentagonShouldNotMatchNonagonScene() {
+        assertCrossReject(ReferenceId.PENTAGON_FILLED, ReferenceId.NONAGON_OUTLINE);
+    }
+
+    @Test @Order(424) @Tag("cross-reject")
+    @DisplayName("HEXAGON_OUTLINE in DECAGON_OUTLINE scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Hexagon outline (6 vertices) vs 10-gon outline (10 vertices). Vertex " +
+                              "ratio 6/10 = 0.60, below 0.80 threshold — vtxMultiplier ≈ (0.6)^2.5 ≈ 0.279 " +
+                              "brings the geometry score well below the 60% rejection ceiling.")
+    void hexagonShouldNotMatchDecagonScene() {
+        assertCrossReject(ReferenceId.HEXAGON_OUTLINE, ReferenceId.DECAGON_OUTLINE);
+    }
+
+    @Test @Order(425) @Tag("cross-reject")
+    @DisplayName("STAR_5_FILLED in TRAPEZOID scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "5-point star (10 vertices, CLOSED_CONCAVE_POLY, low solidity ≈ 0.5) vs " +
+                              "isosceles trapezoid (4 vertices, CLOSED_CONVEX_POLY, high solidity). " +
+                              "Type gate (CONCAVE vs CONVEX) + vertex count diverge sharply.")
+    void starShouldNotMatchTrapezoidScene() {
+        assertCrossReject(ReferenceId.STAR_5_FILLED, ReferenceId.TRAPEZOID);
+    }
+
+    @Test @Order(426) @Tag("cross-reject")
+    @DisplayName("ELLIPSE_H in POLYLINE_U_SHAPE scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Smooth horizontal ellipse (CIRCLE-adjacent, circularity > 0.7, no vertices) " +
+                              "vs U-shaped path (CLOSED_CONCAVE_POLY, 8 vertices, concave opening). " +
+                              "ShapeType gate and vertex count diverge cleanly.")
+    void ellipseHShouldNotMatchUShapeScene() {
+        assertCrossReject(ReferenceId.ELLIPSE_H, ReferenceId.POLYLINE_U_SHAPE);
+    }
+
+    @Test @Order(427) @Tag("cross-reject")
+    @DisplayName("LINE_H in CONCAVE_LIGHTNING scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Single horizontal line (LINE_SEGMENT type, extreme AR, open topology) vs " +
+                              "filled lightning bolt (CLOSED_CONCAVE_POLY, 6 vertices, diagonal form). " +
+                              "Type gate (LINE_SEGMENT vs CLOSED_CONCAVE_POLY) fires immediately.")
+    void lineHShouldNotMatchLightningScene() {
+        assertCrossReject(ReferenceId.LINE_H, ReferenceId.CONCAVE_LIGHTNING);
+    }
+
+    @Test @Order(428) @Tag("cross-reject")
+    @DisplayName("ARC_HALF in KITE scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Open semicircle arc (partial-curve, low solidity, open topology) vs " +
+                              "kite shape (4 vertices, CLOSED_CONVEX_POLY, high solidity). Open vs " +
+                              "closed topology difference provides a strong rejection signal.")
+    void arcHalfShouldNotMatchKiteScene() {
+        assertCrossReject(ReferenceId.ARC_HALF, ReferenceId.KITE);
+    }
+
+    @Test @Order(429) @Tag("cross-reject")
+    @DisplayName("OCTAGON_FILLED in CIRCLE_DONUT scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Solid octagon (8 vertices, CLOSED_CONVEX_POLY, no inner hole, high solidity) " +
+                              "vs thick annulus (inner hole present, low effective solidity, CIRCLE type). " +
+                              "The inner hole creates compound-like topology diverging from the solid octagon.")
+    void octagonShouldNotMatchDonutScene() {
+        assertCrossReject(ReferenceId.OCTAGON_FILLED, ReferenceId.CIRCLE_DONUT);
+    }
+
+    @Test @Order(430) @Tag("cross-reject")
+    @DisplayName("RECT_FILLED in POLYLINE_Z_SHAPE scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Filled rectangle (4 right-angle vertices, solidity ≈ 1.0) vs Z-shape " +
+                              "(10 vertices, concave notches, lower solidity). Vertex count ratio 4/10 = 0.40 " +
+                              "fires the vtxMultiplier gate decisively.")
+    void rectShouldNotMatchZShapeScene() {
+        assertCrossReject(ReferenceId.RECT_FILLED, ReferenceId.POLYLINE_Z_SHAPE);
+    }
+
+    @Test @Order(431) @Tag("cross-reject")
+    @DisplayName("POLYLINE_DIAMOND in COMPOUND_STAR_IN_CIRCLE scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Simple diamond polyline (single component, 4 equal edges) vs compound " +
+                              "star-in-circle (two nested components: outer circle + inner star). " +
+                              "Component-count and ShapeType diverge.")
+    void diamondShouldNotMatchStarInCircleScene() {
+        assertCrossReject(ReferenceId.POLYLINE_DIAMOND, ReferenceId.COMPOUND_STAR_IN_CIRCLE);
+    }
+
+    @Test @Order(432) @Tag("cross-reject")
+    @DisplayName("LINE_CROSS in GRID_3X3 scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Simple 2-component cross (COMPOUND, 2 long perpendicular lines) vs " +
+                              "3×3 grid (4 horizontal + 4 vertical lines, many more components). " +
+                              "Component-count divergence (2 vs 8) provides a strong rejection signal.")
+    void crossShouldNotMatchGrid3x3Scene() {
+        assertCrossReject(ReferenceId.LINE_CROSS, ReferenceId.GRID_3X3);
+    }
+
+    @Test @Order(433) @Tag("cross-reject")
+    @DisplayName("STAR_4_OUTLINE in POLYLINE_CARET scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "4-pointed star outline (8 vertices, CLOSED_CONCAVE_POLY, 4 deep notches) vs " +
+                              "caret (5 vertices, CLOSED_CONVEX_POLY, apex pointing up). Vertex count " +
+                              "ratio 5/8 = 0.625 and CONCAVE vs CONVEX type gate combine to reject.")
+    void star4ShouldNotMatchCaretScene() {
+        assertCrossReject(ReferenceId.STAR_4_OUTLINE, ReferenceId.POLYLINE_CARET);
+    }
+
+    @Test @Order(434) @Tag("cross-reject")
+    @DisplayName("CONCAVE_MOON in RECT_THIN_TALL scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Crescent moon (CLOSED_CONCAVE_POLY, concave cutout, near-circular) vs " +
+                              "tall thin rectangle (4 right-angle vertices, extreme portrait AR ≈ 1:4). " +
+                              "AR divergence and ShapeType both mismatch sharply.")
+    void concaveMoonShouldNotMatchRectThinTallScene() {
+        assertCrossReject(ReferenceId.CONCAVE_MOON, ReferenceId.RECT_THIN_TALL);
+    }
+
+    @Test @Order(435) @Tag("cross-reject")
+    @DisplayName("RECT_SQUARE in GRID_DIAGONAL scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Perfect square outline (4 vertices, single closed contour) vs diagonal " +
+                              "cross-hatch grid (many short diagonal segments, COMPOUND multi-component). " +
+                              "Component count and type (CLOSED_CONVEX_POLY vs COMPOUND) diverge sharply.")
+    void squareShouldNotMatchDiagonalGridScene() {
+        assertCrossReject(ReferenceId.RECT_SQUARE, ReferenceId.GRID_DIAGONAL);
+    }
+
+    // =========================================================================
+    // Cross-reference rejection tests — new shapes (Batch 3)
+    // New vs new, black background (orders 436–445)
+    // =========================================================================
+
+    @Test @Order(436) @Tag("cross-reject")
+    @DisplayName("TRIANGLE_RIGHT in TRAPEZOID scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Right-angled triangle (3 vertices) vs isosceles trapezoid (4 vertices). " +
+                              "Vertex ratio 3/4 = 0.75 ≤ 0.80 threshold — vtxMultiplier fires, " +
+                              "reducing the geometry score below the rejection threshold.")
+    void triangleRightShouldNotMatchTrapezoidScene() {
+        assertCrossReject(ReferenceId.TRIANGLE_RIGHT, ReferenceId.TRAPEZOID);
+    }
+
+    @Test @Order(437) @Tag("cross-reject")
+    @DisplayName("KITE in STAR_8_OUTLINE scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Kite shape (4 vertices, CLOSED_CONVEX_POLY) vs 8-pointed star outline " +
+                              "(16 vertices, CLOSED_CONCAVE_POLY). Vertex ratio 4/16 = 0.25; type gate " +
+                              "(CONVEX vs CONCAVE) provides additional rejection force.")
+    void kiteShouldNotMatchStar8Scene() {
+        assertCrossReject(ReferenceId.KITE, ReferenceId.STAR_8_OUTLINE);
+    }
+
+    @Test @Order(438) @Tag("cross-reject")
+    @DisplayName("NONAGON_OUTLINE in DECAGON_OUTLINE scene — known FP risk")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
+                     reason = "Regular 9-gon vs regular 10-gon: vertex ratio 9/10 = 0.90, above the 0.80 " +
+                              "vtxMultiplier threshold — no vertex gate fires. Both shapes are nearly " +
+                              "circular convex polygons with very similar VectorSignature profiles. " +
+                              "Score is expected to sit above the 60% rejection threshold. " +
+                              "Fix tracked as requiring a narrower polygon-neighbour gate.")
+    void nonagonShouldNotMatchDecagonScene() {
+        assertCrossReject(ReferenceId.NONAGON_OUTLINE, ReferenceId.DECAGON_OUTLINE);
+    }
+
+    @Test @Order(439) @Tag("cross-reject")
+    @DisplayName("POLYLINE_U_SHAPE in POLYLINE_H_SHAPE scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "U-shape (8 vertices, one concave opening at top) vs H-shape (12 vertices, " +
+                              "two vertical notches). Vertex count ratio 8/12 ≈ 0.667, below 0.80; " +
+                              "topology and notch profile diverge clearly.")
+    void uShapeShouldNotMatchHShapeScene() {
+        assertCrossReject(ReferenceId.POLYLINE_U_SHAPE, ReferenceId.POLYLINE_H_SHAPE);
+    }
+
+    @Test @Order(440) @Tag("cross-reject")
+    @DisplayName("CIRCLE_DONUT in TRIANGLE_RIGHT scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Thick annulus (CIRCLE type, high circularity, inner hole) vs right-angled " +
+                              "triangle (3 vertices, CLOSED_CONVEX_POLY). ShapeType gate + circularity + " +
+                              "vertex count all diverge sharply.")
+    void donutShouldNotMatchTriangleRightScene() {
+        assertCrossReject(ReferenceId.CIRCLE_DONUT, ReferenceId.TRIANGLE_RIGHT);
+    }
+
+    @Test @Order(441) @Tag("cross-reject")
+    @DisplayName("GRID_3X3 in GRID_DIAGONAL scene — known FP risk")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.FAIL,
+                     reason = "Both shapes are grid-like multi-component patterns with many line segments. " +
+                              "GRID_3X3 has orthogonal lines while GRID_DIAGONAL has 45° lines, but the " +
+                              "VectorSignature segment descriptors may not discriminate orientation well " +
+                              "enough. Score is expected above the 60% rejection ceiling. Fix tracked " +
+                              "as orientation-aware segment scoring improvement.")
+    void grid3x3ShouldNotMatchDiagonalGridScene() {
+        assertCrossReject(ReferenceId.GRID_3X3, ReferenceId.GRID_DIAGONAL);
+    }
+
+    @Test @Order(442) @Tag("cross-reject")
+    @DisplayName("CONCAVE_LIGHTNING in KITE scene — must reject (easy)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Lightning bolt (6 vertices, CLOSED_CONCAVE_POLY, two deep notches, diagonal) " +
+                              "vs kite (4 vertices, CLOSED_CONVEX_POLY, bilateral symmetry). Type gate " +
+                              "(CONCAVE vs CONVEX) + vertex count diverge.")
+    void lightningShouldNotMatchKiteScene() {
+        assertCrossReject(ReferenceId.CONCAVE_LIGHTNING, ReferenceId.KITE);
+    }
+
+    @Test @Order(443) @Tag("cross-reject")
+    @DisplayName("POLYLINE_Z_SHAPE in POLYLINE_CARET scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Z-shape (10 vertices, diagonal band with rectangular caps) vs caret " +
+                              "(5 vertices, upward V with flat base). Vertex ratio 5/10 = 0.50, below " +
+                              "0.80 threshold — vtxMultiplier fires reliably.")
+    void zShapeShouldNotMatchCaretScene() {
+        assertCrossReject(ReferenceId.POLYLINE_Z_SHAPE, ReferenceId.POLYLINE_CARET);
+    }
+
+    @Test @Order(444) @Tag("cross-reject")
+    @DisplayName("ARC_NEAR_FULL in CIRCLE_DONUT scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Near-complete open arc (~330°, open topology, no interior, low solidity) vs " +
+                              "thick filled annulus (closed ring, compound inner/outer boundary, higher " +
+                              "solidity). Open vs closed topology and solidity difference provide reliable " +
+                              "rejection cues.")
+    void arcNearFullShouldNotMatchDonutScene() {
+        assertCrossReject(ReferenceId.ARC_NEAR_FULL, ReferenceId.CIRCLE_DONUT);
+    }
+
+    @Test @Order(445) @Tag("cross-reject")
+    @DisplayName("POLYLINE_S_CURVE in POLYLINE_Z_SHAPE scene — must reject")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "S-curve (open polyline, smooth arcs, ~33 points, open topology) vs " +
+                              "Z-shape (10-vertex closed polygon, rectilinear). Open vs closed topology " +
+                              "and smooth-curve vs right-angle profile diverge strongly.")
+    void sCurveShouldNotMatchZShapeScene() {
+        assertCrossReject(ReferenceId.POLYLINE_S_CURVE, ReferenceId.POLYLINE_Z_SHAPE);
+    }
+
+    // =========================================================================
+    // Cross-reference rejection tests — new shapes (Batch 4)
+    // On noisy backgrounds (orders 446–460)
+    // =========================================================================
+
+    @Test @Order(446) @Tag("cross-reject")
+    @DisplayName("TRIANGLE_RIGHT in CIRCLE_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Right-angled triangle (3 vertices) vs circle on BG_RANDOM_LINES. " +
+                              "ShapeType gate (CLOSED_CONVEX_POLY vs CIRCLE) holds despite line noise; " +
+                              "no background line fragment forms a closed circle contour.")
+    void triangleRightShouldNotMatchCircleOnLines() {
+        assertCrossRejectOnBg(ReferenceId.TRIANGLE_RIGHT, ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_LINES);
+    }
+
+    @Test @Order(447) @Tag("cross-reject")
+    @DisplayName("KITE in CIRCLE_FILLED — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Kite shape (4-vertex polygon) vs circle on BG_RANDOM_CIRCLES. " +
+                              "ShapeType gate (CLOSED_CONVEX_POLY vs CIRCLE) fires despite circular " +
+                              "background noise; kite has straight edges unlike circular arcs.")
+    void kiteShouldNotMatchCircleOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.KITE, ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+    }
+
+    @Test @Order(448) @Tag("cross-reject")
+    @DisplayName("NONAGON_OUTLINE in TRIANGLE_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "9-gon (9 vertices) vs filled triangle (3 vertices) on BG_RANDOM_LINES. " +
+                              "Vertex ratio 3/9 = 0.333 means vtxMultiplier ≈ 0.064 — the gate fires " +
+                              "as strongly on a noisy background as on black; line fragments do not " +
+                              "raise the scene's effective vertex count above the gate threshold.")
+    void nonagonShouldNotMatchTriangleOnLines() {
+        assertCrossRejectOnBg(ReferenceId.NONAGON_OUTLINE, ReferenceId.TRIANGLE_FILLED, BackgroundId.BG_RANDOM_LINES);
+    }
+
+    @Test @Order(449) @Tag("cross-reject")
+    @DisplayName("DECAGON_OUTLINE in PENTAGON_FILLED — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "10-gon (10 vertices) vs filled pentagon (5 vertices) on BG_RANDOM_CIRCLES. " +
+                              "Vertex ratio 5/10 = 0.50 fires vtxMultiplier ≈ 0.177; circular background " +
+                              "outlines do not produce 10-vertex-like contours, so the gate remains stable.")
+    void decagonShouldNotMatchPentagonOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.DECAGON_OUTLINE, ReferenceId.PENTAGON_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+    }
+
+    @Test @Order(450) @Tag("cross-reject")
+    @DisplayName("CIRCLE_DONUT in TRIANGLE_FILLED — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Thick annulus (CIRCLE type, inner hole) vs filled triangle (CLOSED_CONVEX_POLY) " +
+                              "on BG_RANDOM_CIRCLES. ShapeType gate holds despite circular background; " +
+                              "the donut's compound inner/outer boundary is distinctive.")
+    void donutShouldNotMatchTriangleOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.CIRCLE_DONUT, ReferenceId.TRIANGLE_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+    }
+
+    @Test @Order(451) @Tag("cross-reject")
+    @DisplayName("CONCAVE_LIGHTNING in RECT_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Lightning bolt (CLOSED_CONCAVE_POLY, two notches, diagonal form) vs " +
+                              "filled rectangle (CLOSED_CONVEX_POLY, 4 right-angle vertices) on " +
+                              "BG_RANDOM_LINES. CONCAVE vs CONVEX type gate survives line background noise.")
+    void lightningShouldNotMatchRectOnLines() {
+        assertCrossRejectOnBg(ReferenceId.CONCAVE_LIGHTNING, ReferenceId.RECT_FILLED, BackgroundId.BG_RANDOM_LINES);
+    }
+
+    @Test @Order(452) @Tag("cross-reject")
+    @DisplayName("STAR_8_OUTLINE in CIRCLE_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "8-pointed star (CLOSED_CONCAVE_POLY, 16 vertices) vs smooth filled circle " +
+                              "(CIRCLE type) on BG_RANDOM_LINES. ShapeType gate (CONCAVE vs CIRCLE) and " +
+                              "circularity diverge; line fragments do not form a closed circular contour.")
+    void star8ShouldNotMatchCircleOnLines() {
+        assertCrossRejectOnBg(ReferenceId.STAR_8_OUTLINE, ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_LINES);
+    }
+
+    @Test @Order(453) @Tag("cross-reject")
+    @DisplayName("POLYLINE_U_SHAPE in CIRCLE_FILLED — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "U-shaped path (8-vertex CLOSED_CONCAVE_POLY) vs smooth filled circle on " +
+                              "BG_RANDOM_CIRCLES. CONCAVE vs CIRCLE type gate holds despite circular noise; " +
+                              "background circles do not produce a U-shaped concave contour.")
+    void uShapeShouldNotMatchCircleOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.POLYLINE_U_SHAPE, ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+    }
+
+    @Test @Order(454) @Tag("cross-reject")
+    @DisplayName("COMPOUND_STAR_IN_CIRCLE in PENTAGON_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Compound star-in-circle (multi-component) vs single pentagon on " +
+                              "BG_RANDOM_LINES. Component-count divergence and outer CIRCLE type vs " +
+                              "CLOSED_CONVEX_POLY mismatch hold under background line noise.")
+    void starInCircleShouldNotMatchPentagonOnLines() {
+        assertCrossRejectOnBg(ReferenceId.COMPOUND_STAR_IN_CIRCLE, ReferenceId.PENTAGON_FILLED, BackgroundId.BG_RANDOM_LINES);
+    }
+
+    @Test @Order(455) @Tag("cross-reject")
+    @DisplayName("RECT_ROTATED_75 in CIRCLE_FILLED — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "75°-rotated rectangle (4 vertices, CLOSED_CONVEX_POLY) vs smooth filled " +
+                              "circle (CIRCLE type) on BG_RANDOM_CIRCLES. ShapeType gate holds; rotation " +
+                              "does not change the vertex-angle profile of the rectangle.")
+    void rectRotated75ShouldNotMatchCircleOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.RECT_ROTATED_75, ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+    }
+
+    @Test @Order(456) @Tag("cross-reject")
+    @DisplayName("TRAPEZOID in CIRCLE_FILLED — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Isosceles trapezoid (4 straight-edge vertices, CLOSED_CONVEX_POLY) vs " +
+                              "filled circle (CIRCLE type) on BG_RANDOM_CIRCLES. ShapeType gate + " +
+                              "circularity divergence survive circular background noise cleanly.")
+    void trapezoidShouldNotMatchCircleOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.TRAPEZOID, ReferenceId.CIRCLE_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+    }
+
+    @Test @Order(457) @Tag("cross-reject")
+    @DisplayName("POLYLINE_Z_SHAPE in PENTAGON_FILLED — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Z-shape (10 vertices, concave, diagonal band) vs solid pentagon (5 vertices) " +
+                              "on BG_RANDOM_LINES. Vertex ratio 5/10 = 0.50 fires vtxMultiplier; background " +
+                              "lines may add noise but pentagon remains the dominant scene contour.")
+    void zShapeShouldNotMatchPentagonOnLines() {
+        assertCrossRejectOnBg(ReferenceId.POLYLINE_Z_SHAPE, ReferenceId.PENTAGON_FILLED, BackgroundId.BG_RANDOM_LINES);
+    }
+
+    @Test @Order(458) @Tag("cross-reject")
+    @DisplayName("GRID_3X3 in HEXAGON_OUTLINE — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "3×3 grid (many components, COMPOUND) vs hexagon outline (single 6-vertex " +
+                              "component, CLOSED_CONVEX_POLY) on BG_RANDOM_LINES. Component-count and " +
+                              "type gate (COMPOUND vs CLOSED_CONVEX_POLY) hold under background noise.")
+    void grid3x3ShouldNotMatchHexagonOnLines() {
+        assertCrossRejectOnBg(ReferenceId.GRID_3X3, ReferenceId.HEXAGON_OUTLINE, BackgroundId.BG_RANDOM_LINES);
+    }
+
+    @Test @Order(459) @Tag("cross-reject")
+    @DisplayName("RECT_THIN_TALL in TRIANGLE_FILLED — circles bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "Tall thin portrait rectangle (extreme portrait AR, 4 right-angle vertices) vs " +
+                              "filled triangle (3 vertices, AR ≈ 1.0) on BG_RANDOM_CIRCLES. AR divergence " +
+                              "and vertex count (4 vs 3, ratio 0.75 ≤ 0.80) combine to reject reliably.")
+    void rectThinTallShouldNotMatchTriangleOnCircles() {
+        assertCrossRejectOnBg(ReferenceId.RECT_THIN_TALL, ReferenceId.TRIANGLE_FILLED, BackgroundId.BG_RANDOM_CIRCLES);
+    }
+
+    @Test @Order(460) @Tag("cross-reject")
+    @DisplayName("POLYLINE_H_SHAPE in ELLIPSE_H — lines bg (must reject)")
+    @ExpectedOutcome(value = ExpectedOutcome.Result.PASS,
+                     reason = "H-shaped path (12 vertices, CLOSED_CONCAVE_POLY, two deep notches) vs " +
+                              "horizontal ellipse (CIRCLE-adjacent, smooth boundary, no vertices) on " +
+                              "BG_RANDOM_LINES. Type gate (CONCAVE vs CIRCLE-adjacent) and vertex count " +
+                              "diverge cleanly despite background line clutter.")
+    void hShapeShouldNotMatchEllipseOnLines() {
+        assertCrossRejectOnBg(ReferenceId.POLYLINE_H_SHAPE, ReferenceId.ELLIPSE_H, BackgroundId.BG_RANDOM_LINES);
+    }
 
     // =========================================================================
     // Cross-reference helpers

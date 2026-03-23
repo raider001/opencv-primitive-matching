@@ -1,3 +1,4 @@
+            // Find best scene entry for this ref contour
 package org.example.matchers.vectormatcher.components;
 
 import org.example.matchers.SceneContourEntry;
@@ -277,7 +278,63 @@ public final class RegionScorer {
                 }
             }
 
-            sumContrib += weight * (proxScore * 0.40 + covScore * 0.40 + scaleScore * 0.20);
+            // ── Topological mismatch penalties (cross-ref rejection hardening) ───
+            // If the scene entry's VectorSignature differs significantly in
+            // vertex count, circularity, or shape type from the best ref sig,
+            // apply a multiplicative penalty to this cluster's contribution.
+            double topoMultiplier = 1.0;
+            
+            VectorSignature bestRefSig = rc.bestSig;
+            VectorSignature sceneSig   = entry.sig();
+            
+            if (bestRefSig != null && sceneSig != null) {
+                // 1. Vertex count mismatch (for low-vertex shapes ≤ 10)
+                if (bestRefSig.vertexCount <= 10 && sceneSig.vertexCount <= 10 
+                    && bestRefSig.vertexCount > 0 && sceneSig.vertexCount > 0) {
+                    double vtxRatio = Math.min(bestRefSig.vertexCount, sceneSig.vertexCount)
+                                    / (double) Math.max(bestRefSig.vertexCount, sceneSig.vertexCount);
+                    if (vtxRatio < 0.80) {
+                        // e.g. 3 vs 5 → ratio=0.6 → penalty^2.5 = 0.22
+                        topoMultiplier *= Math.pow(vtxRatio, 2.5);
+                    }
+                }
+                
+                // 2. Circularity mismatch (CIRCLE vs polygon discrimination)
+                double circDiff = Math.abs(bestRefSig.circularity - sceneSig.circularity);
+                if (circDiff > 0.25) {
+                    // Large circularity gap (e.g. circle=0.95 vs rect=0.78) → 0.75 multiplier
+                    topoMultiplier *= (1.0 - Math.min(0.35, circDiff * 0.70));
+                }
+                
+                // 3. Shape type hard gates (CIRCLE vs POLY, CONVEX vs CONCAVE)
+                boolean typeHardMismatch = false;
+                if (bestRefSig.type == VectorSignature.ShapeType.CIRCLE 
+                    && sceneSig.type != VectorSignature.ShapeType.CIRCLE) {
+                    typeHardMismatch = true;
+                } else if (bestRefSig.type != VectorSignature.ShapeType.CIRCLE 
+                           && sceneSig.type == VectorSignature.ShapeType.CIRCLE) {
+                    typeHardMismatch = true;
+                } else if (bestRefSig.type == VectorSignature.ShapeType.CLOSED_CONVEX_POLY 
+                           && sceneSig.type == VectorSignature.ShapeType.CLOSED_CONCAVE_POLY) {
+                    typeHardMismatch = true;
+                } else if (bestRefSig.type == VectorSignature.ShapeType.CLOSED_CONCAVE_POLY 
+                           && sceneSig.type == VectorSignature.ShapeType.CLOSED_CONVEX_POLY) {
+                    typeHardMismatch = true;
+                }
+                
+                if (typeHardMismatch) {
+                    topoMultiplier *= 0.50;  // 50% suppression for hard type mismatch
+                }
+                
+                // 4. Concavity mismatch (star vs circle, etc.)
+                double concavityDiff = Math.abs(bestRefSig.concavityRatio - sceneSig.concavityRatio);
+                if (concavityDiff > 0.10) {
+                    // Significant concavity difference → suppress
+                    topoMultiplier *= (1.0 - Math.min(0.30, concavityDiff * 2.0));
+                }
+            }
+
+            sumContrib += weight * topoMultiplier * (proxScore * 0.40 + covScore * 0.40 + scaleScore * 0.20);
         }
 
         return (sumWeights > 0) ? sumContrib / sumWeights : 0.0;

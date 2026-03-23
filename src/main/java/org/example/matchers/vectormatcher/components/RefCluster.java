@@ -32,6 +32,8 @@ public final class RefCluster {
     public final double cachedRefFraction;
     /** Solidity of the primary contour (area / convex hull area). */
     public final double solidity;
+    /** Best (highest solidity) VectorSignature for this cluster — set by caller after construction. */
+    public VectorSignature bestSig = null;
 
     private VectorSignature cachedSig = null;
 

@@ -12,7 +12,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Generates all 47 synthetic reference {@link Mat} images.
+ * Generates all 113 non-character synthetic reference {@link Mat} images
+ * (plus 66 individual-character references handled by {@link #drawCharRef}).
  *
  * <p>Each image is 128×128 px, 3-channel BGR colour.
  *
@@ -407,6 +408,39 @@ public final class ReferenceImageFactory {
             case TRICOLOUR_TRIANGLE      -> drawTricolourTriangle(m);
             case BICOLOUR_CROSSHAIR_RING -> drawBicolourCrosshairRing(m);
             case BICOLOUR_CHEVRON_FILLED -> drawBicolourChevronFilled(m);
+
+            // Additional Shapes (20)
+            case TRIANGLE_RIGHT    -> drawTriangleRight(m, fg);
+            case TRAPEZOID         -> drawTrapezoid(m, fg);
+            case KITE              -> drawKite(m, fg);
+            case STAR_8_OUTLINE    -> drawStar(m, 8, fg, false);
+            case NONAGON_OUTLINE   -> drawRegularPolygon(m, 9,  fg, false);
+            case DECAGON_OUTLINE   -> drawRegularPolygon(m, 10, fg, false);
+            case POLYLINE_U_SHAPE  -> drawUShape(m, fg);
+            case POLYLINE_H_SHAPE  -> drawHShape(m, fg);
+            case POLYLINE_Z_SHAPE  -> drawZShape(m, fg);
+            case POLYLINE_CARET    -> drawCaretShape(m, fg);
+            case POLYLINE_S_CURVE  -> drawSCurve(m, fg);
+            case ARC_NEAR_FULL     -> Imgproc.ellipse(m, centre(),
+                    new Size(SIZE / 2 - 10, SIZE / 2 - 10), 0, 20, 350, fg, 2);
+            case CONCAVE_LIGHTNING -> drawLightningBolt(m, fg);
+            case RECT_THIN_TALL    -> Imgproc.rectangle(m,
+                    new Point(48, 8), new Point(SIZE - 49, SIZE - 9), fg, 2);
+            case CIRCLE_DONUT      -> {
+                Imgproc.circle(m, centre(), SIZE / 2 - 8,  fg, -1);
+                Imgproc.circle(m, centre(), SIZE / 2 - 28, new Scalar(0, 0, 0), -1);
+            }
+            case COMPOUND_STAR_IN_CIRCLE -> {
+                Imgproc.circle(m, centre(), SIZE / 2 - 10, fg, 2);
+                drawStar(m, 5, fg, false);
+            }
+            case COMPOUND_DIAMOND_IN_RECT -> {
+                Imgproc.rectangle(m, new Point(12, 12), new Point(SIZE - 13, SIZE - 13), fg, 2);
+                drawDiamond(m, fg);
+            }
+            case GRID_3X3          -> drawGrid(m, 3, fg);
+            case GRID_DIAGONAL     -> drawDiagonalGrid(m, fg);
+            case RECT_ROTATED_75   -> drawRotatedRect(m, fg, 75);
         }
     }
 
@@ -1019,6 +1053,193 @@ public final class ReferenceImageFactory {
         MatOfPoint mop = new MatOfPoint();
         mop.fromList(pts);
         Imgproc.polylines(m, List.of(mop), true, fg, 2);
+    }
+
+    // -------------------------------------------------------------------------
+    // Additional shape helpers (20 new shapes)
+    // -------------------------------------------------------------------------
+
+    /** Right-angled triangle: 90° corner at bottom-left. */
+    private static void drawTriangleRight(Mat m, Scalar fg) {
+        List<Point> pts = List.of(
+            new Point(12, SIZE - 12),  // bottom-left (right angle)
+            new Point(12, 12),         // top
+            new Point(SIZE - 12, SIZE - 12)  // bottom-right
+        );
+        MatOfPoint mop = new MatOfPoint();
+        mop.fromList(pts);
+        Imgproc.polylines(m, List.of(mop), true, fg, 2);
+    }
+
+    /** Isosceles trapezoid: wider at the bottom. */
+    private static void drawTrapezoid(Mat m, Scalar fg) {
+        List<Point> pts = List.of(
+            new Point(32, 20),
+            new Point(SIZE - 33, 20),
+            new Point(SIZE - 14, SIZE - 12),
+            new Point(14, SIZE - 12)
+        );
+        MatOfPoint mop = new MatOfPoint();
+        mop.fromList(pts);
+        Imgproc.polylines(m, List.of(mop), true, fg, 2);
+    }
+
+    /** Kite shape: vertical symmetry axis, upper half shorter than lower half. */
+    private static void drawKite(Mat m, Scalar fg) {
+        double cx = SIZE / 2.0;
+        List<Point> pts = List.of(
+            new Point(cx,          10),            // top apex
+            new Point(SIZE - 14,   SIZE / 2.0 + 16), // right
+            new Point(cx,          SIZE - 12),     // bottom apex
+            new Point(14,          SIZE / 2.0 + 16)  // left
+        );
+        MatOfPoint mop = new MatOfPoint();
+        mop.fromList(pts);
+        Imgproc.polylines(m, List.of(mop), true, fg, 2);
+    }
+
+    /** U-shaped closed path (concave opening at top). */
+    private static void drawUShape(Mat m, Scalar fg) {
+        List<Point> pts = List.of(
+            new Point(16,  16),
+            new Point(44,  16),
+            new Point(44,  80),
+            new Point(84,  80),
+            new Point(84,  16),
+            new Point(112, 16),
+            new Point(112, 112),
+            new Point(16,  112)
+        );
+        MatOfPoint mop = new MatOfPoint();
+        mop.fromList(pts);
+        Imgproc.polylines(m, List.of(mop), true, fg, 2);
+    }
+
+    /** H-shaped closed path (12 vertices, two vertical stems + crossbar). */
+    private static void drawHShape(Mat m, Scalar fg) {
+        List<Point> pts = List.of(
+            new Point(16,  16),   // top-left outer
+            new Point(44,  16),   // top-left inner
+            new Point(44,  50),   // left crossbar top
+            new Point(84,  50),   // right crossbar top
+            new Point(84,  16),   // top-right inner
+            new Point(112, 16),   // top-right outer
+            new Point(112, 112),  // bottom-right outer
+            new Point(84,  112),  // bottom-right inner
+            new Point(84,  78),   // right crossbar bottom
+            new Point(44,  78),   // left crossbar bottom
+            new Point(44,  112),  // bottom-left inner
+            new Point(16,  112)   // bottom-left outer
+        );
+        MatOfPoint mop = new MatOfPoint();
+        mop.fromList(pts);
+        Imgproc.polylines(m, List.of(mop), true, fg, 2);
+    }
+
+    /** Z-shaped closed path (diagonal band with two rectangular caps). */
+    private static void drawZShape(Mat m, Scalar fg) {
+        List<Point> pts = List.of(
+            new Point(16,  16),   // top-left
+            new Point(112, 16),   // top-right
+            new Point(112, 44),   // top-right lower
+            new Point(40,  84),   // bottom-left upper (diagonal)
+            new Point(112, 84),   // bottom-right upper
+            new Point(112, 112),  // bottom-right
+            new Point(16,  112),  // bottom-left
+            new Point(16,  84),   // bottom-left upper
+            new Point(88,  44),   // top-right lower (diagonal return)
+            new Point(16,  44)    // top-left lower
+        );
+        MatOfPoint mop = new MatOfPoint();
+        mop.fromList(pts);
+        Imgproc.polylines(m, List.of(mop), true, fg, 2);
+    }
+
+    /** Upward-pointing caret (V-shape with a flat base, 5 vertices). */
+    private static void drawCaretShape(Mat m, Scalar fg) {
+        List<Point> pts = List.of(
+            new Point(16,  108),           // bottom-left
+            new Point(16,  82),            // bottom-left upper
+            new Point(SIZE / 2.0, 16),     // apex (top-centre)
+            new Point(112, 82),            // bottom-right upper
+            new Point(112, 108)            // bottom-right
+        );
+        MatOfPoint mop = new MatOfPoint();
+        mop.fromList(pts);
+        Imgproc.polylines(m, List.of(mop), true, fg, 2);
+    }
+
+    /** S-curve: two connected semicircular arcs in opposing directions. */
+    private static void drawSCurve(Mat m, Scalar fg) {
+        int r    = SIZE / 4 - 2;
+        double cx1 = SIZE * 0.38, cy1 = SIZE * 0.30;
+        double cx2 = SIZE * 0.62, cy2 = SIZE * 0.70;
+        int steps = 16;
+        List<Point> pts = new ArrayList<>();
+        // Upper arc: 180° → 360° (left half of circle, right-opening)
+        for (int i = 0; i <= steps; i++) {
+            double a = Math.toRadians(180.0 + 180.0 * i / steps);
+            pts.add(new Point(cx1 + r * Math.cos(a), cy1 + r * Math.sin(a)));
+        }
+        // Lower arc: 0° → 180° (right half of circle, left-opening)
+        for (int i = 0; i <= steps; i++) {
+            double a = Math.toRadians(180.0 * i / steps);
+            pts.add(new Point(cx2 + r * Math.cos(a), cy2 + r * Math.sin(a)));
+        }
+        MatOfPoint mop = new MatOfPoint();
+        mop.fromList(pts);
+        Imgproc.polylines(m, List.of(mop), false, fg, 2);
+    }
+
+    /** Lightning bolt: filled 6-vertex concave polygon with two opposing notches. */
+    private static void drawLightningBolt(Mat m, Scalar fg) {
+        List<Point> pts = List.of(
+            new Point(76,  10),   // top-right
+            new Point(36,  66),   // middle-left upper
+            new Point(62,  60),   // upper inner notch (concavity A)
+            new Point(28, 118),   // bottom-left
+            new Point(84,  62),   // middle-right lower
+            new Point(58,  68)    // lower inner notch (concavity B)
+        );
+        MatOfPoint mop = new MatOfPoint();
+        mop.fromList(pts);
+        Imgproc.fillPoly(m, List.of(mop), fg);
+        Imgproc.polylines(m, List.of(mop), true, fg, 1);
+    }
+
+    /** Cross-hatch diagonal grid: lines at 45° and 135°. */
+    private static void drawDiagonalGrid(Mat m, Scalar fg) {
+        int step = 22;
+        // 45° diagonals: y = x + c
+        for (int c = -(SIZE - 1); c < SIZE; c += step) {
+            int x0, y0, x1, y1;
+            if (c >= 0) {
+                x0 = 0;         y0 = c;
+                x1 = SIZE-1-c;  y1 = SIZE - 1;
+            } else {
+                x0 = -c;        y0 = 0;
+                x1 = SIZE - 1;  y1 = SIZE - 1 + c;
+            }
+            if (x0 >= 0 && x0 < SIZE && y0 >= 0 && y0 < SIZE
+                    && x1 >= 0 && x1 < SIZE && y1 >= 0 && y1 < SIZE) {
+                Imgproc.line(m, new Point(x0, y0), new Point(x1, y1), fg, 1);
+            }
+        }
+        // 135° diagonals: y = -x + c  (c from 0 to 2*(SIZE-1))
+        for (int c = 0; c < 2 * SIZE; c += step) {
+            int x0, y0, x1, y1;
+            if (c <= SIZE - 1) {
+                x0 = 0;    y0 = c;
+                x1 = c;    y1 = 0;
+            } else {
+                x0 = c - (SIZE - 1); y0 = SIZE - 1;
+                x1 = SIZE - 1;       y1 = c - (SIZE - 1);
+            }
+            if (x0 >= 0 && x0 < SIZE && y0 >= 0 && y0 < SIZE
+                    && x1 >= 0 && x1 < SIZE && y1 >= 0 && y1 < SIZE) {
+                Imgproc.line(m, new Point(x0, y0), new Point(x1, y1), fg, 1);
+            }
+        }
     }
 
     // -------------------------------------------------------------------------

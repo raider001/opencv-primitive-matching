@@ -114,6 +114,11 @@ public final class VectorMatcher {
                                                              Set<String> saveVariants,
                                                              Path outputDir) {
         List<RefCluster> refClusters = buildRefClusters(refMat);
+        
+        // Populate bestSig for all ref clusters so RegionScorer can access topology metadata
+        for (RefCluster rc : refClusters) {
+            rc.bestSig = rc.bestSig(EPSILON);
+        }
 
         // Run single NORMAL variant — three variants no longer add value
         VectorVariant variant = VectorVariant.VECTOR_NORMAL;

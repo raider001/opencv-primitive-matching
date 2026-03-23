@@ -158,6 +158,30 @@ public enum ReferenceId {
     BICOLOUR_CHEVRON_FILLED, // Chevron outline in colour A, interior flood-filled with colour B
 
     // -------------------------------------------------------------------------
+    // Additional Shapes  (20) — extended shape vocabulary
+    // -------------------------------------------------------------------------
+    TRIANGLE_RIGHT,           // Right-angled triangle (90° corner at bottom-left)
+    TRAPEZOID,                // Isosceles trapezoid (parallel top/bottom edges)
+    KITE,                     // Kite shape (vertical symmetry axis, asymmetric halves)
+    STAR_8_OUTLINE,           // 8-pointed star outline (16 vertices)
+    NONAGON_OUTLINE,          // Regular 9-sided polygon outline
+    DECAGON_OUTLINE,          // Regular 10-sided polygon outline
+    POLYLINE_U_SHAPE,         // U-shaped closed path (concave opening at top)
+    POLYLINE_H_SHAPE,         // H-shaped closed path (12-vertex double-notch)
+    POLYLINE_Z_SHAPE,         // Z-shaped closed path (diagonal band)
+    POLYLINE_CARET,           // Upward-pointing caret (V-shape with flat base, 5 vertices)
+    POLYLINE_S_CURVE,         // S-curve open polyline (two connected arcs)
+    ARC_NEAR_FULL,            // Near-complete circle arc (~330°, small gap)
+    CONCAVE_LIGHTNING,        // Lightning bolt shape (filled, two concave notches)
+    RECT_THIN_TALL,           // Tall thin portrait rectangle (AR ~1:4)
+    CIRCLE_DONUT,             // Thick annulus / donut (filled ring, outer-inner circle)
+    COMPOUND_STAR_IN_CIRCLE,  // 5-pointed star outline inscribed inside circle outline
+    COMPOUND_DIAMOND_IN_RECT, // Diamond inscribed inside a square rectangle
+    GRID_3X3,                 // 3×3 grid lines (4 horizontal + 4 vertical)
+    GRID_DIAGONAL,            // Cross-hatch diagonal grid (45° and 135° lines)
+    RECT_ROTATED_75,          // Rectangle rotated 75°
+
+    // -------------------------------------------------------------------------
     // Individual Characters — size 12 Mono style (66)
     // Each entry renders a single character centred on a 128×128 canvas using
     // FONT_HERSHEY_PLAIN at the largest scale that keeps the glyph within the
