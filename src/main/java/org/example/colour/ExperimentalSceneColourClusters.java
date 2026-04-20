@@ -144,41 +144,59 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
         Mat hsv = new Mat();
         Imgproc.cvtColor(bgrScene, hsv, Imgproc.COLOR_BGR2HSV);
 
-        // Build border-pixel mask for histogram (same semantics as production)
-        Mat chromaticRaw = buildChromaticMask(hsv);
-        Mat borderMask   = new Mat();
-        Imgproc.morphologyEx(chromaticRaw, borderMask, Imgproc.MORPH_GRADIENT, buildBorderKernel());
-        chromaticRaw.release();
-
-        // Bulk-read the border mask into Java (one JNI call).
-        // Image-border zeroing is handled implicitly by the loop bounds [1, rows-1) × [1, cols-1).
-        byte[] borderData = new byte[hsv.rows() * hsv.cols()];
-        borderMask.get(0, 0, borderData);
-        borderMask.release();
-
-        // ── Degenerate-case fallback ──────────────────────────────────────
-        // When the entire scene is chromatic (e.g. a coloured gradient that
-        // fills every pixel), the chromatic mask is all-255 and the morphological
-        // gradient produces signal only on the 1-pixel image edge — which the
-        // inner-pixel loop bounds [1, rows-1) × [1, cols-1) skip entirely.
-        // Result: zero border pixels → zero hue peaks → zero clusters.
-        //
-        // Detect this by counting non-zero border pixels in the interior.
-        // If fewer than MIN_PIXEL_COUNT survive, fall back to the full-pixel
-        // histogram path (borderData = null) so every interior pixel votes.
-        int borderCount = 0;
+        // ── Pure-Java border detection ────────────────────────────────────
+        // Replaces buildChromaticMask (Core.inRange) + morphologyEx (MORPH_GRADIENT)
+        // + borderMask.get() — eliminates 2 native full-image passes + 1 JNI bulk
+        // read + 2 Mat allocations.  The chromatic classification and 3×3
+        // morphological gradient are computed entirely in Java from the already-
+        // bulk-read HSV data.
         int rows = hsv.rows(), cols = hsv.cols();
-        for (int r = 1; r < rows - 1 && borderCount < MIN_PIXEL_COUNT; r++) {
-            int off = r * cols;
-            for (int c = 1; c < cols - 1 && borderCount < MIN_PIXEL_COUNT; c++) {
-                if ((borderData[off + c] & 0xFF) != 0) borderCount++;
+        int n    = rows * cols;
+        byte[] hsvData = new byte[n * 3];
+        hsv.get(0, 0, hsvData);
+
+        // Pass A: classify each pixel as chromatic (1) or not (0).
+        byte[] chromatic = new byte[n];
+        for (int r = 1; r < rows - 1; r++) {
+            int base = r * cols;
+            for (int c = 1; c < cols - 1; c++) {
+                int idx = (base + c) * 3;
+                int s = hsvData[idx + 1] & 0xFF;
+                int v = hsvData[idx + 2] & 0xFF;
+                if (s >= MIN_SAT_I && v >= MIN_VAL_I) chromatic[base + c] = 1;
             }
         }
-        if (borderCount < MIN_PIXEL_COUNT) {
-            borderData = null;  // full-pixel fallback
+
+        // Pass B: morphological gradient — a pixel is on the border if any of
+        // its 8-neighbors has a different chromatic status (replicates the 3×3
+        // MORPH_GRADIENT of the binary chromatic mask).  Simultaneously count
+        // border pixels for the degenerate-case fallback.
+        byte[] borderData = new byte[n];
+        int borderCount = 0;
+        for (int r = 1; r < rows - 1; r++) {
+            int base = r * cols;
+            int prevRow = (r - 1) * cols;
+            int nextRow = (r + 1) * cols;
+            for (int c = 1; c < cols - 1; c++) {
+                int i = base + c;
+                byte me = chromatic[i];
+                // Check 8-neighbors: if any differs, this pixel is on the gradient
+                if (me != chromatic[prevRow + c - 1] || me != chromatic[prevRow + c] ||
+                    me != chromatic[prevRow + c + 1] || me != chromatic[base + c - 1] ||
+                    me != chromatic[base + c + 1]    || me != chromatic[nextRow + c - 1] ||
+                    me != chromatic[nextRow + c]      || me != chromatic[nextRow + c + 1]) {
+                    borderData[i] = (byte) 255;
+                    borderCount++;
+                }
+            }
         }
 
-        List<ColourCluster> result = buildClustersOnePass(hsv, borderData, chromaticOut);
+        // Degenerate-case fallback: if too few border pixels, use all pixels.
+        if (borderCount < MIN_PIXEL_COUNT) {
+            borderData = null;
+        }
+
+        List<ColourCluster> result = buildClustersOnePass(hsv, hsvData, borderData, chromaticOut);
         hsv.release();
         return result;
     }
@@ -193,7 +211,10 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
     public List<ColourCluster> extract(Mat bgrScene) {
         Mat hsv = new Mat();
         Imgproc.cvtColor(bgrScene, hsv, Imgproc.COLOR_BGR2HSV);
-        List<ColourCluster> result = buildClustersOnePass(hsv, null, null);
+        int n = hsv.rows() * hsv.cols();
+        byte[] hsvData = new byte[n * 3];
+        hsv.get(0, 0, hsvData);
+        List<ColourCluster> result = buildClustersOnePass(hsv, hsvData, null, null);
         hsv.release();
         return result;
     }
@@ -223,13 +244,11 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
      * <p>The BRIGHT/DARK achromatic split uses a data-driven V valley
      * (see {@link #dynamicAchromaticThreshold}).
      */
-    private List<ColourCluster> buildClustersOnePass(Mat hsv, byte[] borderData, byte[] chromaticOut) {
+    private List<ColourCluster> buildClustersOnePass(Mat hsv, byte[] hsvData, byte[] borderData, byte[] chromaticOut) {
         int rows = hsv.rows(), cols = hsv.cols();
         int n    = rows * cols;
 
-        // ── 1. Bulk read HSV data ────────────────────────────────────────────
-        byte[] hsvData = new byte[n * 3];
-        hsv.get(0, 0, hsvData);
+        // ── 1. HSV data already bulk-read by caller ───────────────────────────
 
         // ── 2. Hue histogram + achromatic-V histogram (single loop) ──────────
         float[] hueHist   = new float[180];
@@ -241,9 +260,10 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
                 for (int c = 1; c < cols - 1; c++) {
                     int i = off + c;
                     if ((borderData[i] & 0xFF) == 0) continue;
-                    int h = hsvData[i * 3]     & 0xFF;
-                    int s = hsvData[i * 3 + 1] & 0xFF;
-                    int v = hsvData[i * 3 + 2] & 0xFF;
+                    int idx = i * 3;
+                    int h = hsvData[idx]     & 0xFF;
+                    int s = hsvData[idx + 1] & 0xFF;
+                    int v = hsvData[idx + 2] & 0xFF;
                     if      (s >= MIN_SAT_I && v >= MIN_VAL_I && h < 180) hueHist[h]++;
                     else if (s <= SAT_MAX_I)                               achrVHist[v]++;
                 }
@@ -253,9 +273,10 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
                 int off = r * cols;
                 for (int c = 1; c < cols - 1; c++) {
                     int i = off + c;
-                    int h = hsvData[i * 3]     & 0xFF;
-                    int s = hsvData[i * 3 + 1] & 0xFF;
-                    int v = hsvData[i * 3 + 2] & 0xFF;
+                    int idx = i * 3;
+                    int h = hsvData[idx]     & 0xFF;
+                    int s = hsvData[idx + 1] & 0xFF;
+                    int v = hsvData[idx + 2] & 0xFF;
                     if      (s >= MIN_SAT_I && v >= MIN_VAL_I && h < 180) hueHist[h]++;
                     else if (s <= SAT_MAX_I)                               achrVHist[v]++;
                 }
@@ -290,23 +311,17 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
             }
         }
 
-        // ── 4. Per-cluster S histogram (second Java pass, all interior pixels) ─
-        //
-        // IMPORTANT: always scan ALL interior pixels — never just border pixels.
-        // Border pixels between two regions that share a hue but differ in
-        // saturation are *transition* pixels: their S values ramp continuously
-        // from one mode to the other, masking the bimodal structure.  All pixels
-        // expose the true distribution — one dense cluster at the shape S value,
-        // another at the background S value.
+        // ── 4. Per-cluster S histogram (all interior pixels) ──────────────
         int[][] sHistByCi = new int[numChromatic][256];
 
         for (int r = 1; r < rows - 1; r++) {
             int off = r * cols;
             for (int c = 1; c < cols - 1; c++) {
-                int i = off + c;
-                int h = hsvData[i * 3]     & 0xFF;
-                int s = hsvData[i * 3 + 1] & 0xFF;
-                int v = hsvData[i * 3 + 2] & 0xFF;
+                int i   = off + c;
+                int idx = i * 3;
+                int h = hsvData[idx]     & 0xFF;
+                int s = hsvData[idx + 1] & 0xFF;
+                int v = hsvData[idx + 2] & 0xFF;
                 if (s >= MIN_SAT_I && v >= MIN_VAL_I && h < 180) {
                     int ci = hueLUT[h];
                     if (ci >= 0) sHistByCi[ci][s]++;
@@ -372,10 +387,11 @@ public final class ExperimentalSceneColourClusters implements SceneColourExtract
         for (int r = 1; r < rows - 1; r++) {
             int off = r * cols;
             for (int c = 1; c < cols - 1; c++) {
-                int i = off + c;
-                int h = hsvData[i * 3]     & 0xFF;
-                int s = hsvData[i * 3 + 1] & 0xFF;
-                int v = hsvData[i * 3 + 2] & 0xFF;
+                int i   = off + c;
+                int idx = i * 3;
+                int h = hsvData[idx]     & 0xFF;
+                int s = hsvData[idx + 1] & 0xFF;
+                int v = hsvData[idx + 2] & 0xFF;
 
                 if (s >= MIN_SAT_I && v >= MIN_VAL_I) {
                     if (h < 180) {
